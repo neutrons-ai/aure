@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+{% block title %}History{% endblock %}
+
+{% block content %}
+<!-- Run info card -->
+<div class="row mb-3">
+  <div class="col">
+    <div class="card">
+      <div class="card-body py-2">
+        <div class="row text-center">
+          <div class="col-md-3">
+            <small class="text-muted">Data file</small><br />
+            <strong>{{ run_info.get('data_file', 'N/A') | e }}</strong>
+          </div>
+          <div class="col-md-3">
+            <small class="text-muted">Sample</small><br />
+            <strong>{{ run_info.get('sample_description', 'N/A') | e }}</strong>
+          </div>
+          <div class="col-md-3">
+            <small class="text-muted">Hypothesis</small><br />
+            <strong>{{ run_info.get('hypothesis', '—') or '—' }}</strong>
+          </div>
+          <div class="col-md-3">
+            <small class="text-muted">Started</small><br />
+            <strong>{{ run_info.get('started_at', 'N/A') | e }}</strong>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Chi-squared progression chart -->
+<div class="row mb-3">
+  <div class="col">
+    <div class="card">
+      <div class="card-header fw-semibold">
+        <i class="bi bi-graph-down"></i> χ² Progression
+      </div>
+      <div class="card-body p-0">
+        <div id="chi2-chart" style="height:320px;"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Checkpoint timeline table -->
+<div class="row">
+  <div class="col">
+    <div class="card">
+      <div class="card-header fw-semibold">
+        <i class="bi bi-list-ol"></i> Workflow Steps
+      </div>
+      <div class="card-body p-0">
+        <div class="table-responsive">
+          <table class="table table-sm table-hover align-middle mb-0">
+            <thead class="table-light">
+              <tr>
+                <th>#</th>
+                <th>Node</th>
+                <th>Iteration</th>
+                <th>χ²</th>
+                <th>Timestamp</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="checkpoint-table-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener("DOMContentLoaded", async () => {
+  const data = await (await fetch("/api/chi2")).json();
+
+  // ---- Checkpoint table ----
+  const tbody = document.getElementById("checkpoint-table-body");
+  data.forEach((d) => {
+    const status = d.error
+      ? `<span class="badge bg-danger">Error</span>`
+      : `<span class="badge bg-success">OK</span>`;
+    const chi2 = d.chi2 != null ? d.chi2.toFixed(2) : "—";
+    const ts = d.timestamp ? new Date(d.timestamp).toLocaleTimeString() : "—";
+    tbody.insertAdjacentHTML(
+      "beforeend",
+      `<tr>
+         <td>${d.step}</td>
+         <td><code>${d.node}</code></td>
+         <td>${d.iteration}</td>
+         <td>${chi2}</td>
+         <td>${ts}</td>
+         <td>${status}</td>
+       </tr>`
+    );
+  });
+
+  // ---- Chi-squared chart ----
+  const withChi2 = data.filter((d) => d.chi2 != null);
+  if (withChi2.length === 0) {
+    document.getElementById("chi2-chart").innerHTML =
+      '<p class="text-muted text-center py-5">No χ² values recorded yet.</p>';
+    return;
+  }
+
+  const trace = {
+    x: withChi2.map((d) => d.step),
+    y: withChi2.map((d) => d.chi2),
+    text: withChi2.map(
+      (d) => `${d.node} iter ${d.iteration}<br>χ²=${d.chi2.toFixed(2)}`
+    ),
+    mode: "lines+markers",
+    marker: { size: 8, color: "#0d6efd" },
+    line: { width: 2, color: "#0d6efd" },
+    hoverinfo: "text",
+  };
+
+  const layout = {
+    margin: { l: 60, r: 20, t: 10, b: 40 },
+    xaxis: { title: "Step", dtick: 1 },
+    yaxis: { title: "χ²", type: withChi2.some((d) => d.chi2 > 100) ? "log" : "linear" },
+    hovermode: "closest",
+  };
+
+  Plotly.newPlot("chi2-chart", [trace], layout, { responsive: true });
+});
+</script>
+{% endblock %}

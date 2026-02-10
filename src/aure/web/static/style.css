@@ -1,0 +1,25 @@
+/* AuRE web viewer – minimal overrides */
+
+body {
+  background-color: #f8f9fa;
+}
+
+.card {
+  border: none;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.card-header {
+  background-color: #fff;
+  border-bottom: 1px solid #e9ecef;
+}
+
+code {
+  color: #0d6efd;
+  font-size: 0.9em;
+}
+
+/* keep Plotly charts from adding extra whitespace */
+.js-plotly-plot .plotly .modebar {
+  right: 8px !important;
+}

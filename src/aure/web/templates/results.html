@@ -1,0 +1,196 @@
+{% extends "base.html" %}
+{% block title %}Results{% endblock %}
+
+{% block content %}
+<!-- Plots row -->
+<div class="row mb-3 gx-3">
+  <!-- R(Q) plot -->
+  <div class="col-lg-6">
+    <div class="card h-100">
+      <div class="card-header fw-semibold">
+        <i class="bi bi-graph-up"></i> Reflectivity R(Q)
+      </div>
+      <div class="card-body p-0">
+        <div id="rq-chart" style="height:460px;"></div>
+      </div>
+    </div>
+  </div>
+  <!-- SLD profile -->
+  <div class="col-lg-6">
+    <div class="card h-100">
+      <div class="card-header fw-semibold">
+        <i class="bi bi-layers"></i> SLD Profile
+      </div>
+      <div class="card-body p-0">
+        <div id="sld-chart" style="height:460px;"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Fit parameters -->
+<div class="row">
+  <div class="col">
+    <div class="card">
+      <div class="card-header fw-semibold">
+        <i class="bi bi-table"></i> Fit Parameters
+        <span id="fit-summary" class="float-end text-muted small"></span>
+      </div>
+      <div class="card-body p-0">
+        <div class="table-responsive">
+          <table class="table table-sm table-hover align-middle mb-0">
+            <thead class="table-light">
+              <tr>
+                <th>Parameter</th>
+                <th class="text-end">Value</th>
+                <th class="text-end">Uncertainty (±)</th>
+              </tr>
+            </thead>
+            <tbody id="param-table-body"></tbody>
+          </table>
+        </div>
+        <div id="no-params" class="text-muted text-center py-4 d-none">
+          No fit parameters available.
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const COLORS = [
+  "#6c757d", "#0d6efd", "#198754", "#dc3545",
+  "#fd7e14", "#6610f2", "#20c997", "#d63384",
+];
+
+document.addEventListener("DOMContentLoaded", async () => {
+  // Fetch data in parallel
+  const [reflData, sldData, paramData] = await Promise.all([
+    fetch("/api/reflectivity").then((r) => r.json()),
+    fetch("/api/sld").then((r) => r.json()),
+    fetch("/api/parameters").then((r) => r.json()),
+  ]);
+
+  renderRQ(reflData);
+  renderSLD(sldData);
+  renderParams(paramData);
+});
+
+/* ------------------------------------------------------------------ */
+/*  R(Q) plot                                                         */
+/* ------------------------------------------------------------------ */
+function renderRQ(data) {
+  const el = document.getElementById("rq-chart");
+  if (!data.Q || data.Q.length === 0) {
+    el.innerHTML =
+      '<p class="text-muted text-center py-5">No reflectivity data.</p>';
+    return;
+  }
+
+  const traces = [];
+
+  // Experimental data
+  traces.push({
+    x: data.Q,
+    y: data.R,
+    error_y:
+      data.dR && data.dR.length
+        ? { type: "data", array: data.dR, visible: true, thickness: 1 }
+        : undefined,
+    mode: "markers",
+    marker: { size: 3, color: "#6c757d" },
+    name: "Data",
+    type: "scatter",
+  });
+
+  // Model curves
+  (data.models || []).forEach((m, i) => {
+    traces.push({
+      x: m.Q,
+      y: m.R,
+      mode: "lines",
+      line: { width: 2, color: COLORS[(i + 1) % COLORS.length] },
+      name: m.label,
+    });
+  });
+
+  const layout = {
+    margin: { l: 60, r: 20, t: 10, b: 50 },
+    xaxis: { title: "Q (Å⁻¹)", type: "log", exponentformat: "e" },
+    yaxis: { title: "R(Q)", type: "log", exponentformat: "e" },
+    legend: { x: 0, y: 0, bgcolor: "rgba(255,255,255,0.7)", font: { size: 11 } },
+    hovermode: "closest",
+  };
+
+  Plotly.newPlot(el, traces, layout, { responsive: true, scrollZoom: true });
+}
+
+/* ------------------------------------------------------------------ */
+/*  SLD profile                                                       */
+/* ------------------------------------------------------------------ */
+function renderSLD(data) {
+  const el = document.getElementById("sld-chart");
+  const profiles = data.profiles || [];
+
+  if (profiles.length === 0) {
+    el.innerHTML =
+      '<p class="text-muted text-center py-5">SLD profiles not available.<br><small>Requires refl1d model execution.</small></p>';
+    return;
+  }
+
+  const traces = profiles.map((p, i) => ({
+    x: p.z,
+    y: p.sld,
+    mode: "lines",
+    line: { width: 2, color: COLORS[(i + 1) % COLORS.length] },
+    name: p.label,
+  }));
+
+  const layout = {
+    margin: { l: 60, r: 20, t: 10, b: 50 },
+    xaxis: { title: "Depth z (Å)" },
+    yaxis: { title: "SLD (×10⁻⁶ Å⁻²)" },
+    legend: { x: 1, xanchor: "right", y: 1, bgcolor: "rgba(255,255,255,0.7)", font: { size: 11 } },
+    hovermode: "closest",
+  };
+
+  Plotly.newPlot(el, traces, layout, { responsive: true, scrollZoom: true });
+}
+
+/* ------------------------------------------------------------------ */
+/*  Parameter table                                                   */
+/* ------------------------------------------------------------------ */
+function renderParams(data) {
+  const tbody = document.getElementById("param-table-body");
+  const noParams = document.getElementById("no-params");
+  const summary = document.getElementById("fit-summary");
+
+  if (!data.parameters || data.parameters.length === 0) {
+    noParams.classList.remove("d-none");
+    return;
+  }
+
+  // Summary line
+  const parts = [];
+  if (data.chi_squared != null) parts.push(`χ² = ${data.chi_squared.toFixed(2)}`);
+  if (data.method) parts.push(`method: ${data.method}`);
+  if (data.converged != null) parts.push(data.converged ? "converged ✓" : "not converged ✗");
+  summary.textContent = parts.join("  ·  ");
+
+  data.parameters.forEach((p) => {
+    const val = typeof p.value === "number" ? p.value.toPrecision(5) : p.value;
+    const unc = p.uncertainty != null ? `± ${p.uncertainty.toPrecision(3)}` : "—";
+    tbody.insertAdjacentHTML(
+      "beforeend",
+      `<tr>
+         <td><code>${p.name}</code></td>
+         <td class="text-end">${val}</td>
+         <td class="text-end">${unc}</td>
+       </tr>`
+    );
+  });
+}
+</script>
+{% endblock %}
