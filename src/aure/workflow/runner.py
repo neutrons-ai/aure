@@ -125,6 +125,8 @@ def run_workflow_with_checkpoints(
     
     # Run workflow manually with checkpoints
     state = dict(initial_state)
+    if output_dir:
+        state["output_dir"] = output_dir
     current_node = NODE_ORDER[start_idx] if start_idx < len(NODE_ORDER) else None
     
     max_total_iterations = 20  # Safety limit

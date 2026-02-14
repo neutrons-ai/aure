@@ -140,6 +140,8 @@ function renderSLD(data) {
     return;
   }
 
+  // Use the same colour offset as the R(Q) model curves so
+  // matching iterations share the same colour in both charts.
   const traces = profiles.map((p, i) => ({
     x: p.z,
     y: p.sld,

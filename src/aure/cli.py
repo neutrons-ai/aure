@@ -339,46 +339,61 @@ def _print_analysis_results(result: dict, output_dir: Optional[str] = None):
     
     # Model
     if result.get("current_model"):
-        click.echo(click.style("  Model Generated", fg="green", bold=True))
+        click.echo(click.style("  Final Model", fg="green", bold=True))
         model_lines = result["current_model"].split("\n")
-        click.echo(f"    Lines: {len(model_lines)}")
+        click.echo(f"    Script: {len(model_lines)} lines")
         click.echo()
     
-    # Fit results
-    if result.get("fit_result"):
-        fit = result["fit_result"]
+    # Fit results — pull from fit_results list (last entry is the final fit)
+    fit_list = result.get("fit_results") or []
+    fit = fit_list[-1] if fit_list else None
+
+    # Also grab the top-level chi² fields set by the workflow
+    current_chi2 = result.get("current_chi2")
+    best_chi2 = result.get("best_chi2")
+
+    if fit:
         click.echo(click.style("  Fit Results", fg="cyan", bold=True))
         chi2 = fit.get("chi_squared", "N/A")
-        click.echo(f"    χ²: {chi2:.3f}" if isinstance(chi2, float) else f"    χ²: {chi2}")
+        click.echo(f"    χ²: {chi2:.4f}" if isinstance(chi2, (int, float)) else f"    χ²: {chi2}")
+        if best_chi2 is not None and best_chi2 != chi2:
+            click.echo(f"    Best χ²: {best_chi2:.4f}")
         click.echo(f"    Method: {fit.get('method', 'unknown')}")
+        click.echo(f"    Iterations: {len(fit_list)}")
         
         if fit.get("parameters"):
             click.echo("    Parameters:")
-            for name, value in list(fit["parameters"].items())[:5]:
+            for name, value in fit["parameters"].items():
                 unc = fit.get("uncertainties", {}).get(name)
                 if unc:
-                    click.echo(f"      {name}: {value:.3f} ± {unc:.3f}")
+                    click.echo(f"      {name}: {value:.4f} ± {unc:.4f}")
                 else:
-                    click.echo(f"      {name}: {value:.3f}")
+                    click.echo(f"      {name}: {value:.4f}")
         click.echo()
+    elif current_chi2 is not None:
+        click.echo(click.style("  Fit Results", fg="cyan", bold=True))
+        click.echo(f"    χ²: {current_chi2:.4f}")
+        if best_chi2 is not None and best_chi2 != current_chi2:
+            click.echo(f"    Best χ²: {best_chi2:.4f}")
+        click.echo()
+    
+    # Evaluation
+    evaluation = result.get("evaluation")
+    if evaluation:
+        quality = evaluation.get("chi_squared_quality", "unknown")
+        acceptable = evaluation.get("acceptable", False)
+        color = "green" if acceptable else "yellow"
+        click.echo(click.style(f"  Fit Quality: {quality}", fg=color, bold=True))
         
-        # Evaluation
-        evaluation = result.get("evaluation")
-        if evaluation:
-            quality = evaluation.get("chi_squared_quality", "unknown")
-            acceptable = evaluation.get("acceptable", False)
-            color = "green" if acceptable else "yellow"
-            click.echo(click.style(f"  Fit Quality: {quality}", fg=color, bold=True))
-            
-            if evaluation.get("issues"):
-                click.echo("    Issues:")
-                for issue in evaluation["issues"]:
-                    click.echo(f"      - {issue}")
-            
-            if evaluation.get("suggestions"):
-                click.echo("    Suggestions:")
-                for sug in evaluation["suggestions"]:
-                    click.echo(f"      - {sug}")
+        if evaluation.get("issues"):
+            click.echo("    Issues:")
+            for issue in evaluation["issues"]:
+                click.echo(f"      - {issue}")
+        
+        if evaluation.get("suggestions"):
+            click.echo("    Suggestions:")
+            for sug in evaluation["suggestions"]:
+                click.echo(f"      - {sug}")
     
     # Output directory info
     if output_dir:
@@ -614,6 +629,8 @@ def _build_env_overrides(merged: dict) -> dict[str, str]:
         "llm_base_url":    "LLM_BASE_URL",
         "llm_temperature": "LLM_TEMPERATURE",
         "llm_timeout":     "LLM_TIMEOUT",
+        "alcf_cluster":    "ALCF_CLUSTER",
+        "alcf_access_token": "ALCF_ACCESS_TOKEN",
     }
     overrides: dict[str, str] = {}
     for yaml_key, env_key in mapping.items():

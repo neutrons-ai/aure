@@ -47,6 +47,15 @@ def fitting_node(state: ReflectivityState) -> Dict[str, Any]:
     steps = int(os.environ.get("FIT_STEPS", "1000"))
     burn = int(os.environ.get("FIT_BURN", "1000"))
     logger.info(f"[FITTING] Starting iteration {iteration}")
+
+    # Build export directory for refl1d output
+    export_dir: Optional[str] = None
+    base_output = state.get("output_dir")
+    if base_output:
+        export_dir = str(
+            Path(base_output) / "refl1d_output" / f"fit_iter{iteration}_{method}"
+        )
+        Path(export_dir).mkdir(parents=True, exist_ok=True)
     
     # ========== Run Fit ==========
     try:
@@ -57,6 +66,7 @@ def fitting_node(state: ReflectivityState) -> Dict[str, Any]:
             iteration=iteration,
             steps=steps,
             burn=burn,
+            export_dir=export_dir,
         )
         
         updates["fit_results"] = [result]
@@ -94,6 +104,7 @@ def run_refl1d_fit(
     iteration: int = 0,
     steps: int = 1000,
     burn: int = 1000,
+    export_dir: Optional[str] = None,
 ) -> FitResult:
     """
     Execute refl1d fit using bumps.fit directly.
@@ -104,6 +115,7 @@ def run_refl1d_fit(
         iteration: Current iteration number
         steps: Number of steps for MCMC methods
         burn: Number of burn-in steps for MCMC
+        export_dir: Optional directory for bumps/refl1d export output
     
     Returns:
         FitResult dictionary
@@ -141,6 +153,11 @@ def run_refl1d_fit(
             fit_options["pop"] = 10
         elif method == "lm":
             fit_options["steps"] = steps
+
+        # Export refl1d output (MCMC chains, profiles, etc.)
+        if export_dir:
+            fit_options["export"] = export_dir
+            logger.info(f"[FITTING] Exporting refl1d output to {export_dir}")
         
         # Run the fit
         logger.info(f"[FITTING] Running {method.upper()} with bumps.fit...")

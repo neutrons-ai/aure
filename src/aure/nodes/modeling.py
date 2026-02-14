@@ -93,6 +93,9 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
         
         # Strip markdown code fences if present
         new_model = _strip_code_fences(new_model)
+
+        # Fix common LLM mistake: var.material.rho → sample[i].material.rho
+        new_model = _fix_sld_attr_access(new_model)
         
         # Validate the generated script has required components
         if not _validate_model_script(new_model):
@@ -569,6 +572,77 @@ def _widen_all_bounds(model: str) -> str:
         return f'.range({new_low:.2f}, {new_high:.2f})'
     
     return re.sub(range_pattern, widen, model)
+
+
+def _fix_sld_attr_access(script: str) -> str:
+    """Fix LLM-generated scripts that use ``var.material.rho`` or
+    ``var.thickness`` instead of ``sample[i].material.rho`` etc.
+
+    ``SLD(...)`` objects do not have ``.material``, ``.thickness``, or
+    ``.interface`` — those attributes only exist on ``Slab`` objects inside
+    the sample stack.  This function rewrites offending lines to use
+    ``sample[i]`` indexing by matching variable names to sample stack order.
+    """
+    # 1. Build var_name → sample index mapping from the sample stack.
+    #    Pattern: lines like ``  var(thickness, roughness)`` or ``| var(...)``
+    stack_pat = re.compile(r'^\s*\|?\s*(\w+)\s*\(', re.MULTILINE)
+    # Find the sample block by matching balanced parens (non-greedy `?`
+    # would stop at the first `)` inside the nested calls).
+    header = re.search(r'sample\s*=\s*\(', script)
+    if not header:
+        return script
+    depth, start = 1, header.end()
+    for pos in range(start, len(script)):
+        if script[pos] == '(':
+            depth += 1
+        elif script[pos] == ')':
+            depth -= 1
+            if depth == 0:
+                break
+    sample_body = script[start:pos]
+
+    var_to_idx: dict[str, int] = {}
+    for idx, m in enumerate(stack_pat.finditer(sample_body)):
+        var_to_idx[m.group(1)] = idx
+
+    if not var_to_idx:
+        return script
+
+    # 2. Rewrite offending lines.
+    #    Match:  <var>.<attr>.range(...)  or  <var>.material.<attr>.range(...)
+    #    where <var> is one of the sample-stack variable names.
+    #    Sort longest-first so "copper_oxide" matches before "copper".
+    var_names = '|'.join(
+        re.escape(v) for v in sorted(var_to_idx, key=len, reverse=True)
+    )
+    bad_pat = re.compile(
+        rf'^(\s*)({var_names})\.(material\.|)(thickness|interface|rho)'
+        rf'(\.range\([^)]*\).*)',
+        re.MULTILINE,
+    )
+
+    def _rewrite(m: re.Match) -> str:
+        indent = m.group(1)
+        var = m.group(2)
+        mat_prefix = m.group(3)  # 'material.' or ''
+        attr = m.group(4)
+        rest = m.group(5)
+        idx = var_to_idx[var]
+
+        if attr == 'rho':
+            return f'{indent}sample[{idx}].material.rho{rest}'
+        else:
+            return f'{indent}sample[{idx}].{attr}{rest}'
+
+    fixed = bad_pat.sub(_rewrite, script)
+    if fixed != script:
+        n = len(bad_pat.findall(script))
+        logger.info(
+            '[MODELING] Fixed %d SLD-attribute lines '
+            '(var.attr → sample[i].attr)',
+            n,
+        )
+    return fixed
 
 
 def _summarize_model_changes(old_model: str, new_model: str) -> list[str]:

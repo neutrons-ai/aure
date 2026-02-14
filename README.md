@@ -54,20 +54,42 @@ pip install -e ".[agent]"
 | Extra     | What it adds                                      |
 |-----------|---------------------------------------------------|
 | `agent`   | LangGraph, LangChain, Click, FastMCP, periodictable — everything needed for the CLI and workflow |
+| `alcf`    | `globus-sdk` — native Globus auth for ALCF inference endpoints |
 | `dev`     | pytest                                            |
 | `all`     | All of the above                                  |
 
 ### LLM configuration
 
 AuRE reads its LLM settings from environment variables (or a `.env` file in the
-project root):
+project root).  See [.env.example](.env.example) for every available option.
 
 ```bash
-LLM_PROVIDER=openai          # or "google", "openai-compatible"
+LLM_PROVIDER=openai          # "openai", "gemini", "alcf", or "local"
 LLM_MODEL=gpt-4o             # model name for your provider
 LLM_API_KEY=sk-...           # API key
-# LLM_BASE_URL=              # only needed for openai-compatible providers
+# LLM_BASE_URL=              # only needed for local / openai-compatible
 ```
+
+#### ALCF inference endpoints
+
+To use the [ALCF inference service](https://docs.alcf.anl.gov/services/inference-endpoints/)
+at Argonne National Laboratory:
+
+```bash
+LLM_PROVIDER=alcf
+ALCF_CLUSTER=sophia           # "sophia" (vLLM) or "metis" (SambaNova)
+LLM_MODEL=gpt-oss-120b        # any model served on the cluster
+# ALCF_ACCESS_TOKEN=...       # Globus token (optional – see below)
+```
+
+If `ALCF_ACCESS_TOKEN` is not set AuRE will try, in order:
+
+1. **`globus_sdk`** (install with `pip install aure[alcf]`) — reuses cached
+   Globus tokens; no subprocess needed.
+2. **`inference_auth_token.py get_access_token`** — subprocess fallback.
+
+See the [ALCF docs](https://docs.alcf.anl.gov/services/inference-endpoints/#2-authenticate)
+for initial Globus authentication setup.
 
 ## CLI reference
 
@@ -272,11 +294,18 @@ result = run_analysis(
 manifest.example.yaml   # Batch manifest reference
 src/aure/
 ├── cli.py              # Click CLI (entry point)
-├── llm.py              # LLM provider configuration
 ├── mcp_server.py       # FastMCP server
 ├── state.py            # Workflow state definitions
 ├── database/
 │   └── materials.py    # Material SLD lookups (periodictable)
+├── llm/                # LLM abstraction layer
+│   ├── config.py       # Env-var configuration & availability
+│   ├── timeout.py      # Signal-based call timeout
+│   └── providers/      # One module per backend
+│       ├── openai.py
+│       ├── gemini.py
+│       ├── alcf.py     # Argonne ALCF inference endpoints
+│       └── local.py    # Ollama / LM Studio / vLLM
 ├── nodes/
 │   ├── intake.py       # Data loading & sample parsing
 │   ├── analysis.py     # Feature extraction

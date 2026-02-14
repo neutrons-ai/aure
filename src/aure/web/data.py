@@ -176,7 +176,11 @@ class RunData:
 
     def get_sld_profiles(self) -> dict:
         """
-        Try to execute model scripts and extract SLD(z) profiles.
+        Compute SLD(z) profiles for each fitting iteration.
+
+        The profiles correspond 1-to-1 with the model curves returned by
+        :meth:`get_reflectivity_data` and use the same labels/ordering so
+        that colours match in the UI.
 
         Returns ``{"profiles": [{"label": ..., "z": [...], "sld": [...]}]}``.
         Gracefully returns an empty list when model execution fails.
@@ -189,22 +193,40 @@ class RunData:
             self._sld_cache = {"profiles": []}
             return self._sld_cache
 
-        model_files = sorted(models_dir.glob("*.py"))
-        profiles: List[dict] = []
-
         state = self.get_final_state()
         Q_data = np.array(state.get("Q", []))
+        fit_results = state.get("fit_results", [])
 
-        for mf in model_files:
+        profiles: List[dict] = []
+
+        for idx, fr in enumerate(fit_results):
+            iteration = fr.get("iteration", idx)
+            chi2 = fr.get("chi_squared")
+
+            # Build the same label used by get_reflectivity_data()
+            label = f"Iteration {iteration}"
+            if chi2 is not None:
+                label += f" (χ²={chi2:.2f})"
+
+            # Find the corresponding model file
+            model_file = models_dir / f"model_fitting_iter{iteration}.py"
+            if not model_file.exists():
+                logger.debug("No model file for iteration %d", iteration)
+                continue
+
             try:
-                result = _execute_model_file(mf, Q_data, working_dir=self.output_dir.parent)
+                fitted_params = fr.get("parameters", {})
+                result = _execute_model_file(
+                    model_file, Q_data,
+                    working_dir=self.output_dir.parent,
+                    fitted_parameters=fitted_params,
+                )
                 if result and result.get("z") is not None:
-                    label = _label_from_model_filename(mf.stem)
                     profiles.append(
                         {"label": label, "z": result["z"], "sld": result["sld"]}
                     )
             except Exception as exc:
-                logger.debug("Could not execute model %s: %s", mf.name, exc)
+                logger.debug("Could not execute model %s: %s", model_file.name, exc)
 
         self._sld_cache = {"profiles": profiles}
         return self._sld_cache
@@ -258,9 +280,22 @@ class RunData:
 # ======================================================================
 
 def _execute_model_file(
-    model_file: Path, Q_data: np.ndarray, working_dir: Optional[Path] = None
+    model_file: Path,
+    Q_data: np.ndarray,
+    working_dir: Optional[Path] = None,
+    fitted_parameters: Optional[Dict[str, float]] = None,
 ) -> Optional[dict]:
-    """Execute a refl1d model script and extract SLD profile."""
+    """Execute a refl1d model script and extract SLD profile.
+
+    Parameters
+    ----------
+    fitted_parameters
+        If provided, a ``{name: value}`` mapping of best-fit parameter
+        values.  After the script is executed the parameters of the
+        resulting ``FitProblem`` are updated to these values so that the
+        SLD profile reflects the actual fit result rather than the
+        (possibly arbitrary) defaults in the script.
+    """
     original_cwd = os.getcwd()
     try:
         script = model_file.read_text()
@@ -284,6 +319,18 @@ def _execute_model_file(
         if experiment is None:
             return None
 
+        # ---- Apply fitted parameter values --------------------------
+        if fitted_parameters and problem is not None:
+            _apply_fitted_parameters(problem, fitted_parameters)
+        elif fitted_parameters and experiment is not None:
+            # problem may not exist; try wrapping experiment
+            try:
+                from bumps.fitproblem import FitProblem
+                tmp_problem = FitProblem(experiment)
+                _apply_fitted_parameters(tmp_problem, fitted_parameters)
+            except Exception:
+                pass
+
         z, sld = None, None
         try:
             z_arr, sld_arr, _ = experiment.smooth_profile(dz=1.0)
@@ -299,16 +346,17 @@ def _execute_model_file(
         os.chdir(original_cwd)
 
 
-def _label_from_model_filename(stem: str) -> str:
-    """Convert a model filename stem into a human-readable label."""
-    if "initial" in stem:
-        return "Initial"
-    match = re.search(r"iter(\d+)", stem)
-    iteration = match.group(1) if match else "?"
-    if "refined" in stem:
-        return f"Refined iter {iteration}"
-    if "fitting" in stem:
-        return f"Fit iter {iteration}"
-    if "evaluation" in stem:
-        return f"Eval iter {iteration}"
-    return stem
+def _apply_fitted_parameters(
+    problem: Any, fitted_parameters: Dict[str, float]
+) -> None:
+    """Set parameter values on a bumps ``FitProblem`` from a name→value dict."""
+    params = getattr(problem, "_parameters", None)
+    if params is None:
+        return
+    for par in params:
+        name = str(par.name)
+        if name in fitted_parameters:
+            par.value = float(fitted_parameters[name])
+
+
+

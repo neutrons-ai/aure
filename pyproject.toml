@@ -33,8 +33,11 @@ agent = [
     "click>=8.0",
     "pyyaml>=6.0",
 ]
+alcf = [
+    "globus-sdk>=3.0",
+]
 all = [
-    "aure[dev,agent]",
+    "aure[dev,agent,alcf]",
 ]
 
 [tool.setuptools.packages.find]

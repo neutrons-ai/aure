@@ -283,6 +283,12 @@ Rules:
 11. NEVER change error bars, resolution, or Q-range — these are experimental parameters.
 12. Use SLD ranges of at least ±1.0 around nominal values for each material to give the fitter sufficient freedom.
 13. If a metal layer is in contact with the ambient medium and no oxide layer is already present, add a thin native metal oxide layer (10–30 Å) between the metal and the ambient. Metals exposed to air or solvent almost always form a native oxide. Common examples: CuO or Cu₂O on copper (SLD ~4–6 ×10⁻⁶ Å⁻²), NiO on nickel, Al₂O₃ on aluminum, TiO₂ on titanium.
+14. CRITICAL refl1d API rule: `SLD(...)` objects do NOT have `.material`, `.thickness`, or `.interface` attributes. Those attributes only exist on `Slab` objects inside the sample stack. You MUST set parameter bounds using `sample[i]` indexing, for example:
+      sample[0].material.rho.range(5.5, 7.0)   # ambient SLD
+      sample[1].thickness.range(10.0, 30.0)     # first layer thickness
+      sample[1].material.rho.range(2.0, 4.0)    # first layer SLD
+      sample[1].interface.range(0.0, 5.0)       # first layer roughness
+    NEVER write `copper.material.rho.range(...)` or `ambient.material.rho.range(...)` — this will crash with "'SLD' object has no attribute 'material'".
 
 Output ONLY the Python script, no markdown fences, no explanation — just the script itself.
 """

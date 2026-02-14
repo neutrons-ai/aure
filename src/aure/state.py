@@ -144,6 +144,7 @@ class ReflectivityState(TypedDict):
     max_iterations: int
     workflow_complete: bool
     error: Optional[str]
+    output_dir: Optional[str]
 
 
 def create_initial_state(
@@ -198,4 +199,5 @@ def create_initial_state(
         max_iterations=max_iterations,
         workflow_complete=False,
         error=None,
+        output_dir=None,
     )

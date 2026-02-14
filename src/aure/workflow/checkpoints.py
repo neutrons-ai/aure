@@ -10,6 +10,7 @@ enabling:
 
 import json
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any, List
@@ -57,6 +58,7 @@ class CheckpointManager:
         # Create directory structure
         self.checkpoints_dir = self.output_dir / "checkpoints"
         self.models_dir = self.output_dir / "models"
+        self.refl1d_output_dir = self.output_dir / "refl1d_output"
         
         self._checkpoint_counter = 0
         self._initialized = False
@@ -74,6 +76,7 @@ class CheckpointManager:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.checkpoints_dir.mkdir(exist_ok=True)
         self.models_dir.mkdir(exist_ok=True)
+        self.refl1d_output_dir.mkdir(exist_ok=True)
         
         # Save run info
         run_info = {
@@ -101,6 +104,7 @@ class CheckpointManager:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.checkpoints_dir.mkdir(exist_ok=True)
         self.models_dir.mkdir(exist_ok=True)
+        self.refl1d_output_dir.mkdir(exist_ok=True)
         
         # Load existing run_info or create new one
         run_info_path = self.output_dir / "run_info.json"
@@ -188,7 +192,141 @@ class CheckpointManager:
         }
         self._save_json(final_path, final_data)
         logger.info(f"[CHECKPOINT] Saved final state: {final_path}")
-    
+
+        # Write model_final.py with best-fit parameters baked in
+        try:
+            self._save_final_model(state)
+        except Exception as exc:
+            logger.warning("[CHECKPOINT] Could not write model_final.py: %s", exc)
+
+    # ------------------------------------------------------------------
+    # Final model with fitted parameters
+    # ------------------------------------------------------------------
+
+    def _save_final_model(self, state: Dict[str, Any]):
+        """Write ``models/model_final.py`` with fitted parameter values.
+
+        Takes the best model script, substitutes the best-fit values into the
+        material / layer definitions, and replaces ``.range()`` calls with
+        comments showing the original range.
+        """
+        model_script = state.get("best_model") or state.get("current_model")
+        if not model_script:
+            return
+
+        fit_results = state.get("fit_results", [])
+        if not fit_results:
+            return
+
+        last_fit = fit_results[-1]
+        params: dict = last_fit.get("parameters", {})
+        uncertainties: dict = last_fit.get("uncertainties") or {}
+        chi2 = last_fit.get("chi_squared")
+        method = last_fit.get("method", "unknown")
+
+        if not params:
+            return
+
+        script = self._patch_model_parameters(model_script, params)
+        script = self._strip_range_calls(script)
+
+        # Prepend a header with fit metadata
+        header_lines = [
+            '# ' + '=' * 68,
+            f'# model_final.py — best-fit result (chi2 = {chi2:.4f}, method = {method})',
+            '#',
+            '# Parameter values below are the optimised values from the fit.',
+            '# .range() constraints have been removed; each line shows the',
+            '# original range as a comment for reference.',
+        ]
+        if uncertainties:
+            header_lines.append('#')
+            header_lines.append('# Uncertainties (1-sigma):')
+            for pname, unc in uncertainties.items():
+                header_lines.append(f'#   {pname}: \u00b1{unc:.4f}')
+        header_lines.append('# ' + '=' * 68)
+        header_lines.append('')
+
+        script = '\n'.join(header_lines) + '\n' + script
+
+        out_path = self.models_dir / "model_final.py"
+        out_path.write_text(script)
+        logger.info(f"[CHECKPOINT] Saved final model: {out_path}")
+
+    @staticmethod
+    def _patch_model_parameters(script: str, params: dict) -> str:
+        """Substitute fitted values into ``SLD(name=..., rho=...)`` and
+        sample stack ``material(thickness, interface)`` definitions.
+
+        Refl1d names parameters like ``<material> <attribute>``
+        (e.g. ``copper thickness``, ``SiO2 rho``).  We rebuild a lookup
+        keyed on ``(material_name, attribute)`` and patch matching lines.
+        """
+        # Build {(material, attr): value} lookup
+        lookup: Dict[tuple, float] = {}
+        for pname, value in params.items():
+            # Handle 'intensity <probe_name>' specially
+            if pname.startswith("intensity "):
+                lookup[("probe", "intensity")] = value
+                continue
+            parts = pname.rsplit(" ", 1)
+            if len(parts) == 2:
+                lookup[(parts[0], parts[1])] = value
+
+        lines = script.split("\n")
+        new_lines: list[str] = []
+
+        for line in lines:
+            new_line = line
+
+            # --- SLD(name="<mat>", rho=<val>) ---------------------------------
+            m = re.match(
+                r'^(\s*\w+\s*=\s*SLD\(\s*name\s*=\s*["\'])(\w+)(["\']\s*,\s*rho\s*=\s*)'
+                r'([\d.eE+-]+)(.*)',
+                line,
+            )
+            if m:
+                mat_name = m.group(2)
+                key = (mat_name, "rho")
+                if key in lookup:
+                    new_line = f"{m.group(1)}{mat_name}{m.group(3)}{lookup[key]}{m.group(5)}"
+
+            # --- sample stack: material(thickness, interface) -----------------
+            m = re.match(
+                r'^(\s*[|]?\s*)(\w+)\(\s*([\d.eE+-]+)\s*,\s*([\d.eE+-]+)\s*\)(.*)',
+                line,
+            )
+            if m:
+                var_name = m.group(2)
+                # Resolve variable name → material name via earlier assignment
+                mat_name = _resolve_material_name(script, var_name)
+                thick_key = (mat_name, "thickness")
+                iface_key = (mat_name, "interface")
+                thickness = lookup.get(thick_key, m.group(3))
+                interface = lookup.get(iface_key, m.group(4))
+                new_line = f"{m.group(1)}{var_name}({thickness}, {interface}){m.group(5)}"
+
+            new_lines.append(new_line)
+
+        return "\n".join(new_lines)
+
+    @staticmethod
+    def _strip_range_calls(script: str) -> str:
+        """Replace ``sample[i].attr.range(lo, hi)`` lines with comments."""
+        def _replace(m: re.Match) -> str:
+            indent = m.group(1)
+            target = m.group(2)
+            args = m.group(3)
+            comment = m.group(4) or ""
+            return f"{indent}# {target}.range({args}){comment}"
+
+        return re.sub(
+            r'^(\s*)(sample\[\d+\]\.[\w.]+|probe\.[\w.]+)\.range\(([^)]+)\)(.*)',
+            _replace,
+            script,
+            flags=re.MULTILINE,
+        )
+
     def _save_model(self, model_script: str, node_name: str, iteration: int):
         """Save model script to models directory."""
         if node_name == "modeling" and iteration == 0:
@@ -328,6 +466,16 @@ class CheckpointManager:
                 return str(Path(output_dir) / "checkpoints" / cp["file"])
         
         return None
+
+
+def _resolve_material_name(script: str, var_name: str) -> str:
+    """Find the ``name=`` argument in the SLD assignment for *var_name*."""
+    m = re.search(
+        rf'^\s*{re.escape(var_name)}\s*=\s*SLD\(\s*name\s*=\s*["\']([\w]+)["\']',
+        script,
+        re.MULTILINE,
+    )
+    return m.group(1) if m else var_name
 
 
 def get_restart_state(checkpoint_path: str) -> Dict[str, Any]:
