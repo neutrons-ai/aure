@@ -15,6 +15,7 @@ warnings.filterwarnings("ignore", message="Core Pydantic V1 functionality isn't 
 import json
 import logging
 import sys
+from pathlib import Path
 from typing import Optional
 
 import click
@@ -386,6 +387,239 @@ def _print_analysis_results(result: dict, output_dir: Optional[str] = None):
         click.echo(f"    Checkpoints: {output_dir}/checkpoints/")
         click.echo(f"    Models: {output_dir}/models/")
         click.echo(f"    Final state: {output_dir}/final_state.json")
+
+
+# ============================================================================
+# Batch / Manifest Command
+# ============================================================================
+
+@cli.command()
+@click.argument("manifest", type=click.Path(exists=True))
+@click.option(
+    "--job", "-j",
+    multiple=True,
+    help="Run only the named job(s).  May be repeated.  Default: all jobs.",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Validate the manifest and print the job plan without running anything.",
+)
+def batch(manifest: str, job: tuple, dry_run: bool):
+    """
+    Run one or more analyses from a YAML manifest file.
+
+    MANIFEST: Path to a YAML file describing the analysis jobs.
+
+    The manifest contains a ``defaults`` section (shared settings) and a
+    ``jobs`` list.  Each job must supply at least ``name``, ``data_file``,
+    and ``sample_description``.  Any option from the ``defaults`` block
+    can be overridden per-job.
+
+    See manifest.example.yaml for the full schema.
+
+    \b
+    Examples:
+        aure batch manifest.yaml
+        aure batch manifest.yaml -j copper_on_silicon
+        aure batch manifest.yaml --dry-run
+    """
+    import yaml
+
+    manifest_path = Path(manifest).resolve()
+    manifest_dir = manifest_path.parent
+
+    # ── Parse ──────────────────────────────────────────────────
+    with open(manifest_path) as fh:
+        doc = yaml.safe_load(fh)
+
+    if not isinstance(doc, dict):
+        raise click.BadParameter("Manifest must be a YAML mapping with 'jobs'.")
+
+    defaults = doc.get("defaults") or {}
+    jobs = doc.get("jobs")
+    if not jobs or not isinstance(jobs, list):
+        raise click.BadParameter("Manifest must contain a 'jobs' list with at least one entry.")
+
+    # Validate every job has the required fields
+    for i, j in enumerate(jobs):
+        for field in ("name", "data_file", "sample_description"):
+            if field not in j:
+                raise click.BadParameter(
+                    f"Job #{i + 1} is missing required field '{field}'."
+                )
+
+    # Filter by --job if specified
+    if job:
+        selected = {n for n in job}
+        jobs = [j for j in jobs if j["name"] in selected]
+        missing = selected - {j["name"] for j in jobs}
+        if missing:
+            raise click.BadParameter(
+                f"Job(s) not found in manifest: {', '.join(sorted(missing))}"
+            )
+
+    # ── Dry-run report ─────────────────────────────────────────
+    click.echo(click.style("═" * 60, fg="blue"))
+    click.echo(click.style("  AuRE Batch Runner", fg="blue", bold=True))
+    click.echo(click.style("═" * 60, fg="blue"))
+    click.echo(f"  Manifest : {manifest_path}")
+    click.echo(f"  Jobs     : {len(jobs)}")
+    click.echo()
+
+    for j in jobs:
+        merged = {**defaults, **j}
+        data_file = _resolve_path(merged["data_file"], manifest_dir)
+        output_root = _resolve_path(
+            merged.get("output_root", "./output"), manifest_dir
+        )
+        output_dir = str(Path(output_root) / merged["name"])
+        click.echo(f"  • {merged['name']}")
+        click.echo(f"      data   : {data_file}")
+        click.echo(f"      sample : {merged['sample_description'][:72]}")
+        click.echo(f"      output : {output_dir}")
+        if merged.get("hypothesis"):
+            click.echo(f"      hypothesis : {merged['hypothesis'][:72]}")
+        click.echo(
+            f"      fit    : {merged.get('fit_method', 'dream')} "
+            f"steps={merged.get('fit_steps', 1000)} "
+            f"burn={merged.get('fit_burn', 1000)}"
+        )
+        click.echo(f"      refine : max {merged.get('max_refinements', 5)}")
+        click.echo()
+
+    if dry_run:
+        click.echo(click.style("  (dry-run – nothing executed)", fg="yellow"))
+        return
+
+    # ── Execute ────────────────────────────────────────────────
+    from .workflow import run_analysis
+    import os
+
+    results_summary: list[dict] = []
+
+    for idx, j in enumerate(jobs, 1):
+        merged = {**defaults, **j}
+        name = merged["name"]
+        data_file = _resolve_path(merged["data_file"], manifest_dir)
+        output_root = _resolve_path(
+            merged.get("output_root", "./output"), manifest_dir
+        )
+        output_dir = str(Path(output_root) / name)
+
+        click.echo(click.style(f"  [{idx}/{len(jobs)}] {name}", fg="cyan", bold=True))
+
+        # Apply per-job env overrides (restored after each job)
+        env_overrides = _build_env_overrides(merged)
+        saved_env = {k: os.environ.get(k) for k in env_overrides}
+        os.environ.update(env_overrides)
+
+        verbose = merged.get("verbose", False)
+        output_json = merged.get("json", False)
+
+        if verbose:
+            logging.basicConfig(
+                level=logging.INFO, format="%(message)s", stream=sys.stderr,
+            )
+
+        def checkpoint_cb(state, node_name):
+            if not output_json:
+                status = "✓" if not state.get("error") else "✗"
+                click.echo(click.style(
+                    f"    [{status}] {node_name.title()}",
+                    fg="green" if status == "✓" else "red",
+                ))
+
+        try:
+            result = run_analysis(
+                data_file=data_file,
+                sample_description=merged["sample_description"],
+                hypothesis=merged.get("hypothesis"),
+                max_iterations=int(merged.get("max_refinements", 5)),
+                output_dir=output_dir,
+                checkpoint_callback=checkpoint_cb if not output_json else None,
+            )
+            chi2 = None
+            if result.get("fit_results"):
+                chi2 = result["fit_results"][-1].get("chi_squared")
+
+            results_summary.append({
+                "name": name, "success": True,
+                "chi_squared": chi2, "output_dir": output_dir,
+            })
+
+            if output_json:
+                click.echo(json.dumps({
+                    "job": name, "success": True, "chi_squared": chi2,
+                    "output_dir": output_dir,
+                }))
+            else:
+                chi_str = f"χ² = {chi2:.3f}" if chi2 is not None else "no fit"
+                click.echo(click.style(f"    Done – {chi_str}", fg="green"))
+
+        except Exception as e:
+            results_summary.append({
+                "name": name, "success": False, "error": str(e),
+            })
+            if output_json:
+                click.echo(json.dumps({"job": name, "success": False, "error": str(e)}))
+            else:
+                click.echo(click.style(f"    Error: {e}", fg="red"))
+        finally:
+            # Restore environment
+            for k, v in saved_env.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+        click.echo()
+
+    # ── Summary ────────────────────────────────────────────────
+    ok = sum(1 for r in results_summary if r["success"])
+    fail = len(results_summary) - ok
+    click.echo(click.style("═" * 60, fg="blue"))
+    color = "green" if fail == 0 else "yellow"
+    click.echo(click.style(
+        f"  Batch complete: {ok} succeeded, {fail} failed", fg=color, bold=True,
+    ))
+    click.echo(click.style("═" * 60, fg="blue"))
+
+    if fail:
+        sys.exit(1)
+
+
+def _resolve_path(p: str, base: Path) -> str:
+    """Resolve a path relative to *base* unless it is already absolute."""
+    path = Path(p)
+    if not path.is_absolute():
+        path = base / path
+    return str(path.resolve())
+
+
+def _build_env_overrides(merged: dict) -> dict[str, str]:
+    """
+    Build a dict of environment-variable overrides from the merged job config.
+
+    Only keys that are explicitly present in the manifest are forwarded so that
+    the .env / ambient environment is left alone for anything unspecified.
+    """
+    mapping = {
+        "fit_method":      "FIT_METHOD",
+        "fit_steps":       "FIT_STEPS",
+        "fit_burn":        "FIT_BURN",
+        "llm_provider":    "LLM_PROVIDER",
+        "llm_model":       "LLM_MODEL",
+        "llm_api_key":     "LLM_API_KEY",
+        "llm_base_url":    "LLM_BASE_URL",
+        "llm_temperature": "LLM_TEMPERATURE",
+        "llm_timeout":     "LLM_TIMEOUT",
+    }
+    overrides: dict[str, str] = {}
+    for yaml_key, env_key in mapping.items():
+        if yaml_key in merged:
+            overrides[env_key] = str(merged[yaml_key])
+    return overrides
 
 
 # ============================================================================

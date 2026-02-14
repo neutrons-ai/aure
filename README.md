@@ -103,6 +103,37 @@ aure analyze data.txt "100 nm polystyrene on silicon"
 aure analyze data.txt "Cu/Ti bilayer on Si in dTHF" -o ./output -m 8 -v
 ```
 
+### `aure batch`
+
+Run one or more analyses from a YAML manifest file.
+Ideal for automated / CI workflows where the full configuration lives in
+version control.
+
+```bash
+aure batch MANIFEST [OPTIONS]
+```
+
+| Option | Description |
+|--------|-------------|
+| `-j, --job NAME` | Run only the named job(s). Repeatable. Default: all |
+| `--dry-run` | Validate the manifest and print the plan without running |
+
+The manifest is a YAML file with a `defaults` section and a `jobs` list.
+See [manifest.example.yaml](manifest.example.yaml) for the full schema.
+
+**Examples:**
+
+```bash
+# Run every job in the manifest
+aure batch manifest.yaml
+
+# Run a single job
+aure batch manifest.yaml -j copper_on_silicon
+
+# Preview without executing
+aure batch manifest.yaml --dry-run
+```
+
 ### `aure resume`
 
 Resume a workflow from a previously saved checkpoint.
@@ -237,6 +268,8 @@ result = run_analysis(
 ## Project layout
 
 ```
+.env.example            # Environment variable reference
+manifest.example.yaml   # Batch manifest reference
 src/aure/
 ├── cli.py              # Click CLI (entry point)
 ├── llm.py              # LLM provider configuration

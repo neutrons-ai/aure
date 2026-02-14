@@ -1,0 +1,50 @@
+# ──────────────────────────────────────────────────────────────
+# AuRE – batch manifest
+# Each entry under "jobs" is one analysis run.
+# Copy this file, edit the values, then run:
+#
+#   aure batch manifest.yaml
+#
+# All paths are relative to the manifest file's directory unless
+# they are absolute.
+# ──────────────────────────────────────────────────────────────
+
+# ── Shared defaults (applied to every job unless overridden) ──
+defaults:
+  max_refinements: 5          # max refinement iterations per job
+  output_root: ./output       # each job writes to <output_root>/<job name>
+  verbose: true               # stream progress to stderr
+  json: false                 # emit results as JSON instead of pretty output
+
+  # Fitting parameters (override .env / environment)
+  fit_method: dream           # lm | de | dream
+  fit_steps: 1000
+  fit_burn: 1000
+
+  # LLM overrides (optional – normally read from .env)
+  # llm_provider: openai
+  # llm_model: gpt-4o
+  # llm_temperature: 0.0
+  # llm_timeout: 120
+
+# ── Jobs ──────────────────────────────────────────────────────
+jobs:
+  - name: copper_on_silicon
+    data_file: tests/data/REFL_218386_combined_data_auto.txt
+    sample_description: >-
+      50 nm copper on 5 nm Ti on silicon.
+      The ambient medium is dTHF (SLD about 6).
+      Neutrons enter from the silicon substrate side.
+    hypothesis: The copper layer may have roughness > 10 Å
+
+  - name: polystyrene_film
+    data_file: data/ps_film.txt
+    sample_description: 100 nm polystyrene on silicon
+    max_refinements: 3        # override the default for this job
+
+  # Minimal job – only the two required fields
+  - name: quick_test
+    data_file: data/sample.txt
+    sample_description: thin gold film on glass
+    fit_method: lm             # fast local fit only
+    fit_steps: 500

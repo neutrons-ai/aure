@@ -43,18 +43,20 @@ def fitting_node(state: ReflectivityState) -> Dict[str, Any]:
         return updates
     
     iteration = state.get("iteration", 0)
+    method = os.environ.get("FIT_METHOD", "dream").lower()
+    steps = int(os.environ.get("FIT_STEPS", "1000"))
+    burn = int(os.environ.get("FIT_BURN", "1000"))
     logger.info(f"[FITTING] Starting iteration {iteration}")
     
     # ========== Run Fit ==========
     try:
-        # Run DREAM MCMC fit for uncertainty quantification
-        logger.info("[FITTING] Running DREAM MCMC optimization...")
+        logger.info(f"[FITTING] Running {method.upper()} optimization...")
         result = run_refl1d_fit(
             model_script=model_script,
-            method="dream",
+            method=method,
             iteration=iteration,
-            steps=1000,
-            burn=1000,
+            steps=steps,
+            burn=burn,
         )
         
         updates["fit_results"] = [result]
