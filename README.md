@@ -13,10 +13,29 @@ to go from a raw data file and a plain-English sample description to a fitted
 
 AuRE runs an iterative analysis pipeline:
 
-```
-Intake → Feature Analysis → Model Building → Fitting → Evaluation ─┐
-                                  ▲                                 │
-                                  └──── Refinement ◄────────────────┘
+```mermaid
+flowchart LR
+    S((Start)) --> Intake
+    Intake --> Analysis
+    Analysis --> Modeling
+    Modeling --> Fitting
+    Fitting --> Evaluation
+
+    Evaluation -->|fit acceptable| E((Done))
+    Evaluation -->|refine model| Modeling
+
+    Intake  -.->|error| E
+    Analysis -.->|error| E
+    Modeling -.->|error| E
+    Fitting  -.->|error| E
+
+    style S fill:#6c757d,color:#fff,stroke:none
+    style E fill:#198754,color:#fff,stroke:none
+    style Intake fill:#0d6efd,color:#fff,stroke:none
+    style Analysis fill:#0d6efd,color:#fff,stroke:none
+    style Modeling fill:#0d6efd,color:#fff,stroke:none
+    style Fitting fill:#0d6efd,color:#fff,stroke:none
+    style Evaluation fill:#fd7e14,color:#fff,stroke:none
 ```
 
 1. **Intake** — Loads the reflectivity data file and parses the sample
