@@ -24,6 +24,7 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
+from .config import load_user_config
 from .llm import get_llm_info, get_llm, invoke_with_timeout, LLMTimeoutError, get_llm_timeout
 
 
@@ -161,6 +162,11 @@ def cli():
     is_flag=True,
     help="Enable verbose logging to trace workflow progress",
 )
+@click.option(
+    "--config", "-c", "config_file",
+    type=click.Path(exists=True),
+    help="YAML config file with evaluation criteria and model constraints",
+)
 def analyze(
     data_file: str,
     sample_description: str,
@@ -169,6 +175,7 @@ def analyze(
     output_dir: Optional[str],
     output_json: bool,
     verbose: bool,
+    config_file: Optional[str],
 ):
     """
     Analyze a reflectivity data file with fitting and refinement.
@@ -210,7 +217,10 @@ def analyze(
             logging.getLogger(module).setLevel(logging.INFO)
     
     from .workflow import run_analysis
-    
+
+    # Load user config (evaluation criteria / model constraints)
+    user_config = load_user_config(config_file)
+
     if not output_json:
         click.echo(click.style("═" * 60, fg="blue"))
         click.echo(click.style("  Reflectivity Analysis Workflow", fg="blue", bold=True))
@@ -254,6 +264,7 @@ def analyze(
             max_iterations=max_refinements,
             output_dir=output_dir,
             checkpoint_callback=checkpoint_callback if not output_json else None,
+            user_config=user_config,
         )
     except Exception as e:
         if output_json:

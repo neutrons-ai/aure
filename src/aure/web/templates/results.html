@@ -105,13 +105,15 @@ function renderRQ(data) {
     type: "scatter",
   });
 
-  // Model curves
-  (data.models || []).forEach((m, i) => {
+  // Model curves – final iteration drawn thicker
+  const models = data.models || [];
+  models.forEach((m, i) => {
+    const isFinal = i === models.length - 1;
     traces.push({
       x: m.Q,
       y: m.R,
       mode: "lines",
-      line: { width: 2, color: COLORS[(i + 1) % COLORS.length] },
+      line: { width: isFinal ? 3.5 : 1.5, color: COLORS[(i + 1) % COLORS.length] },
       name: m.label,
     });
   });
@@ -142,13 +144,17 @@ function renderSLD(data) {
 
   // Use the same colour offset as the R(Q) model curves so
   // matching iterations share the same colour in both charts.
-  const traces = profiles.map((p, i) => ({
-    x: p.z,
-    y: p.sld,
-    mode: "lines",
-    line: { width: 2, color: COLORS[(i + 1) % COLORS.length] },
-    name: p.label,
-  }));
+  // Final iteration drawn thicker.
+  const traces = profiles.map((p, i) => {
+    const isFinal = i === profiles.length - 1;
+    return {
+      x: p.z,
+      y: p.sld,
+      mode: "lines",
+      line: { width: isFinal ? 3.5 : 1.5, color: COLORS[(i + 1) % COLORS.length] },
+      name: p.label,
+    };
+  });
 
   const layout = {
     margin: { l: 60, r: 20, t: 10, b: 50 },

@@ -10,6 +10,7 @@ This node uses an LLM to analyze the fit results and determine:
 
 import json
 import logging
+import os
 import re
 from typing import Dict, Any, Optional
 
@@ -17,9 +18,18 @@ from langchain_core.messages import HumanMessage
 
 from ..state import ReflectivityState, FitResult, Message
 from ..llm import llm_available, get_llm
+from ..config import format_user_criteria
 from .prompts import format_fit_evaluation_prompt
 
 logger = logging.getLogger(__name__)
+
+
+def _get_chi2_max() -> float:
+    """Return the χ² acceptance threshold from ``CHI2_MAX`` env var."""
+    try:
+        return float(os.environ.get("CHI2_MAX", "5.0"))
+    except (TypeError, ValueError):
+        return 5.0
 
 
 def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
@@ -56,12 +66,16 @@ def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
         updates["error"] = "LLM is required for fit evaluation. Please configure LLM_PROVIDER."
         return updates
     
+    chi2_max = _get_chi2_max()
+    user_criteria = format_user_criteria(state.get("user_config"))
     try:
         analysis = analyze_fit_quality_with_llm(
             fit_result=latest_fit,
             sample_description=state.get("sample_description"),
             hypothesis=state.get("hypothesis"),
             features=state.get("extracted_features"),
+            chi2_max=chi2_max,
+            user_criteria=user_criteria,
         )
     except Exception as e:
         error_msg = str(e).lower()
@@ -125,6 +139,8 @@ def analyze_fit_quality_with_llm(
     sample_description: Optional[str],
     hypothesis: Optional[str],
     features: Optional[Dict],
+    chi2_max: float = 5.0,
+    user_criteria: str = "",
 ) -> Dict[str, Any]:
     """
     Use LLM to analyze fit quality in context.
@@ -142,6 +158,8 @@ def analyze_fit_quality_with_llm(
         converged=fit_result.get("converged", False),
         parameters=fit_result.get("parameters", {}),
         features=features or {},
+        chi2_max=chi2_max,
+        user_criteria=user_criteria,
     )
     
     response = llm.invoke([HumanMessage(content=prompt)])
@@ -172,6 +190,7 @@ def analyze_fit_quality_with_llm(
 def _simple_evaluation(fit_result: FitResult) -> Dict[str, Any]:
     """Simple heuristic evaluation as fallback."""
     chi2 = fit_result.get("chi_squared", float('inf'))
+    chi2_max = _get_chi2_max()
     
     issues = []
     suggestions = []
@@ -179,15 +198,15 @@ def _simple_evaluation(fit_result: FitResult) -> Dict[str, Any]:
     if chi2 > 10:
         issues.append(f"Poor fit quality (χ² = {chi2:.1f})")
         suggestions.append("Consider modifying model structure")
-    elif chi2 > 5:
-        issues.append(f"Marginal fit quality (χ² = {chi2:.1f})")
+    elif chi2 > chi2_max:
+        issues.append(f"Marginal fit quality (χ² = {chi2:.1f}, threshold = {chi2_max})")
         suggestions.append("Try refining parameter bounds")
     elif chi2 < 0.5:
         issues.append(f"Possible overfitting (χ² = {chi2:.2f})")
     
     return {
-        "acceptable": chi2 < 3.0,
-        "quality_assessment": "good" if chi2 < 3.0 else "poor",
+        "acceptable": chi2 <= chi2_max,
+        "quality_assessment": "good" if chi2 < chi2_max else "poor",
         "issues": issues,
         "suggestions": suggestions,
         "physical_concerns": [],

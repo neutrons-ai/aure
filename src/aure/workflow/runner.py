@@ -45,6 +45,7 @@ def run_analysis(
     max_iterations: int = 5,
     output_dir: Optional[str] = None,
     checkpoint_callback: Optional[Callable[[Dict[str, Any], str], None]] = None,
+    user_config: Optional[dict] = None,
 ) -> ReflectivityState:
     """
     Run the reflectivity analysis workflow.
@@ -56,6 +57,7 @@ def run_analysis(
         max_iterations: Maximum refinement iterations (default: 5)
         output_dir: Optional directory for checkpoints and results
         checkpoint_callback: Optional callback(state, node_name) for custom checkpoint handling
+        user_config: Optional user-supplied YAML configuration dict
 
     Returns:
         Final workflow state with results
@@ -66,6 +68,7 @@ def run_analysis(
         sample_description=sample_description,
         hypothesis=hypothesis,
         max_iterations=max_iterations,
+        user_config=user_config,
     )
 
     # Run with optional tracing

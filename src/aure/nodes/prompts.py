@@ -160,6 +160,9 @@ Respond in JSON format:
     "needs_user_guidance": <true/false - should we ask the user before proceeding?>
 }}
 
+**Acceptance threshold: χ² ≤ {chi2_max}.**
+A fit with χ² within this threshold should be marked "acceptable": true.
+
 Guidelines for χ²:
 - χ² ≈ 1: Ideal fit (model matches data within error bars)
 - χ² < 0.5: Possible overfitting or overestimated errors
@@ -176,6 +179,9 @@ IMPORTANT CONSTRAINTS:
 - NEVER suggest reversing the layer order or changing the back-reflection geometry. The measurement geometry (which side the neutrons come from) is set by the user and must not be changed. If the sample description says neutrons come from the substrate side, that is correct.
 - NEVER suggest changing error bars, resolution, or Q-range — these are experimental parameters that cannot be modified.
 - If a metal layer (e.g., copper, gold, iron, nickel, aluminum) is in contact with the ambient medium (air, solvent, etc.) and no oxide layer is already present, suggest adding a thin native metal oxide layer (10–30 Å) between the metal and the ambient. Metals exposed to air or solvent almost always form a native oxide. Common examples: CuO or Cu₂O on copper, NiO on nickel, Al₂O₃ on aluminum, TiO₂ on titanium.
+- Watch for physically unreasonable roughness values (higher than half adjacent layer thicknesses may lead to artifacts, lower than 5 Å may indicate unrealistic smoothing) and flag these as concerns.
+
+{user_criteria}
 """
 
 
@@ -187,6 +193,8 @@ def format_fit_evaluation_prompt(
     converged: bool,
     parameters: Dict[str, float],
     features: Dict[str, Any],
+    chi2_max: float = 5.0,
+    user_criteria: str = "",
 ) -> str:
     """
     Format the fit evaluation prompt.
@@ -199,6 +207,8 @@ def format_fit_evaluation_prompt(
         converged: Whether fit converged
         parameters: Best-fit parameter values
         features: Extracted physics features
+        chi2_max: χ² acceptance threshold (from ``CHI2_MAX`` env var)
+        user_criteria: Formatted user-defined evaluation criteria
     
     Returns:
         Formatted prompt string
@@ -231,6 +241,8 @@ def format_fit_evaluation_prompt(
         converged="Yes" if converged else "No",
         parameters=params_str,
         features=features_str,
+        chi2_max=chi2_max,
+        user_criteria=user_criteria,
     )
 
 
@@ -290,6 +302,8 @@ Rules:
       sample[1].interface.range(0.0, 5.0)       # first layer roughness
     NEVER write `copper.material.rho.range(...)` or `ambient.material.rho.range(...)` — this will crash with "'SLD' object has no attribute 'material'".
 
+{user_constraints}
+
 Output ONLY the Python script, no markdown fences, no explanation — just the script itself.
 """
 
@@ -299,6 +313,7 @@ def format_model_refinement_prompt(
     sample_description: str,
     fit_result: dict,
     features: dict,
+    user_constraints: str = "",
 ) -> str:
     """
     Format the model refinement prompt for the LLM.
@@ -308,6 +323,7 @@ def format_model_refinement_prompt(
         sample_description: Original sample description from user
         fit_result: Latest fit result dict (chi2, parameters, issues, suggestions)
         features: Extracted physics features
+        user_constraints: Formatted user-defined model constraints
         
     Returns:
         Formatted prompt string
@@ -349,4 +365,5 @@ def format_model_refinement_prompt(
         issues=issues_str,
         suggestions=suggestions_str,
         features=features_str,
+        user_constraints=user_constraints,
     )

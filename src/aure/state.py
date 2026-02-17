@@ -145,6 +145,7 @@ class ReflectivityState(TypedDict):
     workflow_complete: bool
     error: Optional[str]
     output_dir: Optional[str]
+    user_config: Optional[dict]  # User-supplied YAML config (criteria & constraints)
 
 
 def create_initial_state(
@@ -152,6 +153,7 @@ def create_initial_state(
     sample_description: str,
     hypothesis: Optional[str] = None,
     max_iterations: int = 5,
+    user_config: Optional[dict] = None,
 ) -> ReflectivityState:
     """
     Create initial state for a new analysis workflow.
@@ -161,6 +163,7 @@ def create_initial_state(
         sample_description: User's description of the sample
         hypothesis: Optional hypothesis to test
         max_iterations: Maximum refinement iterations
+        user_config: Optional user-supplied YAML configuration
     
     Returns:
         Initial workflow state
@@ -200,4 +203,5 @@ def create_initial_state(
         workflow_complete=False,
         error=None,
         output_dir=None,
+        user_config=user_config,
     )

@@ -147,7 +147,7 @@ def run_refl1d_fit(
         if method == "dream":
             fit_options["samples"] = steps
             fit_options["burn"] = burn
-            fit_options["pop"] = 10  # Population multiplier
+            #fit_options["pop"] = 10  # Population multiplier
         elif method == "de":
             fit_options["steps"] = steps
             fit_options["pop"] = 10

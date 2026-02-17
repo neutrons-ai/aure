@@ -21,6 +21,7 @@ from langchain_core.messages import HumanMessage
 from ..state import ReflectivityState, Message
 from ..database import get_sld
 from ..llm import llm_available, get_llm
+from ..config import format_user_constraints
 from .prompts import format_model_refinement_prompt
 
 logger = logging.getLogger(__name__)
@@ -80,11 +81,13 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
         return updates
     
     try:
+        user_constraints = format_user_constraints(state.get("user_config"))
         prompt = format_model_refinement_prompt(
             current_model=current_model,
             sample_description=state.get("sample_description", ""),
             fit_result=latest_fit,
             features=state.get("extracted_features") or {},
+            user_constraints=user_constraints,
         )
         
         llm = get_llm(temperature=0)

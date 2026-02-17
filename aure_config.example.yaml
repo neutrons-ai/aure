@@ -1,0 +1,30 @@
+# ==========================================================================
+# AuRE analysis configuration
+# ==========================================================================
+#
+# Pass this file to the CLI with:
+#   aure analyze data.dat "sample description" --config config.yaml
+#
+# Both sections are optional — omit any section you don't need.
+# Each entry is a plain-English rule that the LLM will follow.
+
+# --------------------------------------------------------------------------
+# Evaluation criteria
+# --------------------------------------------------------------------------
+# Extra rules applied when judging whether a fit is acceptable.
+# These supplement (not replace) the built-in χ² threshold and physics checks.
+#
+evaluation_criteria:
+  - "Layer roughness must be above 5 Å to be considered acceptable."
+  - "Layer roughness should be below half of adjacent layer thicknesses to avoid unphysical intermixing."
+
+# --------------------------------------------------------------------------
+# Model constraints
+# --------------------------------------------------------------------------
+# Hard constraints the LLM must respect when building or refining a model.
+# Use these to prevent the LLM from making unwanted structural changes.
+#
+model_constraints:
+  - "Do not add an extra layer between the copper and titanium layers."
+  - "If you add an SiOx layer on top of the silicon substrate, do not allow its thickness to exceed 35 Å. "
+  - "The substrate roughness must not exceed 10 Å."
