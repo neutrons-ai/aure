@@ -24,11 +24,6 @@ flowchart LR
     Evaluation -->|fit acceptable| E((Done))
     Evaluation -->|refine model| Modeling
 
-    Intake  -.->|error| E
-    Analysis -.->|error| E
-    Modeling -.->|error| E
-    Fitting  -.->|error| E
-
     style S fill:#6c757d,color:#fff,stroke:none
     style E fill:#198754,color:#fff,stroke:none
     style Intake fill:#0d6efd,color:#fff,stroke:none
