@@ -62,13 +62,17 @@ def generate_report(
         if stats.common_missing_layers:
             w("**Commonly missing layers:**")
             w("")
-            for name, count in sorted(stats.common_missing_layers.items(), key=lambda x: -x[1]):
+            for name, count in sorted(
+                stats.common_missing_layers.items(), key=lambda x: -x[1]
+            ):
                 w(f"- `{name}`: missing in {count}/{stats.n_with_results} datasets")
             w("")
         if stats.common_extra_layers:
             w("**Commonly extra layers:**")
             w("")
-            for name, count in sorted(stats.common_extra_layers.items(), key=lambda x: -x[1]):
+            for name, count in sorted(
+                stats.common_extra_layers.items(), key=lambda x: -x[1]
+            ):
                 w(f"- `{name}`: extra in {count}/{stats.n_with_results} datasets")
             w("")
 
@@ -82,7 +86,9 @@ def generate_report(
         layers_ok = "✓" if c.layer_count_match else "✗"
         frac = c.frac_within_p95
         frac_str = f"{frac:.0%}" if frac is not None else "—"
-        w(f"| {c.run} | {c.sample} | {c.experiment} | {chi_str} | {layers_ok} | {frac_str} |")
+        w(
+            f"| {c.run} | {c.sample} | {c.experiment} | {chi_str} | {layers_ok} | {frac_str} |"
+        )
     w("")
 
     # ── Per-dataset details ──────────────────────────────────
@@ -92,7 +98,9 @@ def generate_report(
         w(f"### Run {c.run} — {c.sample} (experiment {c.experiment})")
         w("")
         w(f"- **Ref layers:** {' → '.join(c.ref_layer_names)}")
-        w(f"- **Fit layers:** {' → '.join(c.fit_layer_names) if c.fit_layer_names else '(none)'}")
+        w(
+            f"- **Fit layers:** {' → '.join(c.fit_layer_names) if c.fit_layer_names else '(none)'}"
+        )
         if c.missing_layers:
             w(f"- **Missing:** {', '.join(c.missing_layers)}")
         if c.extra_layers:
@@ -107,8 +115,12 @@ def generate_report(
             for p in c.params:
                 fit_str = f"{p.fit_value:.3f}" if p.fit_value is not None else "—"
                 err_str = f"{p.abs_error:.3f}" if p.abs_error is not None else "—"
-                p95_str = "✓" if p.within_p95 else ("✗" if p.within_p95 is False else "—")
-                w(f"| {p.layer} | {p.param} | {p.ref_value:.3f} | {fit_str} | {err_str} | {p95_str} |")
+                p95_str = (
+                    "✓" if p.within_p95 else ("✗" if p.within_p95 is False else "—")
+                )
+                w(
+                    f"| {p.layer} | {p.param} | {p.ref_value:.3f} | {fit_str} | {err_str} | {p95_str} |"
+                )
             w("")
 
     # ── Write ─────────────────────────────────────────────────

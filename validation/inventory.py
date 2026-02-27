@@ -26,6 +26,8 @@ class ReferenceModel:
     model_file: Path
     layers: List[dict] = field(default_factory=list)
     probe: dict = field(default_factory=dict)
+    chisq: Optional[float] = None
+    chisq_overall: Optional[float] = None
 
     # Convenience accessors ---------------------------------------------------
 
@@ -85,6 +87,8 @@ def load_reference(model_json: Path) -> ReferenceModel:
         model_file=model_json,
         layers=data.get("layers", []),
         probe=data.get("probe", {}),
+        chisq=data.get("chisq"),
+        chisq_overall=data.get("chisq_overall"),
     )
 
 
@@ -112,7 +116,9 @@ def print_inventory(inventory: Dict[str, ReferenceModel]) -> None:
     print("-" * 65)
     for run, ref in inventory.items():
         names = " → ".join(ref.layer_names)
-        print(f"{run:>8}  {ref.sample:>6}  {ref.experiment:>3}  {ref.n_layers:>6}  {names}")
+        print(
+            f"{run:>8}  {ref.sample:>6}  {ref.experiment:>3}  {ref.n_layers:>6}  {names}"
+        )
 
 
 # ---------------------------------------------------------------------------

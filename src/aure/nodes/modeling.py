@@ -44,17 +44,17 @@ def modeling_node(state: ReflectivityState) -> Dict[str, Any]:
     # Check if this is a refinement iteration (fit results already exist)
     fit_results = state.get("fit_results", [])
     current_model = state.get("current_model")
-    
+
     if fit_results and current_model:
         return _refine_model(state)
-    
+
     return _build_initial_model(state)
 
 
 def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
     """
     Refine an existing model using LLM based on evaluation feedback.
-    
+
     The LLM receives the current model script, fit parameters, issues,
     and suggestions, and generates a complete improved model script.
     """
@@ -63,23 +63,27 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
         "messages": [],
         "model_history": [],
     }
-    
+
     iteration = state.get("iteration", 0)
-    logger.info(f"[MODELING] Refinement iteration {iteration} - regenerating model with LLM")
-    
+    logger.info(
+        f"[MODELING] Refinement iteration {iteration} - regenerating model with LLM"
+    )
+
     fit_results = state.get("fit_results", [])
     latest_fit = fit_results[-1]
     current_model = state.get("current_model", "")
-    
+
     issues = latest_fit.get("issues", [])
     suggestions = latest_fit.get("suggestions", [])
     logger.info(f"[MODELING] Issues to address: {issues}")
     logger.info(f"[MODELING] Suggestions: {suggestions}")
-    
+
     if not llm_available():
-        updates["error"] = "LLM is required for model refinement. Please configure LLM_PROVIDER."
+        updates["error"] = (
+            "LLM is required for model refinement. Please configure LLM_PROVIDER."
+        )
         return updates
-    
+
     try:
         user_constraints = format_user_constraints(state.get("user_config"))
         prompt = format_model_refinement_prompt(
@@ -89,47 +93,60 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
             features=state.get("extracted_features") or {},
             user_constraints=user_constraints,
         )
-        
+
         llm = get_llm(temperature=0)
         response = llm.invoke([HumanMessage(content=prompt)])
         new_model = response.content.strip()
-        
+
         # Strip markdown code fences if present
         new_model = _strip_code_fences(new_model)
 
         # Fix common LLM mistake: var.material.rho → sample[i].material.rho
         new_model = _fix_sld_attr_access(new_model)
-        
+
         # Validate the generated script has required components
         if not _validate_model_script(new_model):
-            logger.warning("[MODELING] LLM-generated script missing required components, keeping current model with widened bounds")
+            logger.warning(
+                "[MODELING] LLM-generated script missing required components, keeping current model with widened bounds"
+            )
             new_model = _widen_all_bounds(current_model)
-        
+
         updates["current_model"] = new_model
-        updates["model_history"] = [{
-            "iteration": iteration,
-            "description": f"Refined model (iteration {iteration})",
-            "refinement_issues": issues,
-            "refinement_suggestions": suggestions,
-            "script": new_model,
-        }]
-        
+        updates["model_history"] = [
+            {
+                "iteration": iteration,
+                "description": f"Refined model (iteration {iteration})",
+                "refinement_issues": issues,
+                "refinement_suggestions": suggestions,
+                "script": new_model,
+            }
+        ]
+
         # Format explanation message
         changes = _summarize_model_changes(current_model, new_model)
-        updates["messages"] = [Message(
-            role="assistant",
-            content=_format_refinement_explanation(changes, issues, suggestions),
-            timestamp=None,
-        )]
-        
+        updates["messages"] = [
+            Message(
+                role="assistant",
+                content=_format_refinement_explanation(changes, issues, suggestions),
+                timestamp=None,
+            )
+        ]
+
     except Exception as e:
         error_msg = str(e).lower()
-        if "quota" in error_msg or "rate" in error_msg or "limit" in error_msg or "429" in str(e):
-            updates["error"] = "LLM quota/rate limit exceeded. Please wait or switch provider."
+        if (
+            "quota" in error_msg
+            or "rate" in error_msg
+            or "limit" in error_msg
+            or "429" in str(e)
+        ):
+            updates["error"] = (
+                "LLM quota/rate limit exceeded. Please wait or switch provider."
+            )
         else:
             updates["error"] = f"Model refinement failed: {str(e)[:200]}"
         logger.error(f"[MODELING] LLM refinement error: {e}")
-    
+
     return updates
 
 
@@ -155,7 +172,7 @@ def _build_initial_model(state: ReflectivityState) -> Dict[str, Any]:
     # ========== Generate refl1d Script ==========
     # Check for back reflection geometry
     back_reflection = parsed.get("back_reflection", False)
-    
+
     # Get intensity normalization settings (default: vary 0.7–1.1)
     intensity_settings = parsed.get("intensity", {})
     intensity = {
@@ -236,26 +253,26 @@ def _build_layers(parsed: dict, features: dict) -> List[dict]:
         for i, layer in enumerate(parsed["layers"]):
             # Handle None values from LLM parsing with sensible defaults
             sld = layer.get("sld") if layer.get("sld") is not None else 2.0
-            
+
             # SLD range: use provided values or calculate defaults
             # Ensure a minimum spread of ±1.5 around the expected value
             provided_sld_min = layer.get("sld_min")
             provided_sld_max = layer.get("sld_max")
-            
+
             if provided_sld_min is not None and provided_sld_max is not None:
                 # Check if the provided range is too narrow (less than 1.0 spread)
-                if (provided_sld_max - provided_sld_min) < 1.0:
+                if (provided_sld_max - provided_sld_min) < 2.0:
                     # Expand to ensure reasonable fitting flexibility
-                    sld_min = max(sld - 1.5, -4.0)
-                    sld_max = min(sld + 1.5, 10.0)
+                    sld_min = max(sld - 2.5, -6.0)
+                    sld_max = min(sld + 2.5, 10.0)
                 else:
                     sld_min = provided_sld_min
                     sld_max = provided_sld_max
             else:
-                # Default: ±2.0 around expected value, bounded by physical limits
-                sld_min = max(sld - 2.0, -4.0)
-                sld_max = min(sld + 2.0, 10.0)
-            
+                # Default: ±2.5 around expected value, bounded by physical limits
+                sld_min = max(sld - 2.5, -6.0)
+                sld_max = min(sld + 2.5, 10.0)
+
             thickness = (
                 layer.get("thickness") if layer.get("thickness") is not None else 100.0
             )
@@ -363,10 +380,10 @@ def build_refl1d_script(
     if intensity is None:
         intensity = {"value": 1.0, "min": 0.9, "max": 1.1, "fixed": False}
     import os
-    
+
     # Use absolute path so the model can be run from any directory
     abs_data_file = os.path.abspath(data_file)
-    
+
     lines = [
         '"""',
         "Auto-generated refl1d model.",
@@ -411,8 +428,12 @@ def build_refl1d_script(
         # Beam sees: ambient first, then layers (reversed), then substrate
         # Example: sample = THF(0, roughness) | Cu(...) | Ti(...) | Si
         lines.append("# Neutrons come from substrate side (back reflection)")
-        lines.append("# Stack ordered in beam direction: ambient -> layers -> substrate")
-        stack_parts = ["ambient(0, {:.1f})".format(layers[-1]['roughness'] if layers else 3.0)]
+        lines.append(
+            "# Stack ordered in beam direction: ambient -> layers -> substrate"
+        )
+        stack_parts = [
+            "ambient(0, {:.1f})".format(layers[-1]["roughness"] if layers else 3.0)
+        ]
         # Add layers in reverse order (furthest from substrate first, i.e. closest to ambient)
         for i in reversed(range(len(layers))):
             layer = layers[i]
@@ -478,9 +499,7 @@ def build_refl1d_script(
 
     # Substrate roughness (substrate is always last)
     sub_rough_max = substrate.get("roughness_max", 15.0)
-    lines.append(
-        f"sample[{len(layers) + 1}].interface.range(0, {sub_rough_max:.1f})"
-    )
+    lines.append(f"sample[{len(layers) + 1}].interface.range(0, {sub_rough_max:.1f})")
     # Probe intensity normalization
     if not intensity.get("fixed", False):
         lines.extend(
@@ -543,20 +562,20 @@ def _explain_model(layers: list, substrate: dict, ambient: dict, features: dict)
 def _strip_code_fences(text: str) -> str:
     """Remove markdown code fences from LLM output."""
     # Remove ```python ... ``` wrapping
-    text = re.sub(r'^```python\s*\n', '', text)
-    text = re.sub(r'^```\s*\n', '', text)
-    text = re.sub(r'\n```\s*$', '', text)
+    text = re.sub(r"^```python\s*\n", "", text)
+    text = re.sub(r"^```\s*\n", "", text)
+    text = re.sub(r"\n```\s*$", "", text)
     return text.strip()
 
 
 def _validate_model_script(script: str) -> bool:
     """Check that a model script has the minimum required components."""
     required = [
-        "load4(",            # Data loading
-        "SLD(",              # Material definition
-        "sample =",          # Sample stack
-        "Experiment(",       # Experiment setup
-        "FitProblem(",       # Problem definition
+        "load4(",  # Data loading
+        "SLD(",  # Material definition
+        "sample =",  # Sample stack
+        "Experiment(",  # Experiment setup
+        "FitProblem(",  # Problem definition
     ]
     # At least 4 out of 5 required (allow minor variations)
     matches = sum(1 for r in required if r in script)
@@ -565,15 +584,15 @@ def _validate_model_script(script: str) -> bool:
 
 def _widen_all_bounds(model: str) -> str:
     """Fallback: widen all parameter bounds by 50% in the existing model."""
-    range_pattern = r'\.range\((-?\d+\.?\d*),\s*(-?\d+\.?\d*)\)'
-    
+    range_pattern = r"\.range\((-?\d+\.?\d*),\s*(-?\d+\.?\d*)\)"
+
     def widen(match):
         low, high = float(match.group(1)), float(match.group(2))
         spread = high - low
         new_low = low - spread * 0.25
         new_high = high + spread * 0.25
-        return f'.range({new_low:.2f}, {new_high:.2f})'
-    
+        return f".range({new_low:.2f}, {new_high:.2f})"
+
     return re.sub(range_pattern, widen, model)
 
 
@@ -588,17 +607,17 @@ def _fix_sld_attr_access(script: str) -> str:
     """
     # 1. Build var_name → sample index mapping from the sample stack.
     #    Pattern: lines like ``  var(thickness, roughness)`` or ``| var(...)``
-    stack_pat = re.compile(r'^\s*\|?\s*(\w+)\s*\(', re.MULTILINE)
+    stack_pat = re.compile(r"^\s*\|?\s*(\w+)\s*\(", re.MULTILINE)
     # Find the sample block by matching balanced parens (non-greedy `?`
     # would stop at the first `)` inside the nested calls).
-    header = re.search(r'sample\s*=\s*\(', script)
+    header = re.search(r"sample\s*=\s*\(", script)
     if not header:
         return script
     depth, start = 1, header.end()
     for pos in range(start, len(script)):
-        if script[pos] == '(':
+        if script[pos] == "(":
             depth += 1
-        elif script[pos] == ')':
+        elif script[pos] == ")":
             depth -= 1
             if depth == 0:
                 break
@@ -615,12 +634,12 @@ def _fix_sld_attr_access(script: str) -> str:
     #    Match:  <var>.<attr>.range(...)  or  <var>.material.<attr>.range(...)
     #    where <var> is one of the sample-stack variable names.
     #    Sort longest-first so "copper_oxide" matches before "copper".
-    var_names = '|'.join(
+    var_names = "|".join(
         re.escape(v) for v in sorted(var_to_idx, key=len, reverse=True)
     )
     bad_pat = re.compile(
-        rf'^(\s*)({var_names})\.(material\.|)(thickness|interface|rho)'
-        rf'(\.range\([^)]*\).*)',
+        rf"^(\s*)({var_names})\.(material\.|)(thickness|interface|rho)"
+        rf"(\.range\([^)]*\).*)",
         re.MULTILINE,
     )
 
@@ -632,17 +651,16 @@ def _fix_sld_attr_access(script: str) -> str:
         rest = m.group(5)
         idx = var_to_idx[var]
 
-        if attr == 'rho':
-            return f'{indent}sample[{idx}].material.rho{rest}'
+        if attr == "rho":
+            return f"{indent}sample[{idx}].material.rho{rest}"
         else:
-            return f'{indent}sample[{idx}].{attr}{rest}'
+            return f"{indent}sample[{idx}].{attr}{rest}"
 
     fixed = bad_pat.sub(_rewrite, script)
     if fixed != script:
         n = len(bad_pat.findall(script))
         logger.info(
-            '[MODELING] Fixed %d SLD-attribute lines '
-            '(var.attr → sample[i].attr)',
+            "[MODELING] Fixed %d SLD-attribute lines (var.attr → sample[i].attr)",
             n,
         )
     return fixed
@@ -651,13 +669,13 @@ def _fix_sld_attr_access(script: str) -> str:
 def _summarize_model_changes(old_model: str, new_model: str) -> list[str]:
     """Summarize differences between old and new model scripts."""
     changes = []
-    
+
     # Count layers
-    old_layers = len(re.findall(r'material\d+\s*=\s*SLD\(', old_model))
-    new_layers = len(re.findall(r'material\d+\s*=\s*SLD\(', new_model))
+    old_layers = len(re.findall(r"material\d+\s*=\s*SLD\(", old_model))
+    new_layers = len(re.findall(r"material\d+\s*=\s*SLD\(", new_model))
     if new_layers != old_layers:
         changes.append(f"Layer count changed: {old_layers} → {new_layers}")
-    
+
     # Check for new materials
     old_materials = set(re.findall(r'name="([^"]+)"', old_model))
     new_materials = set(re.findall(r'name="([^"]+)"', new_model))
@@ -667,16 +685,18 @@ def _summarize_model_changes(old_model: str, new_model: str) -> list[str]:
         changes.append(f"Added materials: {', '.join(added)}")
     if removed:
         changes.append(f"Removed materials: {', '.join(removed)}")
-    
+
     # Check for bound changes
-    old_ranges = re.findall(r'\.range\((-?\d+\.?\d*),\s*(-?\d+\.?\d*)\)', old_model)
-    new_ranges = re.findall(r'\.range\((-?\d+\.?\d*),\s*(-?\d+\.?\d*)\)', new_model)
+    old_ranges = re.findall(r"\.range\((-?\d+\.?\d*),\s*(-?\d+\.?\d*)\)", old_model)
+    new_ranges = re.findall(r"\.range\((-?\d+\.?\d*),\s*(-?\d+\.?\d*)\)", new_model)
     if len(new_ranges) != len(old_ranges):
-        changes.append(f"Number of fit parameters changed: {len(old_ranges)} → {len(new_ranges)}")
-    
+        changes.append(
+            f"Number of fit parameters changed: {len(old_ranges)} → {len(new_ranges)}"
+        )
+
     if not changes:
         changes.append("Parameter values and bounds adjusted")
-    
+
     return changes
 
 
@@ -688,17 +708,17 @@ def _format_refinement_explanation(
     """Format a human-readable explanation of the model refinement."""
     lines = ["**Model Refinement:**"]
     lines.append("")
-    
+
     if issues:
         lines.append("**Issues addressed:**")
         for issue in issues:
             lines.append(f"- {issue}")
         lines.append("")
-    
+
     lines.append("**Changes made:**")
     for change in changes:
         lines.append(f"- {change}")
     lines.append("")
     lines.append("*Re-running fit with refined model...*")
-    
+
     return "\n".join(lines)

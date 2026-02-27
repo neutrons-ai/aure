@@ -19,11 +19,13 @@ RESULTS_DIR = Path(__file__).parent / "results"
 
 # ── Metric containers ────────────────────────────────────────────────────────
 
+
 @dataclass
 class ParamComparison:
     """Comparison of a single parameter between reference and fitted model."""
-    layer: str               # reference layer name
-    param: str               # thickness, interface, rho
+
+    layer: str  # reference layer name
+    param: str  # thickness, interface, rho
     ref_value: float
     ref_p95: Optional[List[float]]  # 95% credible interval from reference
     fit_value: Optional[float]
@@ -35,6 +37,7 @@ class ParamComparison:
 @dataclass
 class LayerComparison:
     """Comparison result for a single dataset."""
+
     run: str
     sample: str
     experiment: int
@@ -47,7 +50,7 @@ class LayerComparison:
     extra_layers: List[str]
 
     # Chi-squared
-    ref_chi2: Optional[float] = None  # not in reference files directly
+    ref_chi2: Optional[float] = None
     fit_chi2: Optional[float] = None
 
     # Per-parameter comparisons
@@ -66,6 +69,7 @@ class LayerComparison:
 
 
 # ── Comparison logic ─────────────────────────────────────────────────────────
+
 
 def compare_single(
     ref: ReferenceModel,
@@ -106,6 +110,7 @@ def compare_single(
     )
 
     # ── χ² ────────────────────────────────────────────────────
+    comp.ref_chi2 = ref.chisq
     # Prefer best_chi2 from state, fall back to last_fit
     last_fit = state.get("last_fit") or {}
     comp.fit_chi2 = state.get("best_chi2") or last_fit.get("chi_squared")
@@ -123,20 +128,24 @@ def compare_single(
                 fit_int_val = float(pval)
                 break
         if ref_int_val is not None:
-            abs_err = abs(fit_int_val - ref_int_val) if fit_int_val is not None else None
+            abs_err = (
+                abs(fit_int_val - ref_int_val) if fit_int_val is not None else None
+            )
             within = None
             if fit_int_val is not None and ref_int_p95 and len(ref_int_p95) == 2:
                 within = ref_int_p95[0] <= fit_int_val <= ref_int_p95[1]
-            comp.params.append(ParamComparison(
-                layer="probe",
-                param="intensity",
-                ref_value=ref_int_val,
-                ref_p95=ref_int_p95,
-                fit_value=fit_int_val,
-                abs_error=abs_err,
-                within_p95=within,
-                fit_layer="probe",
-            ))
+            comp.params.append(
+                ParamComparison(
+                    layer="probe",
+                    param="intensity",
+                    ref_value=ref_int_val,
+                    ref_p95=ref_int_p95,
+                    fit_value=fit_int_val,
+                    abs_error=abs_err,
+                    within_p95=within,
+                    fit_layer="probe",
+                )
+            )
 
     # ── Parameter comparisons ───────────────────────────────
     for layer in ref.layers:
@@ -164,16 +173,18 @@ def compare_single(
             if fit_val is not None and ref_p95 and len(ref_p95) == 2:
                 within = ref_p95[0] <= fit_val <= ref_p95[1]
 
-            comp.params.append(ParamComparison(
-                layer=ref_layer_name,
-                param=param_key,
-                ref_value=ref_val,
-                ref_p95=ref_p95,
-                fit_value=fit_val,
-                abs_error=abs_err,
-                within_p95=within,
-                fit_layer=fit_layer_name,
-            ))
+            comp.params.append(
+                ParamComparison(
+                    layer=ref_layer_name,
+                    param=param_key,
+                    ref_value=ref_val,
+                    ref_p95=ref_p95,
+                    fit_value=fit_val,
+                    abs_error=abs_err,
+                    within_p95=within,
+                    fit_layer=fit_layer_name,
+                )
+            )
 
     return comp
 
@@ -194,6 +205,7 @@ def compare_all(
 
 # ── Aggregate statistics ──────────────────────────────────────────────────────
 
+
 @dataclass
 class AggregateStats:
     n_datasets: int = 0
@@ -201,6 +213,8 @@ class AggregateStats:
     n_layer_match: int = 0
     mean_chi2: Optional[float] = None
     median_chi2: Optional[float] = None
+    mean_ref_chi2: Optional[float] = None
+    mean_chi2_ratio: Optional[float] = None
     mean_frac_within_p95: Optional[float] = None
     common_missing_layers: Dict[str, int] = field(default_factory=dict)
     common_extra_layers: Dict[str, int] = field(default_factory=dict)
@@ -223,7 +237,9 @@ def compute_aggregate(comparisons: List[LayerComparison]) -> AggregateStats:
 
     for c in comparisons:
         for name in c.missing_layers:
-            stats.common_missing_layers[name] = stats.common_missing_layers.get(name, 0) + 1
+            stats.common_missing_layers[name] = (
+                stats.common_missing_layers.get(name, 0) + 1
+            )
         for name in c.extra_layers:
             stats.common_extra_layers[name] = stats.common_extra_layers.get(name, 0) + 1
 
@@ -233,13 +249,29 @@ def compute_aggregate(comparisons: List[LayerComparison]) -> AggregateStats:
         stats.mean_chi2 = sum(chi2s) / len(chi2s)
         stats.median_chi2 = sorted(chi2s)[len(chi2s) // 2]
 
+    ref_chi2s = [c.ref_chi2 for c in comparisons if c.ref_chi2 is not None]
+    if ref_chi2s:
+        stats.mean_ref_chi2 = sum(ref_chi2s) / len(ref_chi2s)
+
+    ratios = [
+        c.fit_chi2 / c.ref_chi2
+        for c in comparisons
+        if c.fit_chi2 is not None and c.ref_chi2 is not None and c.ref_chi2 > 0
+    ]
+    if ratios:
+        stats.mean_chi2_ratio = sum(ratios) / len(ratios)
+
     # Fraction within p95
     fracs = [c.frac_within_p95 for c in comparisons if c.frac_within_p95 is not None]
     if fracs:
         stats.mean_frac_within_p95 = sum(fracs) / len(fracs)
 
     # Per parameter type MAE
-    for ptype, attr in [("thickness", "thickness_mae"), ("interface", "interface_mae"), ("rho", "rho_mae")]:
+    for ptype, attr in [
+        ("thickness", "thickness_mae"),
+        ("interface", "interface_mae"),
+        ("rho", "rho_mae"),
+    ]:
         errors = []
         for c in comparisons:
             for p in c.params:
@@ -252,6 +284,7 @@ def compute_aggregate(comparisons: List[LayerComparison]) -> AggregateStats:
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def _extract_layer_names_from_state(state: dict) -> List[str]:
     """
@@ -267,8 +300,7 @@ def _extract_layer_names_from_state(state: dict) -> List[str]:
     if params:
         seen = set()
         names = []
-        skip_words = {"intensity", "background", "sample_broadening",
-                      "theta_offset"}
+        skip_words = {"intensity", "background", "sample_broadening", "theta_offset"}
         for pname in params:
             parts = pname.rsplit(" ", 1)
             if len(parts) == 2:
@@ -341,8 +373,8 @@ def _match_layers_by_position(
         matched[ref_interior[i]] = fit_interior[i]
 
     # Unmatched tails
-    missing = ref_interior[n_match:]   # ref layers with no fit counterpart
-    extra   = fit_interior[n_match:]   # fit layers with no ref counterpart
+    missing = ref_interior[n_match:]  # ref layers with no fit counterpart
+    extra = fit_interior[n_match:]  # fit layers with no ref counterpart
 
     return matched, missing, extra
 
@@ -385,6 +417,7 @@ def _find_fit_param(
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
+
 def print_comparison(comp: LayerComparison) -> None:
     """Print a single comparison to stdout."""
     header = f"Run {comp.run} ({comp.sample}, exp {comp.experiment})"
@@ -393,7 +426,9 @@ def print_comparison(comp: LayerComparison) -> None:
 
     # Show layer stacks side by side with positional mapping
     print(f"  Ref layers:  {' → '.join(comp.ref_layer_names)}")
-    print(f"  Fit layers:  {' → '.join(comp.fit_layer_names) if comp.fit_layer_names else '(none)'}")
+    print(
+        f"  Fit layers:  {' → '.join(comp.fit_layer_names) if comp.fit_layer_names else '(none)'}"
+    )
 
     n_ref = len(comp.ref_layer_names)
     n_fit = len(comp.fit_layer_names)
@@ -403,17 +438,33 @@ def print_comparison(comp: LayerComparison) -> None:
         print(f"  extra={comp.extra_layers}", end="")
     print()
 
-    if comp.fit_chi2 is not None:
-        print(f"  χ² = {comp.fit_chi2:.3f}")
+    if comp.fit_chi2 is not None or comp.ref_chi2 is not None:
+        parts = []
+        if comp.fit_chi2 is not None:
+            parts.append(f"fit={comp.fit_chi2:.3f}")
+        if comp.ref_chi2 is not None:
+            parts.append(f"ref={comp.ref_chi2:.3f}")
+        if comp.fit_chi2 is not None and comp.ref_chi2 is not None:
+            ratio = comp.fit_chi2 / comp.ref_chi2
+            parts.append(f"ratio={ratio:.2f}×")
+        print(f"  χ²: {', '.join(parts)}")
 
     if comp.params:
-        print(f"  {'Ref layer':<14} {'Fit layer':<16} {'Param':<12} {'Ref':>10} {'Fit':>10} {'Error':>10} {'p95?':>5}")
+        print(
+            f"  {'Ref layer':<14} {'Fit layer':<16} {'Param':<12} {'Ref':>10} {'Fit':>10} {'Error':>10} {'p95?':>5}"
+        )
         for p in comp.params:
-            fit_str  = f"{p.fit_value:.3f}" if p.fit_value is not None else "   ---"
-            err_str  = f"{p.abs_error:.3f}" if p.abs_error is not None else "   ---"
-            p95_str  = " YES" if p.within_p95 else ("  NO" if p.within_p95 is False else " ---")
+            fit_str = f"{p.fit_value:.3f}" if p.fit_value is not None else "   ---"
+            err_str = f"{p.abs_error:.3f}" if p.abs_error is not None else "   ---"
+            p95_str = (
+                " YES"
+                if p.within_p95
+                else ("  NO" if p.within_p95 is False else " ---")
+            )
             fit_name = p.fit_layer if hasattr(p, "fit_layer") and p.fit_layer else ""
-            print(f"  {p.layer:<14} {fit_name:<16} {p.param:<12} {p.ref_value:>10.3f} {fit_str:>10} {err_str:>10} {p95_str:>5}")
+            print(
+                f"  {p.layer:<14} {fit_name:<16} {p.param:<12} {p.ref_value:>10.3f} {fit_str:>10} {err_str:>10} {p95_str:>5}"
+            )
 
     frac = comp.frac_within_p95
     if frac is not None:
@@ -429,8 +480,12 @@ def print_aggregate(stats: AggregateStats) -> None:
     print(f"  Layer count match:     {stats.n_layer_match}/{stats.n_with_results}")
 
     if stats.mean_chi2 is not None:
-        print(f"  Mean χ²:               {stats.mean_chi2:.3f}")
-        print(f"  Median χ²:             {stats.median_chi2:.3f}")
+        print(f"  Mean χ² (fit):         {stats.mean_chi2:.3f}")
+        print(f"  Median χ² (fit):       {stats.median_chi2:.3f}")
+    if stats.mean_ref_chi2 is not None:
+        print(f"  Mean χ² (ref):         {stats.mean_ref_chi2:.3f}")
+    if stats.mean_chi2_ratio is not None:
+        print(f"  Mean χ² ratio (fit/ref): {stats.mean_chi2_ratio:.2f}×")
 
     if stats.mean_frac_within_p95 is not None:
         print(f"  Mean frac in ref 95%:  {stats.mean_frac_within_p95:.1%}")
