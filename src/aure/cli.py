@@ -131,6 +131,100 @@ def cli():
 
 
 # ============================================================================
+# Diagnostics
+# ============================================================================
+
+@cli.command("check-llm")
+@click.option("--json", "output_json", is_flag=True, help="Output as JSON")
+@click.option("--no-test", is_flag=True, help="Skip the live connection test")
+def check_llm(output_json: bool, no_test: bool):
+    """
+    Check LLM configuration and connectivity.
+
+    Shows which provider and model are configured, whether credentials
+    are present, and (unless --no-test) sends a tiny test prompt to
+    verify the connection works end-to-end.
+
+    \b
+    Environment variables used:
+        LLM_PROVIDER     openai | gemini | alcf | local
+        LLM_MODEL        model name (default depends on provider)
+        LLM_API_KEY      API key (or OPENAI_API_KEY / GEMINI_API_KEY)
+        LLM_BASE_URL     base URL (required for 'local' provider)
+        LLM_TIMEOUT      call timeout in seconds (default 120)
+        LLM_TEMPERATURE  sampling temperature (default 0.0)
+
+    \b
+    Examples:
+        aure check-llm
+        aure check-llm --json
+        aure check-llm --no-test
+    """
+    from .llm.config import get_llm_config
+
+    config = get_llm_config()
+    info = get_llm_info()
+    has_key = bool(config.get("api_key"))
+
+    if output_json:
+        ok, msg = _check_llm_status(quiet=True, test_connection=not no_test)
+        result = {
+            **info,
+            "has_api_key": has_key,
+            "timeout": get_llm_timeout(),
+            "temperature": config["temperature"],
+            "ok": ok,
+            "message": msg,
+        }
+        click.echo(json.dumps(result, indent=2))
+        sys.exit(0 if ok else 1)
+
+    click.echo()
+    click.echo(click.style("  LLM Configuration Check", fg="blue", bold=True))
+    click.echo(click.style("  " + "─" * 40, fg="blue"))
+    click.echo()
+    click.echo(f"    Provider:    {config['provider'] or '(not set)'}")
+    click.echo(f"    Model:       {config['model']}")
+    click.echo(f"    API key:     {'••••' + config['api_key'][-4:] if has_key else click.style('NOT SET', fg='red')}")
+    if config.get("base_url"):
+        click.echo(f"    Base URL:    {config['base_url']}")
+    if config.get("alcf_cluster"):
+        click.echo(f"    ALCF cluster: {config['alcf_cluster']}")
+    click.echo(f"    Timeout:     {get_llm_timeout()}s")
+    click.echo(f"    Temperature: {config['temperature']}")
+    click.echo()
+
+    if not info["available"]:
+        click.echo(click.style("  ✗ LLM not available", fg="red", bold=True))
+        click.echo()
+        if config["provider"] in ("openai", "gemini") and not has_key:
+            click.echo("    Set an API key:")
+            click.echo(f"      export LLM_API_KEY=<your-key>")
+            click.echo(f"    or add to .env:")
+            click.echo(f"      LLM_PROVIDER={config['provider']}")
+            click.echo(f"      LLM_API_KEY=<your-key>")
+        elif config["provider"] == "local" and not config.get("base_url"):
+            click.echo("    Set a base URL for local provider:")
+            click.echo("      export LLM_BASE_URL=http://localhost:11434/v1")
+        click.echo()
+        sys.exit(1)
+
+    if no_test:
+        click.echo(click.style("  ✓ Credentials present (skipped live test)", fg="green"))
+        click.echo()
+        return
+
+    click.echo("    Testing connection...", nl=False)
+    ok, msg = _check_llm_status(quiet=True, test_connection=True)
+    if ok:
+        click.echo(click.style(" ✓ Connected", fg="green"))
+    else:
+        click.echo(click.style(f" ✗ {msg}", fg="red"))
+    click.echo()
+    sys.exit(0 if ok else 1)
+
+
+# ============================================================================
 # Analysis Commands
 # ============================================================================
 

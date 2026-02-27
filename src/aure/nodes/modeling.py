@@ -156,11 +156,11 @@ def _build_initial_model(state: ReflectivityState) -> Dict[str, Any]:
     # Check for back reflection geometry
     back_reflection = parsed.get("back_reflection", False)
     
-    # Get intensity normalization settings (default: vary ±10%)
+    # Get intensity normalization settings (default: vary 0.7–1.1)
     intensity_settings = parsed.get("intensity", {})
     intensity = {
         "value": intensity_settings.get("value", 1.0),
-        "min": intensity_settings.get("min", 0.9),
+        "min": intensity_settings.get("min", 0.7),
         "max": intensity_settings.get("max", 1.1),
         "fixed": intensity_settings.get("fixed", False),
     }

@@ -51,16 +51,16 @@ Extract the following information in JSON format:
     "back_reflection": <true if neutrons come from substrate side, false otherwise>,
     "intensity": {{
         "value": <starting intensity normalization, default 1.0>,
-        "min": <minimum intensity, default 0.9>,
+        "min": <minimum intensity, default 0.7>,
         "max": <maximum intensity, default 1.1>,
         "fixed": <true if data is perfectly normalized and intensity should not vary>
     }}
 }}
 
 Intensity normalization:
-- By default, allow intensity to vary ±10% (0.9 to 1.1) to account for normalization uncertainty
+- By default, allow intensity to vary between 0.7 and 1.1 to account for normalization uncertainty
 - If user says "data is perfectly normalized" or similar, set fixed=true
-- If user says "data needs large normalization correction" or similar, expand the range (e.g., 0.7 to 1.3)
+- If user says "data needs large normalization correction" or similar, expand the range (e.g., 0.5 to 1.3)
 
 Common SLD values (10^-6 Å^-2):
 - Silicon: 2.07
@@ -172,6 +172,15 @@ Guidelines for χ²:
 - χ² > 10: Poor fit, significant model problems
 
 Consider the sample description when evaluating if parameters make physical sense.
+
+AMBIENT SLD CHECK:
+- Check if the ambient (fronting) SLD is reasonable for the stated medium.
+- In back-reflection geometry through a substrate (e.g., Si, SLD=2.07), a critical edge at low Q
+  indicates that either a film layer or the ambient has SLD > substrate SLD.
+- If the ambient is a protonated solvent (e.g., THF with SLD ≈ 0.18) but the fitted ambient SLD
+  is much higher, the solvent is likely deuterated (e.g., d8-THF with SLD ≈ 6.35).
+- If the fitted intensity is pinned at its lower or upper bound, this may indicate the
+  intensity normalization range is too narrow and should be widened.
 
 IMPORTANT CONSTRAINTS:
 - NEVER suggest changing the fitting engine/method (e.g., switching to Levenberg-Marquardt, differential evolution, etc.). The fitting method is chosen by the workflow and is not a model issue.
