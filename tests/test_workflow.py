@@ -7,9 +7,11 @@ through INTAKE → ANALYSIS → MODELING.
 
 import tempfile
 import numpy as np
+import pytest
 
 from aure.workflow import create_workflow
 from aure.state import create_initial_state
+from aure.llm import llm_available
 
 
 def create_test_data_file() -> str:
@@ -60,6 +62,7 @@ def test_workflow_creation():
     print("  ✓ Workflow created successfully")
 
 
+@pytest.mark.skipif(not llm_available(), reason="No LLM configured")
 def test_intake_and_analysis():
     """Test intake and analysis nodes."""
     print("\n" + "=" * 60)
@@ -138,6 +141,7 @@ def test_intake_and_analysis():
     return True
 
 
+@pytest.mark.skipif(not llm_available(), reason="No LLM configured")
 def test_sample_description_parsing():
     """Test the sample description parser with LLM."""
     print("\n" + "=" * 60)
@@ -145,13 +149,7 @@ def test_sample_description_parsing():
     print("=" * 60)
 
     from aure.nodes.intake import parse_sample_with_llm
-    from aure.llm import llm_available, get_llm_info
-
-    if not llm_available():
-        print("  ⚠ Skipping: No LLM configured")
-        print("    Configure LLM_PROVIDER and API keys in .env to run this test")
-        print("  ✓ Parsing test skipped (no LLM)")
-        return
+    from aure.llm import get_llm_info
 
     info = get_llm_info()
     print(f"  Using LLM: {info['provider']} / {info['model']}")
@@ -183,6 +181,7 @@ def test_sample_description_parsing():
     print("\n  ✓ Parsing test completed")
 
 
+@pytest.mark.skipif(not llm_available(), reason="No LLM configured")
 def test_full_fitting_pipeline():
     """Test the complete workflow including fitting/evaluation nodes."""
     print("\n" + "=" * 60)
@@ -242,6 +241,7 @@ def test_full_fitting_pipeline():
     print("\n  ✓ Fitting pipeline test completed")
 
 
+@pytest.mark.skipif(not llm_available(), reason="No LLM configured")
 def test_workflow_without_fitting():
     """Test workflow can run without fitting for faster iteration."""
     print("\n" + "=" * 60)

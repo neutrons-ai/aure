@@ -180,7 +180,9 @@ class CheckpointManager:
         # Save model if present
         if state.get("current_model"):
             self._save_model(
-                state["current_model"], node_name, iteration,
+                state["current_model"],
+                node_name,
+                iteration,
                 checkpoint_number=self._checkpoint_counter,
             )
 
@@ -268,7 +270,7 @@ class CheckpointManager:
             script = export_model_script(
                 model,
                 fitted_params=params,
-                uncertainties=uncertainties,
+                fitted_uncertainties=uncertainties,
                 include_ranges=False,
             )
             # Also save the JSON definition with fitted values applied
@@ -472,8 +474,11 @@ class CheckpointManager:
             model_path.write_text(str(model))
 
     def _save_checkpoint_log(
-        self, checkpoint_path: Path, state: Dict[str, Any],
-        node_name: str, iteration: int,
+        self,
+        checkpoint_path: Path,
+        state: Dict[str, Any],
+        node_name: str,
+        iteration: int,
     ):
         """Write a companion ``.md`` file with human-readable messages.
 

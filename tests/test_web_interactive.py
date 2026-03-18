@@ -209,7 +209,7 @@ class TestRunDataSimulate:
             "chi_squared": 1.23,
         }
 
-        with patch("aure.web.data._execute_model_file", return_value=mock_result):
+        with patch("aure.web.data._compute_from_model", return_value=mock_result):
             result = rd.simulate({"copper thickness": 500.0})
 
         assert result["Q_fit"] == [0.01, 0.02]
@@ -234,7 +234,7 @@ class TestRunDataSimulate:
         rd = RunData(str(output_dir))
 
         with patch(
-            "aure.web.data._execute_model_file",
+            "aure.web.data._compute_from_model",
             side_effect=RuntimeError("exec failed"),
         ):
             result = rd.simulate({"copper thickness": 500.0})
@@ -301,7 +301,7 @@ class TestApiSimulate:
             "sld": [2.0, 6.5],
             "chi_squared": 1.5,
         }
-        with patch("aure.web.data._execute_model_file", return_value=mock_result):
+        with patch("aure.web.data._compute_from_model", return_value=mock_result):
             resp = client.post(
                 "/api/simulate",
                 json={"parameters": {"copper thickness": 500.0}},

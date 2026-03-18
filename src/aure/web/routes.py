@@ -391,7 +391,7 @@ def api_export_script():
     script = export_model_script(
         model,
         fitted_params=fitted_params,
-        uncertainties=uncertainties,
+        fitted_uncertainties=uncertainties,
         include_ranges=include_ranges,
     )
     return jsonify({"script": script})

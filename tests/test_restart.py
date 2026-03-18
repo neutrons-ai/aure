@@ -201,7 +201,7 @@ class TestRestartAnalysisAPI:
     def test_restart_invalid_restart_from(self, client):
         resp = client.post(
             "/api/restart-analysis",
-            json={"insight": "hint", "restart_from": "fitting"},
+            json={"insight": "hint", "restart_from": "invalid_node"},
         )
         assert resp.status_code == 400
 
