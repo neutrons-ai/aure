@@ -168,6 +168,9 @@ FIT_EVALUATION_PROMPT = """You are evaluating the results of a neutron reflectiv
 ## Parameters at Range Boundaries
 {boundary_hits}
 
+## Model Complexity
+{complexity_assessment}
+
 ## Task
 Analyze the fit quality and determine:
 1. Is this fit acceptable for the user's goals?
@@ -221,6 +224,9 @@ IMPORTANT CONSTRAINTS:
 - Do NOT suggest splitting a single layer into sublayers (e.g., splitting 'copper oxide' into CuO + Cu₂O, or
   splitting SEI into sub-layers) unless χ² > 10 and there is clear evidence in the residuals of unmodeled
   contrast steps.  Keeping the model simple with fewer layers improves parameter stability.
+- Adding layers increases model complexity (each layer adds 3 free parameters). A new layer
+  must produce a significant χ² improvement (not just marginal) to justify the extra parameters.
+  Prefer adjusting existing parameter bounds or SLD values before suggesting structural changes.
 - Unless specifically requested by the user, never allow the substrate SLD to vary.
 
 {user_criteria}
@@ -281,6 +287,40 @@ def _format_boundary_hits(boundary_hits: list | None) -> str:
     return "\n".join(lines)
 
 
+def _format_complexity_assessment(
+    bic: float | None = None,
+    best_bic: float | None = None,
+    n_params: int = 0,
+    n_layers: int = 0,
+) -> str:
+    """Format model complexity info (BIC) for LLM prompts."""
+    if bic is None:
+        return "  (not computed)"
+
+    lines = [
+        f"  - Layers: {n_layers}",
+        f"  - Free parameters: {n_params}",
+        f"  - BIC (Bayesian Information Criterion): {bic:.1f}",
+    ]
+    if best_bic is not None:
+        lines.append(f"  - Best BIC so far: {best_bic:.1f}")
+        if bic > best_bic:
+            lines.append(
+                "  - **Current model is MORE complex than justified.** "
+                "The simpler model with fewer layers had a better "
+                "complexity-adjusted score. Prefer parameter adjustments "
+                "over adding layers."
+            )
+    lines.append("")
+    lines.append(
+        "  BIC penalizes unnecessary model parameters. A lower BIC is better. "
+        "Adding a layer (3 extra parameters) must produce a substantial χ² "
+        "improvement to lower BIC. Do NOT suggest adding layers unless the "
+        "BIC would clearly improve."
+    )
+    return "\n".join(lines)
+
+
 def format_fit_evaluation_prompt(
     sample_description: str,
     hypothesis: str | None,
@@ -293,6 +333,10 @@ def format_fit_evaluation_prompt(
     user_criteria: str = "",
     residual_analysis: Dict[str, Any] | None = None,
     boundary_hits: list | None = None,
+    bic: float | None = None,
+    best_bic: float | None = None,
+    n_params: int = 0,
+    n_layers: int = 0,
 ) -> str:
     """
     Format the fit evaluation prompt.
@@ -353,6 +397,12 @@ def format_fit_evaluation_prompt(
         user_criteria=user_criteria,
         residual_analysis=_format_residual_analysis(residual_analysis),
         boundary_hits=_format_boundary_hits(boundary_hits),
+        complexity_assessment=_format_complexity_assessment(
+            bic=bic,
+            best_bic=best_bic,
+            n_params=n_params,
+            n_layers=n_layers,
+        ),
     )
 
 
@@ -636,6 +686,11 @@ Rules:
     NEVER add a layer with thickness < 5 Å.
 11. Unless requested by user, keep substrate SLD fixed (do not change its value).
 12. Do NOT split existing layers into sublayers unless χ² > 10 with clear evidence.
+13. Adding layers increases model complexity. Each additional layer adds 3 free
+    parameters. Only add a layer if residual fringe analysis strongly suggests
+    unmodeled structure. Prefer adjusting existing parameter bounds, SLD values,
+    or roughness first. If a previous attempt to add a layer was reverted due to
+    BIC regression, do NOT re-add the same layer — try a different approach.
 
 {user_constraints}
 

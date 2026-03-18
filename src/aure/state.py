@@ -196,6 +196,8 @@ class ReflectivityState(TypedDict):
     current_chi2: Optional[float]
     best_chi2: Optional[float]
     best_model: Optional[dict]  # ModelDefinition that produced the best χ²
+    best_bic: Optional[float]  # Lowest BIC (complexity-penalized score)
+    best_bic_model: Optional[dict]  # ModelDefinition that produced the best BIC
 
     # ========== Conversation ==========
     messages: Annotated[List[Message], operator.add]
@@ -257,6 +259,8 @@ def create_initial_state(
         current_chi2=None,
         best_chi2=None,
         best_model=None,
+        best_bic=None,
+        best_bic_model=None,
         # Conversation
         messages=[],
         # LLM call tracking

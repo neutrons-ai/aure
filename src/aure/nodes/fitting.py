@@ -18,6 +18,7 @@ import numpy as np
 
 from ..state import ReflectivityState, FitResult, Message
 from .model_builder import build_problem, is_legacy_script
+from .evaluation import _count_free_params, _compute_bic
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +96,19 @@ def fitting_node(state: ReflectivityState) -> Dict[str, Any]:
             updates["best_chi2"] = result["chi_squared"]
             updates["best_model"] = model
             logger.info(f"[FITTING] New best χ² = {result['chi_squared']:.3f}")
+
+        # Update best BIC (complexity-penalized score)
+        if isinstance(model, dict):
+            n_data = len(state.get("Q", []))
+            n_params = _count_free_params(model)
+            bic = _compute_bic(result["chi_squared"], n_data, n_params)
+            result["bic"] = bic
+            logger.info(f"[FITTING] BIC = {bic:.1f} (k={n_params}, n={n_data})")
+            best_bic = state.get("best_bic")
+            if best_bic is None or bic < best_bic:
+                updates["best_bic"] = bic
+                updates["best_bic_model"] = model
+                logger.info(f"[FITTING] New best BIC = {bic:.1f}")
 
         # Format message
         updates["messages"] = [

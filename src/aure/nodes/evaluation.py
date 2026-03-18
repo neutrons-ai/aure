@@ -34,6 +34,40 @@ def _get_chi2_max() -> float:
         return 5.0
 
 
+def _count_free_params(model: dict) -> int:
+    """Count the number of free parameters in a ModelDefinition dict."""
+    n = 0
+    # Each layer: thickness + SLD + roughness = 3
+    n += 3 * len(model.get("layers", []))
+    # Substrate roughness (if roughness_max is set, it's free)
+    substrate = model.get("substrate", {})
+    if substrate.get("roughness_max") is not None:
+        n += 1
+    # Ambient SLD (free if not air and non-zero SLD)
+    ambient = model.get("ambient", {})
+    if ambient.get("name", "").lower() != "air" and ambient.get("sld", 0) != 0:
+        n += 1
+    # Intensity (free unless fixed)
+    intensity = model.get("intensity", {})
+    if not intensity.get("fixed", False):
+        n += 1
+    return n
+
+
+def _compute_bic(chi2: float, n_data: int, n_params: int) -> float:
+    """Compute the Bayesian Information Criterion for a reflectivity fit.
+
+    BIC = n·ln(χ²) + k·ln(n)
+
+    Lower BIC indicates a better balance of fit quality and model simplicity.
+    """
+    import math
+
+    if chi2 <= 0 or n_data <= 0:
+        return float("inf")
+    return n_data * math.log(chi2) + n_params * math.log(n_data)
+
+
 def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
     """
     Evaluate fit quality and suggest improvements using LLM.
@@ -63,6 +97,23 @@ def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
     latest_fit = fit_results[-1]
     chi2 = latest_fit.get("chi_squared", float("inf"))
     logger.info(f"[EVALUATION] Current χ² = {chi2:.3f}")
+
+    # ========== BIC (Complexity Penalty) ==========
+    current_model = state.get("current_model")
+    n_data = len(state.get("Q", []))
+    if isinstance(current_model, dict) and n_data > 0:
+        n_params = _count_free_params(current_model)
+        n_layers = len(current_model.get("layers", []))
+        bic = _compute_bic(chi2, n_data, n_params)
+        latest_fit["bic"] = bic
+        logger.info(
+            f"[EVALUATION] BIC = {bic:.1f} (k={n_params}, "
+            f"layers={n_layers}, n={n_data})"
+        )
+    else:
+        n_params = 0
+        n_layers = 0
+        bic = None
 
     # ========== Boundary-Hit Detection ==========
     # Check if any fitted parameters are pinned at their range boundaries.
@@ -124,6 +175,10 @@ def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
             user_criteria=user_criteria,
             residual_analysis=latest_fit.get("residual_analysis"),
             boundary_hits=boundary_hits,
+            bic=bic,
+            best_bic=state.get("best_bic"),
+            n_params=n_params,
+            n_layers=n_layers,
         )
         used_fallback = analysis.pop("_used_fallback", False)
         updates["llm_calls"].append(
@@ -213,6 +268,32 @@ def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
                 f"and trying a different approach.",
             )
 
+        # ========== BIC Regression Guardrail ==========
+        # If χ² improved (or stayed similar) but BIC worsened, the
+        # added model complexity is not statistically justified.
+        # Revert to the best BIC model (the simpler one).
+        best_bic_val = state.get("best_bic")
+        best_bic_mdl = state.get("best_bic_model")
+        if (
+            bic is not None
+            and best_bic_val is not None
+            and best_bic_mdl
+            and bic > best_bic_val
+            and updates.get("current_model") is None  # not already reverted above
+        ):
+            logger.warning(
+                f"[EVALUATION] BIC regressed ({bic:.1f} > best {best_bic_val:.1f}) "
+                f"\u2014 added complexity not justified, reverting to simpler model"
+            )
+            updates["current_model"] = best_bic_mdl
+            analysis["issues"].insert(
+                0,
+                f"Added layer(s) lowered χ² but increased BIC "
+                f"({bic:.1f} vs best {best_bic_val:.1f}). The extra "
+                f"complexity is not statistically justified. Reverting to "
+                f"the simpler model and trying a different approach.",
+            )
+
         logger.info("[EVALUATION] ✗ Fit not acceptable - proceeding to refinement")
         updates["messages"] = [
             Message(
@@ -234,6 +315,10 @@ def analyze_fit_quality_with_llm(
     user_criteria: str = "",
     residual_analysis: Optional[Dict] = None,
     boundary_hits: Optional[list] = None,
+    bic: float | None = None,
+    best_bic: float | None = None,
+    n_params: int = 0,
+    n_layers: int = 0,
 ) -> Dict[str, Any]:
     """
     Use LLM to analyze fit quality in context.
@@ -255,6 +340,10 @@ def analyze_fit_quality_with_llm(
         user_criteria=user_criteria,
         boundary_hits=boundary_hits,
         residual_analysis=residual_analysis,
+        bic=bic,
+        best_bic=best_bic,
+        n_params=n_params,
+        n_layers=n_layers,
     )
 
     response = llm.invoke([HumanMessage(content=prompt)])
