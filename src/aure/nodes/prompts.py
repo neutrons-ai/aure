@@ -44,7 +44,9 @@ Extract the following information in JSON format:
     ],
     "ambient": {{
         "name": "material name (air, D2O, H2O, THF, dTHF, etc.)",
-        "sld": <SLD value>
+        "sld": <SLD value>,
+        "sld_min": <minimum SLD if user specifies a range, otherwise omit>,
+        "sld_max": <maximum SLD if user specifies a range, otherwise omit>
     }},
     "constraints": ["list of any constraints mentioned"],
     "hypothesis": "the hypothesis to test, if any",
@@ -163,6 +165,9 @@ FIT_EVALUATION_PROMPT = """You are evaluating the results of a neutron reflectiv
 ## Residual Fringe Analysis
 {residual_analysis}
 
+## Parameters at Range Boundaries
+{boundary_hits}
+
 ## Task
 Analyze the fit quality and determine:
 1. Is this fit acceptable for the user's goals?
@@ -254,6 +259,28 @@ def _format_residual_analysis(residual_analysis: Dict[str, Any] | None) -> str:
     return "\n".join(lines)
 
 
+def _format_boundary_hits(boundary_hits: list | None) -> str:
+    """Format boundary-hit info for LLM prompts."""
+    if not boundary_hits:
+        return "  (no parameters at range boundaries)"
+
+    lines = []
+    for bh in boundary_hits:
+        lines.append(
+            f"  - **{bh['name']}**: value {bh['value']:.4f} hit "
+            f"{bh['bound_hit']} bound ({bh['bound_value']:.4f}). "
+            f"Range has been auto-expanded for the next fit."
+        )
+    lines.append("")
+    lines.append(
+        "  Parameters hitting their range boundaries may indicate the model "
+        "needs wider bounds or a structural change. Consider whether the "
+        "constrained parameter should be allowed a wider range, or whether "
+        "the model structure itself should be revised."
+    )
+    return "\n".join(lines)
+
+
 def format_fit_evaluation_prompt(
     sample_description: str,
     hypothesis: str | None,
@@ -265,6 +292,7 @@ def format_fit_evaluation_prompt(
     chi2_max: float = 5.0,
     user_criteria: str = "",
     residual_analysis: Dict[str, Any] | None = None,
+    boundary_hits: list | None = None,
 ) -> str:
     """
     Format the fit evaluation prompt.
@@ -324,6 +352,7 @@ def format_fit_evaluation_prompt(
         chi2_max=chi2_max,
         user_criteria=user_criteria,
         residual_analysis=_format_residual_analysis(residual_analysis),
+        boundary_hits=_format_boundary_hits(boundary_hits),
     )
 
 
@@ -571,7 +600,9 @@ You must output a COMPLETE, valid JSON object matching this schema:
   ],
   "ambient": {{
     "name": "material name",
-    "sld": <SLD value>
+    "sld": <SLD value>,
+    "sld_min": <minimum SLD if constrained, otherwise omit>,
+    "sld_max": <maximum SLD if constrained, otherwise omit>
   }},
   "constraints": ["list of constraints"],
   "back_reflection": <true/false>,
@@ -685,8 +716,11 @@ def format_model_refinement_prompt_json(
     features_str = "\n".join(feature_lines) if feature_lines else "  (no features)"
 
     # Serialize current model (strip fitted params for cleaner prompt)
-    model_for_prompt = {k: v for k, v in current_model.items()
-                        if k not in ("fitted_parameters", "fitted_uncertainties")}
+    model_for_prompt = {
+        k: v
+        for k, v in current_model.items()
+        if k not in ("fitted_parameters", "fitted_uncertainties")
+    }
     current_model_json = json.dumps(model_for_prompt, indent=2)
 
     data_file = current_model.get("data_file", "")

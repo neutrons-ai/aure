@@ -68,9 +68,7 @@ def build_experiment(definition: dict):
         stack_parts = [ambient(0, roughness_first)]
         for i in reversed(range(len(layers_info))):
             layer = layers_info[i]
-            stack_parts.append(
-                materials[i](layer["thickness"], layer["roughness"])
-            )
+            stack_parts.append(materials[i](layer["thickness"], layer["roughness"]))
         stack_parts.append(substrate)
     else:
         # Normal geometry: beam enters from ambient side:
@@ -86,10 +84,13 @@ def build_experiment(definition: dict):
 
     # --- Parameter ranges ---
     # Ambient SLD (if not air / zero)
-    if ambient_info.get("name", "").lower() != "air" and ambient_info.get("sld", 0) != 0:
+    if (
+        ambient_info.get("name", "").lower() != "air"
+        and ambient_info.get("sld", 0) != 0
+    ):
         amb_sld = ambient_info["sld"]
-        amb_min = max(amb_sld * 0.8, -1.0)
-        amb_max = amb_sld * 1.2
+        amb_min = ambient_info.get("sld_min", max(amb_sld * 0.8, -1.0))
+        amb_max = ambient_info.get("sld_max", amb_sld * 1.2)
         amb_idx = 0 if back_reflection else len(layers_info) + 1
         sample[amb_idx].material.rho.range(amb_min, amb_max)
 
@@ -110,8 +111,9 @@ def build_experiment(definition: dict):
         sample[idx].material.rho.range(sld_min, sld_max)
 
         # Roughness
+        r_min = layer.get("roughness_min", 5.0)
         r_max = layer.get("roughness_max", 30.0)
-        sample[idx].interface.range(0, r_max)
+        sample[idx].interface.range(r_min, r_max)
 
     # First-element interface roughness
     if back_reflection:
@@ -313,12 +315,14 @@ def export_model_script(
 
     # Header
     if chi_squared is not None:
-        lines.extend([
-            "# " + "=" * 68,
-            f"# Best-fit result (chi2 = {chi_squared:.4f}, method = {method or 'unknown'})",
-            "#",
-            "# Parameter values below are the optimised values from the fit.",
-        ])
+        lines.extend(
+            [
+                "# " + "=" * 68,
+                f"# Best-fit result (chi2 = {chi_squared:.4f}, method = {method or 'unknown'})",
+                "#",
+                "# Parameter values below are the optimised values from the fit.",
+            ]
+        )
         if not include_ranges:
             lines.append(
                 "# .range() constraints have been removed; each line shows the"
@@ -332,21 +336,23 @@ def export_model_script(
         lines.append("# " + "=" * 68)
         lines.append("")
 
-    lines.extend([
-        '"""',
-        "Auto-generated refl1d model.",
-        '"""',
-        "",
-        "import warnings",
-        "from refl1d.names import *",
-        "",
-        'warnings.filterwarnings("ignore", category=UserWarning, module="refl1d")',
-        "",
-        "# ========== Load Data ==========",
-        f'probe = load4("{abs_data_file}")',
-        "",
-        "# ========== Materials ==========",
-    ])
+    lines.extend(
+        [
+            '"""',
+            "Auto-generated refl1d model.",
+            '"""',
+            "",
+            "import warnings",
+            "from refl1d.names import *",
+            "",
+            'warnings.filterwarnings("ignore", category=UserWarning, module="refl1d")',
+            "",
+            "# ========== Load Data ==========",
+            f'probe = load4("{abs_data_file}")',
+            "",
+            "# ========== Materials ==========",
+        ]
+    )
 
     # Substrate SLD (use fitted value if available)
     sub_sld = params.get(f"{substrate['name']} rho", substrate["sld"])
@@ -371,7 +377,11 @@ def export_model_script(
             "# Stack ordered in beam direction: ambient -> layers -> substrate"
         )
         roughness_first = layers[-1]["roughness"] if layers else 3.0
-        r_first = params.get(f"{layers[-1]['name']} interface", roughness_first) if layers else 3.0
+        r_first = (
+            params.get(f"{layers[-1]['name']} interface", roughness_first)
+            if layers
+            else 3.0
+        )
         stack_parts = [f"ambient(0, {r_first:.1f})"]
         for i in reversed(range(len(layers))):
             layer = layers[i]
@@ -432,19 +442,23 @@ def export_model_script(
     if not intensity.get("fixed", False):
         int_min = intensity.get("min", 0.7)
         int_max = intensity.get("max", 1.1)
-        lines.extend([
-            "",
-            "# ========== Probe Intensity ===========",
-            "# Allow intensity to vary to account for normalization uncertainty",
-            _range_line("probe.intensity", int_min, int_max),
-        ])
+        lines.extend(
+            [
+                "",
+                "# ========== Probe Intensity ===========",
+                "# Allow intensity to vary to account for normalization uncertainty",
+                _range_line("probe.intensity", int_min, int_max),
+            ]
+        )
 
-    lines.extend([
-        "",
-        "# ========== Experiment ==========",
-        "experiment = Experiment(probe=probe, sample=sample)",
-        "problem = FitProblem(experiment)",
-    ])
+    lines.extend(
+        [
+            "",
+            "# ========== Experiment ==========",
+            "experiment = Experiment(probe=probe, sample=sample)",
+            "problem = FitProblem(experiment)",
+        ]
+    )
 
     return "\n".join(lines)
 

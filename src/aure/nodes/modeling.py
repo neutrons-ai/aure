@@ -24,7 +24,6 @@ from ..database import get_sld
 from ..llm import llm_available, get_llm
 from ..config import format_user_constraints
 from .prompts import format_model_refinement_prompt
-from .model_builder import definition_from_parsed_sample, export_model_script
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +93,6 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
 
     try:
         from .prompts import format_model_refinement_prompt_json
-        import json as _json
         import copy
 
         user_constraints = format_user_constraints(state.get("user_config"))
@@ -471,6 +469,7 @@ def _build_layers(parsed: dict, features: dict) -> List[dict]:
                     "thickness_min": thickness_min,
                     "thickness_max": thickness_max,
                     "roughness": roughness,
+                    "roughness_min": 5.0,
                     "roughness_max": roughness_max,
                 }
             )
@@ -492,6 +491,7 @@ def _build_layers(parsed: dict, features: dict) -> List[dict]:
                     "thickness_min": avg_thickness * 0.5,
                     "thickness_max": avg_thickness * 2.0,
                     "roughness": features.get("estimated_roughness", 5.0),
+                    "roughness_min": 5.0,
                     "roughness_max": 30.0,
                 }
             )
@@ -505,12 +505,22 @@ def _build_layers(parsed: dict, features: dict) -> List[dict]:
                     layer["roughness"], features["estimated_roughness"]
                 )
 
-        # Use fringe-spacing thickness if available and single-layer
+        # Widen thickness range to include feature-based estimate
         est_thick = features.get("estimated_total_thickness")
         if est_thick and len(layers) == 1:
-            layers[0]["thickness"] = est_thick
-            layers[0]["thickness_min"] = est_thick * 0.5
-            layers[0]["thickness_max"] = est_thick * 2.0
+            user_thick = layers[0]["thickness"]
+            # Keep user-described value as starting point; widen range
+            # to include both the user value and the feature estimate.
+            layers[0]["thickness_min"] = min(
+                layers[0]["thickness_min"],
+                user_thick * 0.5,
+                est_thick * 0.5,
+            )
+            layers[0]["thickness_max"] = max(
+                layers[0]["thickness_max"],
+                user_thick * 2.0,
+                est_thick * 2.0,
+            )
 
     return layers
 
@@ -625,9 +635,9 @@ def build_refl1d_script(
     # Ambient SLD - allow to vary if not air
     if ambient.get("name", "").lower() != "air" and ambient.get("sld", 0) != 0:
         ambient_sld = ambient["sld"]
-        # Allow ±20% variation around the expected SLD
-        ambient_min = max(ambient_sld * 0.8, -1.0)
-        ambient_max = ambient_sld * 1.2
+        # Use explicit bounds if provided, otherwise ±20% variation
+        ambient_min = ambient.get("sld_min", max(ambient_sld * 0.8, -1.0))
+        ambient_max = ambient.get("sld_max", ambient_sld * 1.2)
         # Back reflection: ambient is first (index 0)
         # Normal geometry: ambient is last (index len(layers) + 1)
         ambient_idx = 0 if back_reflection else len(layers) + 1
@@ -908,6 +918,7 @@ def _parse_model_json(raw: str) -> dict | None:
     def _fix_json(t: str) -> str:
         """Remove trailing commas and single-line comments."""
         import re as _re
+
         t = _re.sub(r"//[^\n]*", "", t)
         t = _re.sub(r",\s*([}\]])", r"\1", t)
         return t
@@ -985,9 +996,7 @@ def _apply_fitted_values_to_definition(model: dict, fitted: dict) -> None:
             layer["roughness"] = fitted[f"{name} interface"]
 
 
-def _summarize_definition_changes(
-    old_model: dict, new_model: dict
-) -> list[str]:
+def _summarize_definition_changes(old_model: dict, new_model: dict) -> list[str]:
     """Summarize differences between two ModelDefinition dicts."""
     changes = []
 
@@ -1014,9 +1023,7 @@ def _summarize_definition_changes(
                     ov = ol.get(attr)
                     nv = nl.get(attr)
                     if ov is not None and nv is not None and abs(nv - ov) > 0.1:
-                        changes.append(
-                            f"{nl['name']} {attr}: {ov:.1f} → {nv:.1f}"
-                        )
+                        changes.append(f"{nl['name']} {attr}: {ov:.1f} → {nv:.1f}")
                         break  # One note per layer is enough
                 break
 

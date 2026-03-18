@@ -119,8 +119,14 @@ def test_intake_and_analysis():
     if model:
         print("\n  Generated Model (first 500 chars):")
         print("  " + "-" * 40)
-        for line in model.split("\n")[:15]:
-            print(f"    {line}")
+        if isinstance(model, str):
+            for line in model.split("\n")[:15]:
+                print(f"    {line}")
+        else:
+            import json
+
+            for line in json.dumps(model, indent=2).split("\n")[:15]:
+                print(f"    {line}")
         print("  " + "-" * 40)
 
     # Cleanup
@@ -260,7 +266,13 @@ def test_workflow_without_fitting():
     assert final_state.get("fit_result") is None, "Should not have fit result"
 
     print("  ✓ Model generated without fitting")
-    print(f"  Model preview: {final_state['current_model'][:200]}...")
+    model = final_state["current_model"]
+    if isinstance(model, str):
+        print(f"  Model preview: {model[:200]}...")
+    else:
+        import json
+
+        print(f"  Model preview: {json.dumps(model)[:200]}...")
 
     # Cleanup
     import os

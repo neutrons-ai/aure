@@ -64,6 +64,24 @@ def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
     chi2 = latest_fit.get("chi_squared", float("inf"))
     logger.info(f"[EVALUATION] Current χ² = {chi2:.3f}")
 
+    # ========== Boundary-Hit Detection ==========
+    # Check if any fitted parameters are pinned at their range boundaries.
+    # If so, auto-expand those bounds and flag the issue.
+    boundary_hits = _check_boundary_hits(latest_fit)
+    if boundary_hits:
+        model = state.get("current_model")
+        if isinstance(model, dict):
+            model = _expand_model_bounds(model, boundary_hits)
+            updates["current_model"] = model
+        for bh in boundary_hits:
+            logger.warning(
+                "[EVALUATION] Parameter '%s' hit %s bound (value=%.4f, bound=%.4f)",
+                bh["name"],
+                bh["bound_hit"],
+                bh["value"],
+                bh["bound_value"],
+            )
+
     # ========== Residual Fringe Analysis ==========
     # When the fit is not great, look for unmodeled oscillations in the
     # residual that reveal missing layer thicknesses.
@@ -75,7 +93,8 @@ def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
             from ..tools.feature_tools import analyze_residual_fringes
 
             residual_analysis = analyze_residual_fringes(
-                np.array(Q), np.array(residual_ratio),
+                np.array(Q),
+                np.array(residual_ratio),
             )
             latest_fit["residual_analysis"] = residual_analysis
             if residual_analysis.get("has_residual_fringes"):
@@ -104,6 +123,7 @@ def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
             chi2_max=chi2_max,
             user_criteria=user_criteria,
             residual_analysis=latest_fit.get("residual_analysis"),
+            boundary_hits=boundary_hits,
         )
         used_fallback = analysis.pop("_used_fallback", False)
         updates["llm_calls"].append(
@@ -145,6 +165,15 @@ def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
         return updates
 
     # Update fit result with issues and suggestions
+    # Inject boundary-hit issues into the analysis
+    if boundary_hits:
+        for bh in boundary_hits:
+            analysis["issues"].append(
+                f"Parameter '{bh['name']}' is at its {bh['bound_hit']} bound "
+                f"({bh['value']:.4f} ≈ {bh['bound_value']:.4f}). "
+                f"Range has been auto-expanded."
+            )
+
     latest_fit["issues"] = analysis["issues"]
     latest_fit["suggestions"] = analysis["suggestions"]
 
@@ -204,6 +233,7 @@ def analyze_fit_quality_with_llm(
     chi2_max: float = 5.0,
     user_criteria: str = "",
     residual_analysis: Optional[Dict] = None,
+    boundary_hits: Optional[list] = None,
 ) -> Dict[str, Any]:
     """
     Use LLM to analyze fit quality in context.
@@ -223,6 +253,7 @@ def analyze_fit_quality_with_llm(
         features=features or {},
         chi2_max=chi2_max,
         user_criteria=user_criteria,
+        boundary_hits=boundary_hits,
         residual_analysis=residual_analysis,
     )
 
@@ -356,3 +387,101 @@ def _format_evaluation(fit_result: FitResult, analysis: Dict) -> str:
         lines.append("*Attempting automatic refinement...*")
 
     return "\n".join(lines)
+
+
+def _check_boundary_hits(
+    fit_result: FitResult,
+    tolerance: float = 0.01,
+) -> list:
+    """Check if any fitted parameters are at or near their range boundaries.
+
+    A parameter is considered "at boundary" when its value is within
+    *tolerance* (relative) of a bound edge.
+
+    Returns a list of dicts: ``{name, value, bound_hit, bound_value}``.
+    """
+    params = fit_result.get("parameters") or {}
+    bounds = fit_result.get("bounds") or {}
+    hits = []
+    for name, value in params.items():
+        b = bounds.get(name)
+        if not b or len(b) != 2:
+            continue
+        lo, hi = b
+        span = hi - lo
+        if span <= 0:
+            continue
+        if abs(value - lo) <= tolerance * span:
+            hits.append(
+                {"name": name, "value": value, "bound_hit": "lower", "bound_value": lo}
+            )
+        elif abs(value - hi) <= tolerance * span:
+            hits.append(
+                {"name": name, "value": value, "bound_hit": "upper", "bound_value": hi}
+            )
+    return hits
+
+
+def _expand_model_bounds(model: dict, boundary_hits: list) -> dict:
+    """Expand bounds in a ModelDefinition dict for parameters that hit a boundary.
+
+    For each hit, the constrained side of the range is expanded by 50%.
+    """
+    import copy
+
+    model = copy.deepcopy(model)
+
+    # Build a lookup: param_name -> (layer_dict, key_lo, key_hi)
+    _RANGE_KEYS = {
+        "thickness": ("thickness_min", "thickness_max"),
+        "rho": ("sld_min", "sld_max"),
+        "irho": ("sld_min", "sld_max"),
+        "interface": ("roughness_min", "roughness_max"),
+    }
+
+    for bh in boundary_hits:
+        name = bh["name"]
+        side = bh["bound_hit"]
+
+        # Match parameter name to a model layer field.
+        # refl1d names look like "copper thickness", "silicon interface", etc.
+        matched = False
+        for layer in model.get("layers", []):
+            layer_name = layer.get("name", "").lower()
+            for field, (lo_key, hi_key) in _RANGE_KEYS.items():
+                if layer_name in name.lower() and field in name.lower():
+                    if side == "lower" and lo_key and lo_key in layer:
+                        lo_val = layer[lo_key]
+                        hi_val = layer.get(hi_key, lo_val)
+                        spread = hi_val - lo_val
+                        layer[lo_key] = lo_val - spread * 0.5
+                    elif side == "upper" and hi_key and hi_key in layer:
+                        lo_val = layer.get(lo_key, 0)
+                        hi_val = layer[hi_key]
+                        spread = hi_val - lo_val
+                        layer[hi_key] = hi_val + spread * 0.5
+                    matched = True
+                    break
+            if matched:
+                break
+
+        # Also handle substrate roughness
+        if not matched and "interface" in name.lower():
+            substrate = model.get("substrate", {})
+            sub_name = substrate.get("name", "").lower()
+            if sub_name in name.lower():
+                if side == "upper" and "roughness_max" in substrate:
+                    r_max = substrate["roughness_max"]
+                    substrate["roughness_max"] = r_max * 1.5
+
+        # Handle intensity
+        if not matched and "intensity" in name.lower():
+            intensity = model.get("intensity", {})
+            if side == "lower" and "min" in intensity:
+                spread = intensity.get("max", 1.1) - intensity["min"]
+                intensity["min"] = intensity["min"] - spread * 0.5
+            elif side == "upper" and "max" in intensity:
+                spread = intensity["max"] - intensity.get("min", 0.7)
+                intensity["max"] = intensity["max"] + spread * 0.5
+
+    return model

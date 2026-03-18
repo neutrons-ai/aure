@@ -135,7 +135,8 @@ def _check_consistency(parsed: dict, features: ExtractedFeatures) -> str:
         ):
             issues.append(
                 f"Described total thickness (~{described_total:.0f} Å) differs from "
-                f"estimated (~{estimated_total:.0f} Å). Will use feature-based estimate."
+                f"estimated (~{estimated_total:.0f} Å). Will use your described "
+                f"value as starting point and widen the range to include both."
             )
 
     return " ".join(issues) if issues else ""

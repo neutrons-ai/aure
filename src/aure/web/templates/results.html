@@ -693,6 +693,7 @@ async function refitAnalysis() {
   const payload = {
     restart_from: "fitting",
     insight: "",
+    fit_iteration: _selectedIteration,
     ...getParameterOverrides(),
   };
   const dreamStepsEl = document.getElementById("restart-dream-steps");

@@ -158,7 +158,11 @@ def _apply_overrides_to_model_definition(
         "thickness": "thickness",
         "interface": "roughness",
     }
-    bound_suffixes = {"sld": ("sld_min", "sld_max"), "thickness": ("thickness_min", "thickness_max"), "roughness": ("roughness_min", "roughness_max")}
+    bound_suffixes = {
+        "sld": ("sld_min", "sld_max"),
+        "thickness": ("thickness_min", "thickness_max"),
+        "roughness": ("roughness_min", "roughness_max"),
+    }
 
     for layer in defn.get("layers", []):
         mat_name = layer.get("name", "")
@@ -789,6 +793,7 @@ def api_restart_analysis():
     dream_steps = body.get("dream_steps")  # int or None
     checkpoint_step = body.get("checkpoint_step")  # int or None (1-based step)
     checkpoint_iteration = body.get("checkpoint_iteration")  # int or None (legacy)
+    fit_iteration = body.get("fit_iteration")  # int or None (0-based fit_results index)
     parameter_overrides = body.get("parameter_overrides")  # {name: value} or None
     bounds_overrides = body.get("bounds_overrides")  # {name: [lo, hi]} or None
 
@@ -873,6 +878,28 @@ def api_restart_analysis():
                         "error": f"Checkpoint for iteration {checkpoint_iteration} not found"
                     }
                 ), 404
+
+    # ---- Optionally restore model from a specific fit iteration ----
+    if (
+        fit_iteration is not None
+        and checkpoint_step is None
+        and checkpoint_iteration is None
+    ):
+        fit_results = final_state.get("fit_results") or []
+        fit_idx = int(fit_iteration)
+        if 0 <= fit_idx < len(fit_results):
+            iter_num = fit_results[fit_idx].get("iteration", fit_idx)
+            model_history = final_state.get("model_history") or []
+            for entry in model_history:
+                if entry.get("iteration") == iter_num:
+                    defn = entry.get("definition")
+                    if defn and isinstance(defn, dict):
+                        final_state["current_model"] = defn
+                        break
+                    script = entry.get("script")
+                    if script:
+                        final_state["current_model"] = script
+                        break
 
     # Override iteration to continue from max seen across all checkpoints
     final_state["iteration"] = max_iteration
