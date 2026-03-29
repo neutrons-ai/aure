@@ -44,3 +44,11 @@ code {
 #browser-list .list-group-item:hover {
   background-color: #f0f4ff;
 }
+
+#setup-plotted-files .list-group-item {
+  padding: 0.45rem 0.7rem;
+}
+
+#setup-plotted-files .fit-file {
+  font-weight: 700;
+}

@@ -17,6 +17,7 @@ from flask import (
 )
 
 from .data import RunData
+from ..tools.data_tools import load_reflectivity_data
 
 bp = Blueprint(
     "web",
@@ -262,6 +263,32 @@ def api_reflectivity():
     return jsonify(rd.get_reflectivity_data())
 
 
+@bp.route("/api/reflectivity-file")
+def api_reflectivity_file():
+    """Load Q/R/dR arrays for an arbitrary reflectivity data file."""
+    raw_path = (request.args.get("path") or "").strip()
+    if not raw_path:
+        return jsonify({"error": "path is required"}), 400
+
+    path = _safe_path(raw_path)
+    if path is None or not path.is_file():
+        return jsonify({"error": "File does not exist"}), 400
+
+    try:
+        data = load_reflectivity_data(str(path))
+    except Exception as exc:
+        return jsonify({"error": f"Could not parse reflectivity file: {exc}"}), 400
+
+    return jsonify(
+        {
+            "path": str(path),
+            "Q": data["Q"].tolist() if "Q" in data else [],
+            "R": data["R"].tolist() if "R" in data else [],
+            "dR": data["dR"].tolist() if "dR" in data else [],
+        }
+    )
+
+
 @bp.route("/api/sld")
 def api_sld():
     rd = _run_data()
@@ -437,10 +464,11 @@ def api_browse_files():
 
     Query params:
         path  – directory to list (default: home dir)
-        ext   – optional extension filter, e.g. ".txt"
+        ext   – optional extension filter, e.g. ".txt" or ".txt,.refl"
     """
     raw = request.args.get("path", str(Path.home()))
     ext = request.args.get("ext", "")
+    exts = {s.lower().strip() for s in ext.split(",") if s and s.strip()}
     target = _safe_path(raw)
     if target is None:
         return jsonify({"error": "Path does not exist"}), 400
@@ -456,7 +484,7 @@ def api_browse_files():
                 continue
             if child.is_dir():
                 entries.append({"name": child.name, "is_dir": True, "path": str(child)})
-            elif not ext or child.suffix.lower() == ext.lower():
+            elif not exts or child.suffix.lower() in exts:
                 entries.append(
                     {"name": child.name, "is_dir": False, "path": str(child)}
                 )

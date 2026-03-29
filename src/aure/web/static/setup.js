@@ -21,6 +21,32 @@ const COLORS = [
 let _liveResultsFetched = false;  // avoid re-fetching while still waiting
 
 const STORAGE_KEY = "aure_setup";
+const LAST_DATA_DIR_KEY = "aure_last_data_dir";
+const REFLECTIVITY_EXTS = ".txt,.refl,.ort,.dat,.csv,.tsv";
+
+let plottedFiles = []; // [{ path, Q, R, dR, visible, isFit }]
+
+function _parentDir(path) {
+  if (!path) return "";
+  const idx = path.lastIndexOf("/");
+  return idx > 0 ? path.slice(0, idx) : "";
+}
+
+function _saveLastDataDirFromFile(filePath) {
+  const dir = _parentDir(filePath);
+  if (!dir) return;
+  try { localStorage.setItem(LAST_DATA_DIR_KEY, dir); } catch (_) {}
+}
+
+function _getLastDataDir() {
+  try {
+    const saved = localStorage.getItem(LAST_DATA_DIR_KEY);
+    if (saved) return saved;
+  } catch (_) {}
+
+  const currentDataFile = (document.getElementById("data-file") || {}).value || "";
+  return _parentDir(currentDataFile.trim());
+}
 
 /* ---- persist / restore form values --------------------------- */
 
@@ -50,7 +76,16 @@ function _restoreFormValues() {
   } catch (_) {}
 }
 
-document.addEventListener("DOMContentLoaded", _restoreFormValues);
+document.addEventListener("DOMContentLoaded", function () {
+  _restoreFormValues();
+  const restoredDataFile = document.getElementById("data-file").value.trim();
+  if (restoredDataFile) {
+    _setFittingDataFile(restoredDataFile);
+  } else {
+    _renderPlottedFilesList();
+    _renderSetupReflectivityPlot();
+  }
+});
 
 /* ---- LLM badge helper ---------------------------------------- */
 
@@ -69,15 +104,22 @@ function _llmBadges(calls) {
 
 function openBrowser(mode) {
   browserMode = mode;
-  document.getElementById("browser-title").textContent =
-    mode === "file" ? "Select Data File" : "Select Output Folder";
+  if (mode === "file") {
+    document.getElementById("browser-title").textContent = "Select Data File";
+  } else if (mode === "compare-file") {
+    document.getElementById("browser-title").textContent = "Add Comparison File";
+  } else {
+    document.getElementById("browser-title").textContent = "Select Output Folder";
+  }
 
   // Show or hide "Select this folder" button
   document.getElementById("btn-select").style.display =
     mode === "dir" ? "inline-block" : "none";
 
-  // Start at a sensible path
-  const startPath = mode === "file" ? "" : "";   // default handled by server
+  // Start at the last data folder for file selection, otherwise server default
+  const startPath = (mode === "file" || mode === "compare-file")
+    ? _getLastDataDir()
+    : "";
   _fetchBrowserListing(startPath);
 
   browserModalInstance =
@@ -87,10 +129,14 @@ function openBrowser(mode) {
 }
 
 function _fetchBrowserListing(path) {
-  const endpoint = browserMode === "file" ? "/api/browse-files" : "/api/browse-dirs";
+  const endpoint = (browserMode === "file" || browserMode === "compare-file")
+    ? "/api/browse-files"
+    : "/api/browse-dirs";
   const params = new URLSearchParams();
   if (path) params.set("path", path);
-  if (browserMode === "file") params.set("ext", ".txt");
+  if (browserMode === "file" || browserMode === "compare-file") {
+    params.set("ext", REFLECTIVITY_EXTS);
+  }
 
   fetch(`${endpoint}?${params}`)
     .then((r) => r.json())
@@ -129,7 +175,12 @@ function _fetchBrowserListing(path) {
             _fetchBrowserListing(entry.path);
           } else {
             // File selected
-            document.getElementById("data-file").value = entry.path;
+            if (browserMode === "compare-file") {
+              _addComparisonFile(entry.path);
+            } else {
+              _setFittingDataFile(entry.path);
+            }
+            _saveLastDataDirFromFile(entry.path);
             browserModalInstance.hide();
           }
         });
@@ -161,6 +212,198 @@ function browserSelect() {
     document.getElementById("output-dir").value = browserCurrentPath;
     browserModalInstance.hide();
   }
+}
+
+function _setFittingDataFile(path) {
+  document.getElementById("data-file").value = path;
+
+  plottedFiles.forEach(function (f) { f.isFit = false; });
+  const existing = plottedFiles.find(function (f) { return f.path === path; });
+  if (existing) {
+    existing.isFit = true;
+    existing.visible = true;
+    _renderPlottedFilesList();
+    _renderSetupReflectivityPlot();
+    return;
+  }
+
+  _loadReflectivityFile(path)
+    .then(function (payload) {
+      plottedFiles.push({
+        path: path,
+        Q: payload.Q || [],
+        R: payload.R || [],
+        dR: payload.dR || [],
+        visible: true,
+        isFit: true,
+      });
+      _renderPlottedFilesList();
+      _renderSetupReflectivityPlot();
+    })
+    .catch(function (err) {
+      alert("Could not load selected reflectivity file:\n" + err.message);
+    });
+}
+
+function _addComparisonFile(path) {
+  const existing = plottedFiles.find(function (f) { return f.path === path; });
+  if (existing) {
+    existing.visible = true;
+    _renderPlottedFilesList();
+    _renderSetupReflectivityPlot();
+    return;
+  }
+
+  _loadReflectivityFile(path)
+    .then(function (payload) {
+      plottedFiles.push({
+        path: path,
+        Q: payload.Q || [],
+        R: payload.R || [],
+        dR: payload.dR || [],
+        visible: true,
+        isFit: false,
+      });
+      _renderPlottedFilesList();
+      _renderSetupReflectivityPlot();
+    })
+    .catch(function (err) {
+      alert("Could not load reflectivity file:\n" + err.message);
+    });
+}
+
+function _loadReflectivityFile(path) {
+  const params = new URLSearchParams({ path: path });
+  return fetch("/api/reflectivity-file?" + params.toString())
+    .then(function (r) {
+      return r.json().then(function (data) {
+        if (!r.ok || data.error) {
+          throw new Error(data.error || "Unknown file loading error");
+        }
+        return data;
+      });
+    });
+}
+
+function _basename(path) {
+  if (!path) return "";
+  const parts = path.split("/");
+  return parts[parts.length - 1] || path;
+}
+
+function _renderPlottedFilesList() {
+  const list = document.getElementById("setup-plotted-files");
+  if (!list) return;
+
+  if (!plottedFiles.length) {
+    list.innerHTML = '<div class="list-group-item text-muted small">No files plotted yet.</div>';
+    return;
+  }
+
+  list.innerHTML = "";
+  plottedFiles.forEach(function (entry, idx) {
+    const row = document.createElement("div");
+    row.className = "list-group-item d-flex justify-content-between align-items-start gap-2";
+
+    const left = document.createElement("div");
+    left.className = "small";
+
+    const title = document.createElement("div");
+    title.textContent = _basename(entry.path);
+    if (entry.isFit) title.classList.add("fit-file");
+    left.appendChild(title);
+
+    const pathLabel = document.createElement("div");
+    pathLabel.className = "text-muted";
+    pathLabel.textContent = entry.path;
+    left.appendChild(pathLabel);
+
+    const right = document.createElement("div");
+    right.className = "d-flex align-items-center gap-1";
+
+    const toggleBtn = document.createElement("button");
+    toggleBtn.type = "button";
+    toggleBtn.className = "btn btn-sm btn-outline-secondary";
+    toggleBtn.textContent = entry.visible ? "Hide" : "Show";
+    toggleBtn.addEventListener("click", function () {
+      plottedFiles[idx].visible = !plottedFiles[idx].visible;
+      _renderPlottedFilesList();
+      _renderSetupReflectivityPlot();
+    });
+    right.appendChild(toggleBtn);
+
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "btn btn-sm btn-outline-danger";
+    removeBtn.innerHTML = '<i class="bi bi-trash"></i>';
+    if (entry.isFit) {
+      removeBtn.disabled = true;
+      removeBtn.title = "Current fitting file";
+    } else {
+      removeBtn.title = "Remove";
+      removeBtn.addEventListener("click", function () {
+        plottedFiles.splice(idx, 1);
+        _renderPlottedFilesList();
+        _renderSetupReflectivityPlot();
+      });
+    }
+    right.appendChild(removeBtn);
+
+    row.appendChild(left);
+    row.appendChild(right);
+    list.appendChild(row);
+  });
+}
+
+function _renderSetupReflectivityPlot() {
+  const el = document.getElementById("setup-rq-chart");
+  if (!el) return;
+
+  const traces = [];
+  plottedFiles.forEach(function (entry, i) {
+    if (!entry.visible) return;
+    const color = COLORS[i % COLORS.length];
+    traces.push({
+      x: entry.Q,
+      y: entry.R,
+      mode: "markers",
+      type: "scatter",
+      marker: {
+        size: entry.isFit ? 5 : 4,
+        color: color,
+        symbol: entry.isFit ? "circle" : "diamond",
+      },
+      name: entry.isFit ? _basename(entry.path) + " (fit file)" : _basename(entry.path),
+    });
+  });
+
+  if (!traces.length) {
+    Plotly.react(el, [], {
+      margin: { l: 50, r: 10, t: 10, b: 40 },
+      xaxis: { title: "Q (Å⁻¹)" },
+      yaxis: { title: "R(Q)" },
+      annotations: [
+        {
+          x: 0.5,
+          y: 0.5,
+          xref: "paper",
+          yref: "paper",
+          showarrow: false,
+          text: "Select a reflectivity file to preview R(Q)",
+          font: { size: 13, color: "#6c757d" },
+        },
+      ],
+    }, { responsive: true, displayModeBar: false });
+    return;
+  }
+
+  Plotly.react(el, traces, {
+    margin: { l: 55, r: 10, t: 10, b: 56 },
+    xaxis: { title: "Q (Å⁻¹)", type: "log", exponentformat: "e" },
+    yaxis: { title: "R(Q)", type: "log", exponentformat: "e" },
+    legend: { orientation: "h", y: -0.3 },
+    hovermode: "closest",
+  }, { responsive: true, displayModeBar: false, scrollZoom: true });
 }
 
 /* ---- analysis launch ----------------------------------------- */
@@ -347,6 +590,9 @@ function resetSetup() {
   document.getElementById("live-param-table").querySelector("tbody").innerHTML = "";
   document.getElementById("live-fit-summary").textContent = "";
   _liveResultsFetched = false;
+
+  _renderPlottedFilesList();
+  _renderSetupReflectivityPlot();
 }
 
 /* ---- chat / feedback helpers --------------------------------- */

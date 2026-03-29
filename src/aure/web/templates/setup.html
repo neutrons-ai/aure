@@ -40,6 +40,23 @@
               </div>
             </div>
 
+            <div class="mb-3">
+              <label class="form-label fw-semibold">Reflectivity Preview (R(Q))</label>
+              <div id="setup-rq-chart" style="height:320px" class="border rounded bg-white"></div>
+              <div class="mt-2">
+                <button class="btn btn-sm btn-outline-secondary" type="button"
+                        onclick="openBrowser('compare-file')">
+                  <i class="bi bi-plus-lg"></i> Add Comparison File
+                </button>
+              </div>
+              <div class="mt-2">
+                <label class="form-label fw-semibold mb-1">Plotted Files</label>
+                <div id="setup-plotted-files" class="list-group list-group-flush border rounded bg-white">
+                  <div class="list-group-item text-muted small">No files plotted yet.</div>
+                </div>
+              </div>
+            </div>
+
             {# Sample description #}
             <div class="mb-3">
               <label for="sample-desc" class="form-label fw-semibold">
