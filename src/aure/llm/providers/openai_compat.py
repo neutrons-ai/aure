@@ -52,7 +52,9 @@ def create_openai(config: dict, temperature: float):
         raise ValueError(
             "LLM_API_KEY or OPENAI_API_KEY must be set for OpenAI provider"
         )
-    return create_openai_compatible(config, temperature, api_key=config["api_key"])
+    return create_openai_compatible(
+        config, temperature, api_key=config["api_key"], base_url=config.get("base_url")
+    )
 
 
 def create_alcf(config: dict, temperature: float):
