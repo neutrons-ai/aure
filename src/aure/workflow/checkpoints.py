@@ -495,6 +495,12 @@ class CheckpointManager:
             f"_Saved at {datetime.now().isoformat()}_",
             "",
         ]
+
+        active_skills = state.get("active_skills")
+        if active_skills:
+            lines.append(f"**Active skills:** {', '.join(active_skills)}")
+            lines.append("")
+
         for msg in messages:
             role = msg.get("role", "unknown")
             content = msg.get("content", "")
