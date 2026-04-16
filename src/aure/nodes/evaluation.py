@@ -21,6 +21,7 @@ from langchain_core.messages import HumanMessage
 from ..state import ReflectivityState, FitResult, Message, LLMCallRecord
 from ..llm import llm_available, get_llm
 from ..config import format_user_criteria
+from ..skills import SkillRegistry, load_skill_context
 from .prompts import format_fit_evaluation_prompt
 
 logger = logging.getLogger(__name__)
@@ -165,6 +166,10 @@ def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
         return updates
 
     user_criteria = format_user_criteria(state.get("user_config"))
+    # Load skill context
+    registry = SkillRegistry()
+    active_skills = state.get("active_skills", [])
+    skill_context = load_skill_context(active_skills, registry)
     try:
         analysis = analyze_fit_quality_with_llm(
             fit_result=latest_fit,
@@ -179,6 +184,7 @@ def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
             best_bic=state.get("best_bic"),
             n_params=n_params,
             n_layers=n_layers,
+            skill_context=skill_context,
         )
         used_fallback = analysis.pop("_used_fallback", False)
         updates["llm_calls"].append(
@@ -319,6 +325,7 @@ def analyze_fit_quality_with_llm(
     best_bic: float | None = None,
     n_params: int = 0,
     n_layers: int = 0,
+    skill_context: str = "",
 ) -> Dict[str, Any]:
     """
     Use LLM to analyze fit quality in context.
@@ -344,6 +351,7 @@ def analyze_fit_quality_with_llm(
         best_bic=best_bic,
         n_params=n_params,
         n_layers=n_layers,
+        skill_context=skill_context,
     )
 
     response = llm.invoke([HumanMessage(content=prompt)])

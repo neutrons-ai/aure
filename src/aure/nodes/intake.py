@@ -15,11 +15,14 @@ from typing import Dict, Any
 from ..state import ReflectivityState, Message, LLMCallRecord
 from ..tools.data_tools import load_reflectivity_data, validate_reflectivity_data
 from ..llm import llm_available, get_llm, invoke_with_timeout
+from ..skills import SkillRegistry, select_skills, load_skill_context
 from .prompts import format_sample_parse_prompt
 
 
 def parse_sample_with_llm(
-    description: str, hypothesis: str | None = None
+    description: str,
+    hypothesis: str | None = None,
+    skill_context: str = "",
 ) -> Dict[str, Any]:
     """
     Parse sample description into structured format using the configured LLM.
@@ -42,7 +45,7 @@ def parse_sample_with_llm(
         )
 
     llm = get_llm(temperature=0)
-    prompt = format_sample_parse_prompt(description, hypothesis)
+    prompt = format_sample_parse_prompt(description, hypothesis, skill_context=skill_context)
 
     from langchain_core.messages import HumanMessage
 
@@ -126,11 +129,30 @@ def intake_node(state: ReflectivityState) -> Dict[str, Any]:
 
     # ========== 2. Parse Sample Description ==========
     if state["sample_description"]:
+        # Select and load skills based on sample description
+        registry = SkillRegistry()
+        active_skills = select_skills(
+            state["sample_description"],
+            parsed_sample=None,
+            registry=registry,
+        )
+        skill_context = load_skill_context(active_skills, registry)
+
         try:
             parsed = parse_sample_with_llm(
-                state["sample_description"], hypothesis=state.get("hypothesis")
+                state["sample_description"],
+                hypothesis=state.get("hypothesis"),
+                skill_context=skill_context,
             )
             updates["parsed_sample"] = parsed
+
+            # Re-select skills now that we have parsed sample info
+            active_skills = select_skills(
+                state["sample_description"],
+                parsed_sample=parsed,
+                registry=registry,
+            )
+            updates["active_skills"] = active_skills
             updates["llm_calls"].append(
                 LLMCallRecord(
                     node="intake",

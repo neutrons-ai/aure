@@ -23,6 +23,7 @@ from ..state import ReflectivityState, Message, LLMCallRecord
 from ..database import get_sld
 from ..llm import llm_available, get_llm
 from ..config import format_user_constraints
+from ..skills import SkillRegistry, load_skill_context
 from .prompts import format_model_refinement_prompt
 
 logger = logging.getLogger(__name__)
@@ -98,6 +99,11 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
         user_constraints = format_user_constraints(state.get("user_config"))
         user_feedback = state.get("pending_user_feedback")
 
+        # Load skill context
+        registry = SkillRegistry()
+        active_skills = state.get("active_skills", [])
+        skill_context = load_skill_context(active_skills, registry)
+
         # Update the definition with latest fitted values before sending to LLM
         model_for_llm = copy.deepcopy(current_model)
         fitted = latest_fit.get("parameters", {})
@@ -111,6 +117,7 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
             features=state.get("extracted_features") or {},
             user_constraints=user_constraints,
             user_feedback=user_feedback,
+            skill_context=skill_context,
         )
         # Clear feedback after consumption
         if user_feedback:

@@ -209,6 +209,9 @@ class ReflectivityState(TypedDict):
     interactive: bool
     pending_user_feedback: Optional[str]
 
+    # ========== Skills ==========
+    active_skills: List[str]  # Names of activated Agent Skills
+
     # ========== Workflow Control ==========
     current_node: str
     iteration: int
@@ -268,6 +271,8 @@ def create_initial_state(
         # Interactive session
         interactive=False,
         pending_user_feedback=None,
+        # Skills
+        active_skills=[],
         # Workflow control
         current_node="intake",
         iteration=0,
