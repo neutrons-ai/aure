@@ -223,16 +223,27 @@ document.addEventListener("DOMContentLoaded", async () => {
   _sldData = sldData;
   _selectedIteration = paramData.iteration;
 
-  // Populate iteration selector
+  // Populate iteration selector from unique iterations
   const iterSel = document.getElementById("iteration-select");
-  const models = reflData.models || [];
-  if (models.length > 1) {
+  const iterations = reflData.iterations || [];
+  if (iterations.length > 1) {
     iterSel.classList.remove("d-none");
-    models.forEach((m, i) => {
+    iterations.forEach((it) => {
       const opt = document.createElement("option");
-      opt.value = String(i);
+      opt.value = String(it.iteration);
+      let text = it.label;
+      if (it.iteration === reflData.best_iteration) text += " ★";
+      opt.textContent = text;
+      if (it.iteration === paramData.iteration) opt.selected = true;
+      iterSel.appendChild(opt);
+    });
+  } else if ((reflData.models || []).length > 1) {
+    // Fallback for single-file with multiple iterations
+    iterSel.classList.remove("d-none");
+    (reflData.models || []).forEach((m, i) => {
+      const opt = document.createElement("option");
+      opt.value = String(m.iteration != null ? m.iteration : i);
       let text = m.label;
-      if (i === reflData.best_iteration) text += " ★";
       opt.textContent = text;
       if (i === paramData.iteration) opt.selected = true;
       iterSel.appendChild(opt);
@@ -269,25 +280,45 @@ function renderRQ(data, selectedIteration) {
   }
 
   const traces = [];
+  const DATA_COLORS = ["#6c757d", "#0d6efd", "#198754", "#dc3545", "#fd7e14", "#6610f2", "#20c997", "#d63384"];
 
-  // Experimental data
-  traces.push({
-    x: data.Q,
-    y: data.R,
-    error_y:
-      data.dR && data.dR.length
-        ? { type: "data", array: data.dR, visible: true, thickness: 1 }
-        : undefined,
-    mode: "markers",
-    marker: { size: 3, color: "#6c757d" },
-    name: "Data",
-    type: "scatter",
-  });
+  // Experimental data – per-file traces for co-refinement, single trace otherwise
+  if (data.data_files && data.data_files.length > 1) {
+    data.data_files.forEach((df, i) => {
+      traces.push({
+        x: df.Q, y: df.R,
+        error_y: df.dR && df.dR.length
+          ? { type: "data", array: df.dR, visible: true, thickness: 1 }
+          : undefined,
+        mode: "markers",
+        marker: { size: 3, color: DATA_COLORS[i % DATA_COLORS.length], symbol: ["circle", "diamond", "square", "cross", "triangle-up"][i % 5] },
+        name: df.label || ("File " + (i + 1)),
+        type: "scatter",
+      });
+    });
+  } else {
+    traces.push({
+      x: data.Q,
+      y: data.R,
+      error_y:
+        data.dR && data.dR.length
+          ? { type: "data", array: data.dR, visible: true, thickness: 1 }
+          : undefined,
+      mode: "markers",
+      marker: { size: 3, color: "#6c757d" },
+      name: "Data",
+      type: "scatter",
+    });
+  }
 
-  // Model curves – selected iteration drawn thicker
+  // Model curves – all curves for the selected iteration drawn thicker
   const models = data.models || [];
+  const lastIteration = models.length ? models[models.length - 1].iteration : null;
   models.forEach((m, i) => {
-    const isSelected = (selectedIteration != null) ? i === selectedIteration : i === models.length - 1;
+    const mIter = m.iteration != null ? m.iteration : i;
+    const isSelected = (selectedIteration != null)
+      ? mIter === selectedIteration
+      : mIter === lastIteration;
     traces.push({
       x: m.Q,
       y: m.R,
@@ -325,6 +356,7 @@ function renderSLD(data, selectedIteration) {
   // matching iterations share the same colour in both charts.
   // Selected iteration drawn thicker.
   const traces = profiles.map((p, i) => {
+    // SLD profiles are 1:1 with fit iterations (index = iteration number)
     const isSelected = (selectedIteration != null) ? i === selectedIteration : i === profiles.length - 1;
     return {
       x: p.z,
@@ -572,7 +604,9 @@ function _removeUserTraces(chartId) {
   const el = document.getElementById(chartId);
   if (!el || !el.data) return;
   const indices = [];
-  el.data.forEach((t, i) => { if (t.name === "User") indices.push(i); });
+  el.data.forEach((t, i) => {
+    if (t.name === "User" || (t.name && t.name.startsWith("User – ")) || t._isUser) indices.push(i);
+  });
   if (indices.length) Plotly.deleteTraces(el, indices);
 }
 
@@ -630,20 +664,38 @@ function _updateChartsWithSimulation(data) {
     chi2Badge.classList.remove("d-none");
   }
 
-  // R(Q) chart — add/update "User" trace
+  // R(Q) chart — add/update "User" trace(s)
   const rqEl = document.getElementById("rq-chart");
-  if (rqEl && rqEl.data && data.Q_fit && data.Q_fit.length) {
-    const userTrace = {
-      x: data.Q_fit, y: data.R_fit,
-      mode: "lines",
-      line: { width: 2.5, color: "#000", dash: "dash" },
-      name: "User",
-    };
-    const idx = rqEl.data.findIndex(t => t.name === "User");
-    if (idx >= 0) {
-      Plotly.restyle(rqEl, { x: [userTrace.x], y: [userTrace.y] }, [idx]);
-    } else {
-      Plotly.addTraces(rqEl, userTrace);
+  if (rqEl && rqEl.data) {
+    if (data.per_file && data.per_file.length) {
+      // Multi-file: one dashed trace per file
+      _removeUserTraces("rq-chart");
+      data.per_file.forEach((pf, i) => {
+        if (pf.Q_fit && pf.Q_fit.length) {
+          Plotly.addTraces(rqEl, {
+            x: pf.Q_fit, y: pf.R_fit,
+            mode: "lines",
+            line: { width: 2.5, color: "#000", dash: "dash" },
+            name: "User – " + (pf.label || ("File " + (i + 1))),
+            _isUser: true,
+          });
+        }
+      });
+    } else if (data.Q_fit && data.Q_fit.length) {
+      // Single-file
+      const userTrace = {
+        x: data.Q_fit, y: data.R_fit,
+        mode: "lines",
+        line: { width: 2.5, color: "#000", dash: "dash" },
+        name: "User",
+        _isUser: true,
+      };
+      const idx = rqEl.data.findIndex(t => t.name === "User");
+      if (idx >= 0) {
+        Plotly.restyle(rqEl, { x: [userTrace.x], y: [userTrace.y] }, [idx]);
+      } else {
+        Plotly.addTraces(rqEl, userTrace);
+      }
     }
   }
 
@@ -655,6 +707,7 @@ function _updateChartsWithSimulation(data) {
       mode: "lines",
       line: { width: 2.5, color: "#000", dash: "dash" },
       name: "User",
+      _isUser: true,
     };
     const idx = sldEl.data.findIndex(t => t.name === "User");
     if (idx >= 0) {

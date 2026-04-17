@@ -185,6 +185,7 @@ def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
             n_params=n_params,
             n_layers=n_layers,
             skill_context=skill_context,
+            per_file_results=latest_fit.get("per_file_results"),
         )
         used_fallback = analysis.pop("_used_fallback", False)
         updates["llm_calls"].append(
@@ -304,7 +305,9 @@ def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
         updates["messages"] = [
             Message(
                 role="assistant",
-                content=_format_evaluation(latest_fit, analysis),
+                content=_format_evaluation(
+                    latest_fit, analysis, iteration=iteration
+                ),
                 timestamp=None,
             )
         ]
@@ -326,6 +329,7 @@ def analyze_fit_quality_with_llm(
     n_params: int = 0,
     n_layers: int = 0,
     skill_context: str = "",
+    per_file_results: Optional[list] = None,
 ) -> Dict[str, Any]:
     """
     Use LLM to analyze fit quality in context.
@@ -352,6 +356,7 @@ def analyze_fit_quality_with_llm(
         n_params=n_params,
         n_layers=n_layers,
         skill_context=skill_context,
+        per_file_results=per_file_results,
     )
 
     response = llm.invoke([HumanMessage(content=prompt)])
@@ -456,17 +461,35 @@ def _format_success(fit_result: FitResult, analysis: Dict) -> str:
     return "\n".join(lines)
 
 
-def _format_evaluation(fit_result: FitResult, analysis: Dict) -> str:
+def _format_evaluation(
+    fit_result: FitResult, analysis: Dict, *, iteration: int = 0
+) -> str:
     """Format evaluation with issues and suggestions."""
-    lines = ["## Fit Evaluation"]
+    header = f"## Fit Evaluation (iteration {iteration})" if iteration else "## Fit Evaluation"
+    lines = [header]
     lines.append("")
     lines.append(f"**χ² = {fit_result['chi_squared']:.2f}**")
 
-    if analysis["issues"]:
+    # Separate boundary-hit issues from other issues so they can be
+    # collapsed into a single summary line.
+    boundary_issues = []
+    other_issues = []
+    for issue in analysis.get("issues", []):
+        if "bound" in issue.lower() and "auto-expanded" in issue.lower():
+            boundary_issues.append(issue)
+        else:
+            other_issues.append(issue)
+
+    if other_issues or boundary_issues:
         lines.append("")
         lines.append("### Issues Identified:")
-        for issue in analysis["issues"]:
+        for issue in other_issues:
             lines.append(f"- ⚠️ {issue}")
+        if boundary_issues:
+            lines.append(
+                f"- ⚠️ {len(boundary_issues)} parameter(s) hit range bounds "
+                f"(auto-expanded)"
+            )
 
     if analysis["suggestions"]:
         lines.append("")

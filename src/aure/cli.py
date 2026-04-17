@@ -404,6 +404,13 @@ def check_llm(output_json: bool, no_test: bool, fix: bool):
     help="Optional hypothesis to test",
 )
 @click.option(
+    "--extra-data",
+    "-d",
+    multiple=True,
+    type=click.Path(exists=True),
+    help="Additional data files for multi-file co-refinement (Q-range segments)",
+)
+@click.option(
     "--max-refinements",
     "-m",
     default=5,
@@ -439,6 +446,7 @@ def analyze(
     data_file: str,
     sample_description: str,
     hypothesis: Optional[str],
+    extra_data: tuple,
     max_refinements: int,
     output_dir: Optional[str],
     output_json: bool,
@@ -455,6 +463,14 @@ def analyze(
     The workflow generates a model, fits it to the data, evaluates the fit,
     and refines the model if needed (up to --max-refinements iterations).
 
+    For multi-file co-refinement (e.g. spliced Q-range segments that share
+    the same sample state), pass additional files with --extra-data / -d:
+
+        aure analyze low-Q.dat "sample" -d mid-Q.dat -d high-Q.dat
+
+    All structural parameters are tied across files; each file gets its own
+    intensity normalization.
+
     When --output-dir is specified, checkpoints are saved after each workflow
     node (intake, analysis, modeling, fitting, evaluation, refinement).
     These can be used to inspect intermediate results or resume the workflow.
@@ -463,6 +479,9 @@ def analyze(
 
         # Basic analysis with default 5 refinement iterations
         python -m aure.cli analyze data.dat "100 nm polystyrene on silicon"
+
+        # Multi-file co-refinement
+        python -m aure.cli analyze low-Q.dat "multilayer" -d mid-Q.dat -d high-Q.dat
 
         # Save checkpoints to a directory
         python -m aure.cli analyze data.dat "multilayer" -o ./results
@@ -493,6 +512,17 @@ def analyze(
     # Load user config (evaluation criteria / model constraints)
     user_config = load_user_config(config_file)
 
+    # Build data_files list for multi-file co-refinement
+    all_files = [data_file] + list(extra_data)
+    data_files = None
+    if len(all_files) > 1:
+        from pathlib import Path as _Path
+
+        data_files = [
+            {"file": str(_Path(f).resolve()), "label": _Path(f).stem}
+            for f in all_files
+        ]
+
     if not output_json:
         click.echo(click.style("═" * 60, fg="blue"))
         click.echo(
@@ -506,6 +536,10 @@ def analyze(
         click.echo()
 
         click.echo(f"  Data file: {data_file}")
+        if extra_data:
+            for ef in extra_data:
+                click.echo(f"  Extra data: {ef}")
+            click.echo(f"  Co-refinement: {len(all_files)} files (shared structure)")
         click.echo(f"  Sample: {sample_description}")
         if hypothesis:
             click.echo(f"  Hypothesis: {hypothesis}")
@@ -548,6 +582,7 @@ def analyze(
             output_dir=output_dir,
             checkpoint_callback=checkpoint_callback if not output_json else None,
             user_config=user_config,
+            data_files=data_files,
         )
     except Exception as e:
         if output_json:

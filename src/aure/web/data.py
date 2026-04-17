@@ -195,31 +195,89 @@ class RunData:
         R = state.get("R", [])
         dR = state.get("dR", [])
 
+        # Multi-file co-refinement: per-file experimental data
+        data_files = state.get("data_files", [])
+        has_multi = len(data_files) > 1 and any(ds.get("Q") for ds in data_files)
+
         models: List[dict] = []
         for fr in state.get("fit_results", []):
             iteration = fr.get("iteration", len(models))
             chi2 = fr.get("chi_squared")
-            label = f"Iteration {iteration}"
-            if chi2 is not None:
-                label += f" (χ²={chi2:.2f})"
-            models.append(
-                {
-                    "label": label,
-                    "Q": fr.get("Q_fit", []),
-                    "R": fr.get("R_fit", []),
-                    "chi2": chi2,
-                }
-            )
+            per_file = fr.get("per_file_results") or []
 
-        # Identify best-chi2 iteration index
+            if has_multi and per_file:
+                # Emit one model curve per file per iteration
+                for pf in per_file:
+                    label = f"{pf.get('label', '?')} – iter {iteration}"
+                    pf_chi2 = pf.get("chi_squared")
+                    if pf_chi2 is not None:
+                        label += f" (χ²={pf_chi2:.2f})"
+                    models.append(
+                        {
+                            "label": label,
+                            "Q": pf.get("Q_fit", []),
+                            "R": pf.get("R_fit", []),
+                            "chi2": pf_chi2,
+                            "file_label": pf.get("label", ""),
+                            "iteration": iteration,
+                        }
+                    )
+            else:
+                label = f"Iteration {iteration}"
+                if chi2 is not None:
+                    label += f" (χ²={chi2:.2f})"
+                models.append(
+                    {
+                        "label": label,
+                        "Q": fr.get("Q_fit", []),
+                        "R": fr.get("R_fit", []),
+                        "chi2": chi2,
+                        "iteration": iteration,
+                    }
+                )
+
+        # Identify best-chi2 iteration (by iteration number, not array index)
         best_iteration = None
         best_chi2 = float("inf")
-        for i, m in enumerate(models):
-            if m["chi2"] is not None and m["chi2"] < best_chi2:
-                best_chi2 = m["chi2"]
-                best_iteration = i
+        for m in models:
+            c = m.get("chi2")
+            if c is not None and c < best_chi2:
+                best_chi2 = c
+                best_iteration = m.get("iteration")
 
-        return {"Q": Q, "R": R, "dR": dR, "models": models, "best_iteration": best_iteration}
+        # Build unique iteration list for the selector
+        seen = set()
+        iterations = []
+        for m in models:
+            it = m.get("iteration")
+            if it is not None and it not in seen:
+                seen.add(it)
+                # Aggregate chi2 from fit_results for this iteration
+                fr_match = next(
+                    (fr for fr in state.get("fit_results", []) if fr.get("iteration") == it),
+                    None,
+                )
+                agg_chi2 = fr_match.get("chi_squared") if fr_match else None
+                label = f"Iteration {it}"
+                if agg_chi2 is not None:
+                    label += f" (χ²={agg_chi2:.2f})"
+                iterations.append({"iteration": it, "label": label})
+
+        result = {
+            "Q": Q, "R": R, "dR": dR,
+            "models": models,
+            "best_iteration": best_iteration,
+            "iterations": iterations,
+        }
+
+        # Include per-file experimental data for the frontend
+        if has_multi:
+            result["data_files"] = [
+                {"label": ds.get("label", ""), "Q": ds.get("Q", []), "R": ds.get("R", []), "dR": ds.get("dR", [])}
+                for ds in data_files
+            ]
+
+        return result
 
     # ------------------------------------------------------------------
     # Model-per-iteration lookup
@@ -467,6 +525,9 @@ class RunData:
         Builds a model from the ModelDefinition (or legacy script) and applies
         the given parameter values, then computes curves via refl1d.
 
+        For multi-file co-refinement, returns per-file curves in a
+        ``per_file`` list alongside the SLD profile.
+
         Parameters
         ----------
         bounds
@@ -475,7 +536,9 @@ class RunData:
             Fit iteration whose model structure to use.  When *None*,
             falls back to the current (latest) model.
 
-        Returns ``{"Q_fit", "R_fit", "sld_z", "sld_rho", "chi_squared"}``.
+        Returns ``{"Q_fit", "R_fit", "sld_z", "sld_rho", "chi_squared"}``,
+        or ``{"per_file": [...], "sld_z", "sld_rho", "chi_squared"}`` for
+        multi-file.
         """
         if iteration is not None:
             model = self._get_model_for_iteration(iteration)
@@ -485,6 +548,19 @@ class RunData:
 
         if model is None:
             return {"error": "No model available"}
+
+        # Check for multi-file co-refinement
+        state = self.get_final_state()
+        data_files = state.get("data_files", [])
+        has_multi = len(data_files) > 1
+
+        if has_multi and isinstance(model, dict):
+            try:
+                return _compute_multi_file_simulation(
+                    model, data_files, parameters, bounds=bounds,
+                )
+            except Exception as exc:
+                return {"error": str(exc)}
 
         try:
             result = _compute_from_model(
@@ -632,6 +708,69 @@ def _compute_from_model(
             result["chi_squared"] = chi2 if math.isfinite(chi2) else None
         except Exception:
             result["chi_squared"] = None
+
+    return result
+
+
+def _compute_multi_file_simulation(
+    model: dict,
+    data_files: list,
+    parameters: Dict[str, float],
+    *,
+    bounds: Optional[Dict[str, list]] = None,
+) -> dict:
+    """Simulate reflectivity for a multi-file co-refinement model.
+
+    Builds a joint ``FitProblem`` via ``build_multi_problem``, applies
+    the user's parameter values, then extracts per-file R(Q) curves
+    and the shared SLD profile.
+    """
+    from aure.nodes.model_builder import (
+        apply_bounds,
+        apply_parameters,
+        build_multi_problem,
+    )
+
+    definition = dict(model)
+    problem, experiments, sorted_data_files = build_multi_problem(definition, data_files)
+
+    if bounds:
+        apply_bounds(problem, bounds)
+    if parameters:
+        apply_parameters(problem, parameters)
+
+    result: Dict[str, Any] = {}
+
+    # SLD profile (shared across all experiments)
+    try:
+        z_arr, sld_arr, _ = experiments[0].smooth_profile(dz=1.0)
+        result["sld_z"] = np.array(z_arr).tolist()
+        result["sld_rho"] = np.array(sld_arr).tolist()
+    except Exception:
+        result["sld_z"] = []
+        result["sld_rho"] = []
+
+    # Per-file reflectivity
+    per_file = []
+    for exp, ds in zip(experiments, sorted_data_files):
+        pf: Dict[str, Any] = {"label": ds.get("label", "")}
+        try:
+            exp.update()
+            Q_arr, R_arr = exp.reflectivity()
+            pf["Q_fit"] = np.array(Q_arr).tolist()
+            pf["R_fit"] = np.array(R_arr).tolist()
+        except Exception:
+            pf["Q_fit"] = []
+            pf["R_fit"] = []
+        per_file.append(pf)
+    result["per_file"] = per_file
+
+    # Aggregate chi²
+    try:
+        chi2 = float(problem.chisq())
+        result["chi_squared"] = chi2 if math.isfinite(chi2) else None
+    except Exception:
+        result["chi_squared"] = None
 
     return result
 

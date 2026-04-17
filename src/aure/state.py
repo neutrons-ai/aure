@@ -85,6 +85,7 @@ class ModelDefinition(TypedDict, total=False):
     # ---- Fitting context ----
     data_file: str  # Absolute path to reflectivity data
     intensity: IntensityInfo
+    dq_is_fwhm: bool  # Whether dQ column is FWHM (True) or 1-sigma (False)
 
     # ---- Post-fit snapshots (populated after fitting) ----
     fitted_parameters: dict  # {param_name: value}
@@ -118,6 +119,26 @@ class ExtractedFeatures(TypedDict):
     normalization_ok: bool
 
 
+class DatasetInfo(TypedDict):
+    """Information about one data file in a multi-file co-refinement."""
+
+    file: str  # Absolute path to the data file
+    label: str  # Short human-readable label (e.g. "low-Q", "file1")
+    dq_is_fwhm: bool  # Whether dQ column is FWHM (True) or 1-sigma (False)
+
+
+class PerFileFitResult(TypedDict, total=False):
+    """Per-file fit results in a multi-file co-refinement."""
+
+    file: str
+    label: str
+    chi_squared: float
+    Q_fit: List[float]
+    R_fit: List[float]
+    residuals: List[float]
+    residual_ratio: List[float]
+
+
 class FitResult(TypedDict):
     """Results from a refl1d fit."""
 
@@ -140,6 +161,9 @@ class FitResult(TypedDict):
     # SLD profile (from refl1d output)
     sld_z: Optional[List[float]]
     sld_rho: Optional[List[float]]
+
+    # Per-file results (multi-file co-refinement)
+    per_file_results: Optional[List[PerFileFitResult]]
 
     # Evaluation
     issues: List[str]
@@ -174,7 +198,9 @@ class ReflectivityState(TypedDict):
     """
 
     # ========== Input Data ==========
-    data_file: str
+    data_file: str  # Primary data file (always set)
+    data_files: List[DatasetInfo]  # All data files for multi-file co-refinement
+    dq_is_fwhm: bool  # Whether dQ in primary data_file is FWHM (True) or 1-sigma
     Q: List[float]
     R: List[float]
     dR: List[float]
@@ -228,6 +254,7 @@ def create_initial_state(
     hypothesis: Optional[str] = None,
     max_iterations: int = 5,
     user_config: Optional[dict] = None,
+    data_files: Optional[List[dict]] = None,
 ) -> ReflectivityState:
     """
     Create initial state for a new analysis workflow.
@@ -238,6 +265,7 @@ def create_initial_state(
         hypothesis: Optional hypothesis to test
         max_iterations: Maximum refinement iterations
         user_config: Optional user-supplied YAML configuration
+        data_files: Optional list of DatasetInfo dicts for multi-file co-refinement
 
     Returns:
         Initial workflow state
@@ -245,6 +273,8 @@ def create_initial_state(
     return ReflectivityState(
         # Input data (to be filled by intake node)
         data_file=data_file,
+        data_files=data_files or [],
+        dq_is_fwhm=True,  # Default; overridden by intake after header inspection
         Q=[],
         R=[],
         dR=[],

@@ -61,6 +61,7 @@ class CheckpointManager:
         self.refl1d_output_dir = self.output_dir / "refl1d_output"
 
         self._checkpoint_counter = 0
+        self._message_offset = 0
         self._initialized = False
 
     def initialize(
@@ -89,6 +90,13 @@ class CheckpointManager:
             "hypothesis": initial_state.get("hypothesis"),
             "checkpoints": [],
         }
+        # Persist co-refinement file list (paths + labels only, no data arrays)
+        raw_df = initial_state.get("data_files") or []
+        if raw_df:
+            run_info["data_files"] = [
+                {"file": str(df.get("file", "")), "label": df.get("label", "")}
+                for df in raw_df
+            ]
         self._save_json(self.output_dir / "run_info.json", run_info)
 
         self._initialized = True
@@ -129,6 +137,8 @@ class CheckpointManager:
             self._save_json(run_info_path, run_info)
 
         self._initialized = True
+        # Skip messages already written in prior checkpoints
+        self._message_offset = len(state.get("messages") or [])
         logger.info(
             f"[CHECKPOINT] Initialized for resume from {start_node}: {self.output_dir}"
         )
@@ -482,11 +492,18 @@ class CheckpointManager:
     ):
         """Write a companion ``.md`` file with human-readable messages.
 
+        Only messages added since the previous checkpoint are written.
         The file lives next to the checkpoint JSON and shares its name,
         e.g. ``003_modeling.md``.
         """
         messages = state.get("messages") or []
         if not messages:
+            return
+
+        new_messages = messages[self._message_offset :]
+        self._message_offset = len(messages)
+
+        if not new_messages:
             return
 
         md_path = checkpoint_path.with_suffix(".md")
@@ -501,7 +518,14 @@ class CheckpointManager:
             lines.append(f"**Active skills:** {', '.join(active_skills)}")
             lines.append("")
 
-        for msg in messages:
+        # χ² progression summary for evaluation/fitting checkpoints
+        if node_name in ("evaluation", "fitting"):
+            chi2_line = self._format_chi2_progression(state)
+            if chi2_line:
+                lines.append(chi2_line)
+                lines.append("")
+
+        for msg in new_messages:
             role = msg.get("role", "unknown")
             content = msg.get("content", "")
             if isinstance(content, list):
@@ -512,6 +536,21 @@ class CheckpointManager:
             lines.append("")
 
         md_path.write_text("\n".join(lines), encoding="utf-8")
+
+    @staticmethod
+    def _format_chi2_progression(state: Dict[str, Any]) -> str:
+        """Return a one-line χ² progression summary from fit_results."""
+        fit_results = state.get("fit_results") or []
+        if not fit_results:
+            return ""
+        values = []
+        for i, fr in enumerate(fit_results, 1):
+            chi2 = fr.get("chi_squared")
+            if chi2 is not None:
+                values.append(f"iter {i}: {chi2:.2f}")
+        if not values:
+            return ""
+        return "**χ² progression:** " + " → ".join(values)
 
     def _update_run_info(self, checkpoint_file: str, node_name: str, iteration: int):
         """Update run_info.json with new checkpoint."""

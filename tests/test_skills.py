@@ -1,10 +1,17 @@
 """Tests for the Agent Skills infrastructure."""
 
+import json
 import pytest
 from pathlib import Path
+from unittest.mock import patch, MagicMock
 
 from aure.skills.loader import SkillRegistry, SkillMetadata
-from aure.skills.selector import select_skills, load_skill_context
+from aure.skills.selector import (
+    select_skills,
+    load_skill_context,
+    _build_catalog,
+    _build_sample_info,
+)
 
 
 # ============================================================================
@@ -87,74 +94,120 @@ class TestSkillRegistry:
 
 
 # ============================================================================
-# Skill Selector Tests
+# LLM Skill Selection Tests
 # ============================================================================
 
 
-class TestSelectSkills:
-    """Tests for skill selection heuristic."""
+class TestLLMSkillSelection:
+    """Tests for LLM-based skill selection."""
 
-    def test_baseline_always_selected(self):
-        result = select_skills("a simple sample", registry=SkillRegistry())
-        assert "neutron-reflectometry" in result
+    def test_build_catalog(self):
+        registry = SkillRegistry()
+        catalog = _build_catalog(registry)
+        assert "metal-oxide-interfaces" in catalog
+        assert "polymer-films" in catalog
+        assert "sei-layer-analysis" in catalog
+        assert "solvent-contrast-matching" in catalog
+        # Baseline skill is excluded from catalog (always on)
+        assert "- **neutron-reflectometry**" not in catalog
 
-    def test_sei_keywords(self):
-        result = select_skills(
-            "copper electrode with SEI layer in battery cell",
-            registry=SkillRegistry(),
-        )
-        assert "sei-layer-analysis" in result
-        assert "neutron-reflectometry" in result
+    def test_build_sample_info_description_only(self):
+        info = _build_sample_info("copper on silicon in dTHF")
+        assert "copper on silicon in dTHF" in info
 
-    def test_polymer_keywords(self):
-        result = select_skills(
-            "polystyrene thin film spin-coated on silicon",
-            registry=SkillRegistry(),
-        )
-        assert "polymer-films" in result
-
-    def test_oxide_keywords(self):
-        result = select_skills(
-            "copper with native oxide layer",
-            registry=SkillRegistry(),
-        )
-        assert "metal-oxide-interfaces" in result
-
-    def test_solvent_keywords(self):
-        result = select_skills(
-            "sample measured in D2O",
-            registry=SkillRegistry(),
-        )
-        assert "solvent-contrast-matching" in result
-
-    def test_parsed_sample_materials_trigger_skills(self):
+    def test_build_sample_info_with_parsed(self):
         parsed = {
             "substrate": {"name": "silicon"},
-            "layers": [{"name": "polystyrene"}],
-            "ambient": {"name": "D2O"},
-            "constraints": [],
+            "layers": [{"name": "titanium"}, {"name": "copper"}],
+            "ambient": {"name": "dTHF"},
         }
-        result = select_skills("sample", parsed_sample=parsed, registry=SkillRegistry())
+        info = _build_sample_info("my sample", parsed_sample=parsed)
+        assert "titanium" in info
+        assert "copper" in info
+        assert "silicon" in info
+        assert "dTHF" in info
+
+    def test_llm_selection_valid_response(self):
+        """LLM returning a valid JSON array of skill names."""
+        mock_response = MagicMock()
+        mock_response.content = '["metal-oxide-interfaces", "sei-layer-analysis"]'
+
+        with patch("aure.llm.llm_available", return_value=True), \
+             patch("aure.llm.get_llm") as mock_get, \
+             patch("aure.llm.invoke_with_timeout", return_value=mock_response):
+            mock_get.return_value = MagicMock()
+            result = select_skills(
+                "copper electrode with SEI",
+                registry=SkillRegistry(),
+            )
+        assert "neutron-reflectometry" in result
+        assert "metal-oxide-interfaces" in result
+        assert "sei-layer-analysis" in result
+
+    def test_llm_selection_filters_invalid_names(self):
+        """LLM hallucinating a nonexistent skill name is filtered out."""
+        mock_response = MagicMock()
+        mock_response.content = '["metal-oxide-interfaces", "nonexistent-skill"]'
+
+        with patch("aure.llm.llm_available", return_value=True), \
+             patch("aure.llm.get_llm") as mock_get, \
+             patch("aure.llm.invoke_with_timeout", return_value=mock_response):
+            mock_get.return_value = MagicMock()
+            result = select_skills(
+                "copper sample",
+                registry=SkillRegistry(),
+            )
+        assert "metal-oxide-interfaces" in result
+        assert "nonexistent-skill" not in result
+
+    def test_llm_selection_empty_array(self):
+        """LLM returning empty array still includes baseline."""
+        mock_response = MagicMock()
+        mock_response.content = "[]"
+
+        with patch("aure.llm.llm_available", return_value=True), \
+             patch("aure.llm.get_llm") as mock_get, \
+             patch("aure.llm.invoke_with_timeout", return_value=mock_response):
+            mock_get.return_value = MagicMock()
+            result = select_skills(
+                "simple silicon wafer",
+                registry=SkillRegistry(),
+            )
+        assert result == ["neutron-reflectometry"]
+
+    def test_llm_failure_returns_baseline_only(self):
+        """When LLM call raises, return baseline skill only."""
+        with patch("aure.llm.llm_available", return_value=True), \
+             patch("aure.llm.get_llm", side_effect=RuntimeError("no LLM")):
+            result = select_skills(
+                "copper with native oxide layer",
+                registry=SkillRegistry(),
+            )
+        assert result == ["neutron-reflectometry"]
+
+    def test_llm_unavailable_returns_baseline_only(self):
+        """When no LLM is configured, return baseline skill only."""
+        with patch("aure.llm.llm_available", return_value=False):
+            result = select_skills(
+                "polystyrene thin film",
+                registry=SkillRegistry(),
+            )
+        assert result == ["neutron-reflectometry"]
+
+    def test_llm_response_with_markdown_fences(self):
+        """LLM wrapping response in ```json fences."""
+        mock_response = MagicMock()
+        mock_response.content = '```json\n["polymer-films"]\n```'
+
+        with patch("aure.llm.llm_available", return_value=True), \
+             patch("aure.llm.get_llm") as mock_get, \
+             patch("aure.llm.invoke_with_timeout", return_value=mock_response):
+            mock_get.return_value = MagicMock()
+            result = select_skills(
+                "polystyrene sample",
+                registry=SkillRegistry(),
+            )
         assert "polymer-films" in result
-        assert "solvent-contrast-matching" in result
-
-    def test_no_false_positives_plain_sample(self):
-        result = select_skills(
-            "silicon substrate with gold layer in air",
-            registry=SkillRegistry(),
-        )
-        # Should only get baseline
-        assert "sei-layer-analysis" not in result
-        assert "polymer-films" not in result
-
-    def test_short_keyword_word_boundary(self):
-        """Short keywords like 'ps' should use word boundaries."""
-        result = select_skills(
-            "sample with steps and ramps",
-            registry=SkillRegistry(),
-        )
-        # 'ps' should NOT match inside 'steps'
-        assert "polymer-films" not in result
 
 
 # ============================================================================

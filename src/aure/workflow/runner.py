@@ -90,6 +90,7 @@ def run_analysis(
     user_config: Optional[dict] = None,
     interactive: bool = False,
     pause_callback: Optional[Callable[[Dict[str, Any], str], Optional[str]]] = None,
+    data_files: Optional[list[dict]] = None,
 ) -> ReflectivityState:
     """
     Run the reflectivity analysis workflow.
@@ -116,6 +117,7 @@ def run_analysis(
         hypothesis=hypothesis,
         max_iterations=max_iterations,
         user_config=user_config,
+        data_files=data_files,
     )
     if interactive:
         initial_state["interactive"] = True

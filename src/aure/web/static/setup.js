@@ -26,6 +26,23 @@ const REFLECTIVITY_EXTS = ".txt,.refl,.ort,.dat,.csv,.tsv";
 
 let plottedFiles = []; // [{ path, Q, R, dR, visible, isFit }]
 
+function _extractRunNumber(path) {
+  // Extract a run number from a filename: look for 6-digit number first,
+  // then any trailing digits before the extension.
+  var name = _basename(path).replace(/\.[^.]+$/, "");
+  var m = name.match(/(\d{6})/);
+  if (m) return parseInt(m[1], 10);
+  m = name.match(/(\d+)/);
+  if (m) return parseInt(m[1], 10);
+  return Infinity;  // no number found → sort last
+}
+
+function _sortPlottedFilesByRunNumber() {
+  plottedFiles.sort(function (a, b) {
+    return _extractRunNumber(a.path) - _extractRunNumber(b.path);
+  });
+}
+
 function _parentDir(path) {
   if (!path) return "";
   const idx = path.lastIndexOf("/");
@@ -44,20 +61,66 @@ function _getLastDataDir() {
     if (saved) return saved;
   } catch (_) {}
 
-  const currentDataFile = (document.getElementById("data-file") || {}).value || "";
-  return _parentDir(currentDataFile.trim());
+  // Derive from first plotted file
+  var first = plottedFiles.length ? plottedFiles[0].path : "";
+  return _parentDir(first);
+}
+
+function _syncDataFileInput() {
+  // Keep hidden data-file input in sync with first isFit file
+  var firstFit = plottedFiles.find(function (f) { return f.isFit; });
+  document.getElementById("data-file").value = firstFit ? firstFit.path : "";
 }
 
 /* ---- persist / restore form values --------------------------- */
 
+let _restoringFiles = false;  // guard against DOMContentLoaded race
+
+function _restorePlottedFiles(savedFiles) {
+  var remaining = savedFiles.slice();
+  plottedFiles = [];
+  _restoringFiles = true;
+
+  function _loadNext() {
+    if (!remaining.length) {
+      _sortPlottedFilesByRunNumber();
+      _syncDataFileInput();
+      _renderPlottedFilesList();
+      _renderSetupReflectivityPlot();
+      _restoringFiles = false;
+      return;
+    }
+    var entry = remaining.shift();
+    _loadReflectivityFile(entry.path)
+      .then(function (payload) {
+        plottedFiles.push({
+          path: entry.path,
+          Q: payload.Q || [],
+          R: payload.R || [],
+          dR: payload.dR || [],
+          visible: true,
+          isFit: entry.isFit,
+        });
+      })
+      .catch(function () {
+        // skip files that can no longer be loaded
+      })
+      .then(_loadNext);
+  }
+
+  _loadNext();
+}
+
 function _saveFormValues() {
   const vals = {
-    data_file: document.getElementById("data-file").value,
     sample_desc: document.getElementById("sample-desc").value,
     hypothesis: document.getElementById("hypothesis").value,
     output_dir: document.getElementById("output-dir").value,
     interactive: document.getElementById("interactive-mode").checked,
     max_iterations: parseInt(document.getElementById("max-iterations").value, 10) || 5,
+    plotted_files: plottedFiles.map(function (f) {
+      return { path: f.path, isFit: f.isFit };
+    }),
   };
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(vals)); } catch (_) {}
 }
@@ -65,26 +128,53 @@ function _saveFormValues() {
 function _restoreFormValues() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return;
-    const vals = JSON.parse(raw);
-    if (vals.data_file)   document.getElementById("data-file").value = vals.data_file;
+    let vals = raw ? JSON.parse(raw) : null;
+
+    // Fall back to server-provided previous run data
+    if (!vals && typeof _prevRun !== "undefined" && _prevRun) {
+      // Convert server data_files [{file, label}] to plotted_files [{path, isFit}]
+      var pf = [];
+      if (_prevRun.data_files && _prevRun.data_files.length) {
+        pf = _prevRun.data_files.map(function (df) {
+          return { path: df.file, isFit: true };
+        });
+      } else if (_prevRun.data_file) {
+        pf = [{ path: _prevRun.data_file, isFit: true }];
+      }
+      vals = {
+        sample_desc: _prevRun.sample_description || "",
+        hypothesis: _prevRun.hypothesis || "",
+        output_dir: _prevRun.output_dir || "",
+        plotted_files: pf,
+      };
+    }
+
+    if (!vals) return;
+
     if (vals.sample_desc) document.getElementById("sample-desc").value = vals.sample_desc;
     if (vals.hypothesis)  document.getElementById("hypothesis").value = vals.hypothesis;
     if (vals.output_dir)  document.getElementById("output-dir").value = vals.output_dir;
     if (vals.interactive)  document.getElementById("interactive-mode").checked = vals.interactive;
     if (vals.max_iterations) document.getElementById("max-iterations").value = vals.max_iterations;
+    // Restore file list (single source of truth for data files)
+    if (vals.plotted_files && vals.plotted_files.length) {
+      _restorePlottedFiles(vals.plotted_files);
+    }
   } catch (_) {}
 }
 
 document.addEventListener("DOMContentLoaded", function () {
   _restoreFormValues();
-  const restoredDataFile = document.getElementById("data-file").value.trim();
-  if (restoredDataFile) {
-    _setFittingDataFile(restoredDataFile);
-  } else {
+  // Only render empty state if no restore is in progress
+  if (!_restoringFiles && !plottedFiles.length) {
     _renderPlottedFilesList();
     _renderSetupReflectivityPlot();
   }
+});
+
+// Persist form state (including multi-file list) on page leave
+window.addEventListener("beforeunload", function () {
+  _saveFormValues();
 });
 
 /* ---- LLM badge helper ---------------------------------------- */
@@ -105,9 +195,7 @@ function _llmBadges(calls) {
 function openBrowser(mode) {
   browserMode = mode;
   if (mode === "file") {
-    document.getElementById("browser-title").textContent = "Select Data File";
-  } else if (mode === "compare-file") {
-    document.getElementById("browser-title").textContent = "Add Comparison File";
+    document.getElementById("browser-title").textContent = "Load Data";
   } else {
     document.getElementById("browser-title").textContent = "Select Output Folder";
   }
@@ -117,9 +205,7 @@ function openBrowser(mode) {
     mode === "dir" ? "inline-block" : "none";
 
   // Start at the last data folder for file selection, otherwise server default
-  const startPath = (mode === "file" || mode === "compare-file")
-    ? _getLastDataDir()
-    : "";
+  const startPath = mode === "file" ? _getLastDataDir() : "";
   _fetchBrowserListing(startPath);
 
   browserModalInstance =
@@ -129,12 +215,12 @@ function openBrowser(mode) {
 }
 
 function _fetchBrowserListing(path) {
-  const endpoint = (browserMode === "file" || browserMode === "compare-file")
+  const endpoint = browserMode === "file"
     ? "/api/browse-files"
     : "/api/browse-dirs";
   const params = new URLSearchParams();
   if (path) params.set("path", path);
-  if (browserMode === "file" || browserMode === "compare-file") {
+  if (browserMode === "file") {
     params.set("ext", REFLECTIVITY_EXTS);
   }
 
@@ -174,12 +260,8 @@ function _fetchBrowserListing(path) {
             // Navigate into directory
             _fetchBrowserListing(entry.path);
           } else {
-            // File selected
-            if (browserMode === "compare-file") {
-              _addComparisonFile(entry.path);
-            } else {
-              _setFittingDataFile(entry.path);
-            }
+            // File selected – add to plotted files (fit by default)
+            _addDataFile(entry.path);
             _saveLastDataDirFromFile(entry.path);
             browserModalInstance.hide();
           }
@@ -214,14 +296,11 @@ function browserSelect() {
   }
 }
 
-function _setFittingDataFile(path) {
-  document.getElementById("data-file").value = path;
-
-  plottedFiles.forEach(function (f) { f.isFit = false; });
+function _addDataFile(path) {
   const existing = plottedFiles.find(function (f) { return f.path === path; });
   if (existing) {
-    existing.isFit = true;
     existing.visible = true;
+    _syncDataFileInput();
     _renderPlottedFilesList();
     _renderSetupReflectivityPlot();
     return;
@@ -237,33 +316,8 @@ function _setFittingDataFile(path) {
         visible: true,
         isFit: true,
       });
-      _renderPlottedFilesList();
-      _renderSetupReflectivityPlot();
-    })
-    .catch(function (err) {
-      alert("Could not load selected reflectivity file:\n" + err.message);
-    });
-}
-
-function _addComparisonFile(path) {
-  const existing = plottedFiles.find(function (f) { return f.path === path; });
-  if (existing) {
-    existing.visible = true;
-    _renderPlottedFilesList();
-    _renderSetupReflectivityPlot();
-    return;
-  }
-
-  _loadReflectivityFile(path)
-    .then(function (payload) {
-      plottedFiles.push({
-        path: path,
-        Q: payload.Q || [],
-        R: payload.R || [],
-        dR: payload.dR || [],
-        visible: true,
-        isFit: false,
-      });
+      _sortPlottedFilesByRunNumber();
+      _syncDataFileInput();
       _renderPlottedFilesList();
       _renderSetupReflectivityPlot();
     })
@@ -296,7 +350,7 @@ function _renderPlottedFilesList() {
   if (!list) return;
 
   if (!plottedFiles.length) {
-    list.innerHTML = '<div class="list-group-item text-muted small">No files plotted yet.</div>';
+    list.innerHTML = '<div class="list-group-item text-muted small">No files loaded yet.</div>';
     return;
   }
 
@@ -306,17 +360,38 @@ function _renderPlottedFilesList() {
     row.className = "list-group-item d-flex justify-content-between align-items-start gap-2";
 
     const left = document.createElement("div");
-    left.className = "small";
+    left.className = "d-flex align-items-start gap-2 small";
 
+    // "Include in fit" checkbox
+    const fitCheck = document.createElement("input");
+    fitCheck.type = "checkbox";
+    fitCheck.className = "form-check-input mt-1";
+    fitCheck.checked = entry.isFit;
+    fitCheck.title = entry.isFit ? "Included in fit" : "Include in fit";
+    fitCheck.addEventListener("change", function () {
+      plottedFiles[idx].isFit = fitCheck.checked;
+      // Keep at least one fit file – re-check the first if none remain
+      const anyFit = plottedFiles.some(function (f) { return f.isFit; });
+      if (!anyFit) {
+        plottedFiles[0].isFit = true;
+      }
+      _syncDataFileInput();
+      _renderPlottedFilesList();
+      _renderSetupReflectivityPlot();
+    });
+    left.appendChild(fitCheck);
+
+    const labels = document.createElement("div");
     const title = document.createElement("div");
     title.textContent = _basename(entry.path);
     if (entry.isFit) title.classList.add("fit-file");
-    left.appendChild(title);
+    labels.appendChild(title);
 
     const pathLabel = document.createElement("div");
     pathLabel.className = "text-muted";
     pathLabel.textContent = entry.path;
-    left.appendChild(pathLabel);
+    labels.appendChild(pathLabel);
+    left.appendChild(labels);
 
     const right = document.createElement("div");
     right.className = "d-flex align-items-center gap-1";
@@ -336,13 +411,16 @@ function _renderPlottedFilesList() {
     removeBtn.type = "button";
     removeBtn.className = "btn btn-sm btn-outline-danger";
     removeBtn.innerHTML = '<i class="bi bi-trash"></i>';
-    if (entry.isFit) {
+    // Only allow removal if more than one fit file or this one isn't a fit file
+    const fitCount = plottedFiles.filter(function (f) { return f.isFit; }).length;
+    if (entry.isFit && fitCount <= 1) {
       removeBtn.disabled = true;
-      removeBtn.title = "Current fitting file";
+      removeBtn.title = "Cannot remove the only fitting file";
     } else {
       removeBtn.title = "Remove";
       removeBtn.addEventListener("click", function () {
         plottedFiles.splice(idx, 1);
+        _syncDataFileInput();
         _renderPlottedFilesList();
         _renderSetupReflectivityPlot();
       });
@@ -373,7 +451,7 @@ function _renderSetupReflectivityPlot() {
         color: color,
         symbol: entry.isFit ? "circle" : "diamond",
       },
-      name: entry.isFit ? _basename(entry.path) + " (fit file)" : _basename(entry.path),
+      name: entry.isFit ? _basename(entry.path) + " (fit)" : _basename(entry.path),
     });
   });
 
@@ -409,15 +487,17 @@ function _renderSetupReflectivityPlot() {
 /* ---- analysis launch ----------------------------------------- */
 
 function startAnalysis() {
-  const dataFile = document.getElementById("data-file").value.trim();
   const sampleDesc = document.getElementById("sample-desc").value.trim();
   const hypothesis = document.getElementById("hypothesis").value.trim();
   const outputDir = document.getElementById("output-dir").value.trim();
 
-  if (!dataFile) { alert("Please select a data file."); return; }
+  // Derive primary data file from plotted files list
+  const fitFiles = plottedFiles.filter(function (f) { return f.isFit; });
+  if (!fitFiles.length) { alert("Please load at least one data file."); return; }
   if (!sampleDesc) { alert("Please enter a sample description."); return; }
   if (!outputDir) { alert("Please select an output directory."); return; }
 
+  const dataFile = fitFiles[0].path;
   _saveFormValues();
 
   const btn = document.getElementById("btn-start");
@@ -425,6 +505,11 @@ function startAnalysis() {
   btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Starting…';
 
   const maxIter = parseInt(document.getElementById("max-iterations").value, 10) || 5;
+
+  const dataFiles = fitFiles.map(function (f) {
+    const stem = _basename(f.path).replace(/\.[^.]+$/, "");
+    return { file: f.path, label: stem };
+  });
 
   fetch("/api/start-analysis", {
     method: "POST",
@@ -436,6 +521,7 @@ function startAnalysis() {
       output_dir: outputDir,
       interactive: document.getElementById("interactive-mode").checked,
       max_iterations: maxIter,
+      data_files: dataFiles.length > 1 ? dataFiles : undefined,
     }),
   })
     .then((r) => r.json().then((d) => ({ ok: r.ok, data: d })))
@@ -748,8 +834,22 @@ function _fetchLiveResults() {
 function _renderLiveRQ(data) {
   const el = document.getElementById("live-rq-chart");
   const traces = [];
+  const DATA_COLORS = ["#6c757d", "#0d6efd", "#198754", "#dc3545", "#fd7e14", "#6610f2", "#20c997", "#d63384"];
+  const DATA_SYMBOLS = ["circle", "diamond", "square", "cross", "triangle-up"];
 
-  if (data.Q && data.Q.length) {
+  // Experimental data – per-file traces for co-refinement, single trace otherwise
+  if (data.data_files && data.data_files.length > 1) {
+    data.data_files.forEach(function (df, i) {
+      traces.push({
+        x: df.Q, y: df.R,
+        error_y: df.dR && df.dR.length
+          ? { type: "data", array: df.dR, visible: true, thickness: 1 }
+          : undefined,
+        mode: "markers", marker: { size: 3, color: DATA_COLORS[i % DATA_COLORS.length], symbol: DATA_SYMBOLS[i % DATA_SYMBOLS.length] },
+        name: df.label || ("File " + (i + 1)), type: "scatter",
+      });
+    });
+  } else if (data.Q && data.Q.length) {
     traces.push({
       x: data.Q, y: data.R,
       error_y: data.dR && data.dR.length
@@ -759,8 +859,11 @@ function _renderLiveRQ(data) {
       name: "Data", type: "scatter",
     });
   }
-  (data.models || []).forEach(function (m, i) {
-    var isFinal = i === data.models.length - 1;
+  var allModels = data.models || [];
+  var lastIter = allModels.length ? allModels[allModels.length - 1].iteration : null;
+  allModels.forEach(function (m, i) {
+    var mIter = m.iteration != null ? m.iteration : i;
+    var isFinal = (lastIter != null) ? mIter === lastIter : i === allModels.length - 1;
     traces.push({
       x: m.Q, y: m.R, mode: "lines",
       line: { width: isFinal ? 3.5 : 1.5, color: COLORS[(i + 1) % COLORS.length] },

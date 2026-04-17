@@ -152,6 +152,7 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
             # Ensure immutable fields are preserved
             new_model["data_file"] = current_model.get("data_file", "")
             new_model["back_reflection"] = current_model.get("back_reflection", False)
+            new_model["dq_is_fwhm"] = current_model.get("dq_is_fwhm", True)
             updates["llm_calls"].append(
                 LLMCallRecord(
                     node="modeling",
@@ -179,7 +180,9 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
         updates["messages"] = [
             Message(
                 role="assistant",
-                content=_format_refinement_explanation(changes, issues, suggestions),
+                content=_format_refinement_explanation(
+                    changes, issues, suggestions, iteration=iteration
+                ),
                 timestamp=None,
             )
         ]
@@ -361,6 +364,7 @@ def _build_initial_model(state: ReflectivityState) -> Dict[str, Any]:
             "back_reflection": back_reflection,
             "data_file": os.path.abspath(state["data_file"]),
             "intensity": intensity,
+            "dq_is_fwhm": state.get("dq_is_fwhm", True),
         }
         updates["current_model"] = model_def
         updates["model_history"] = [
@@ -574,7 +578,7 @@ def build_refl1d_script(
         'warnings.filterwarnings("ignore", category=UserWarning, module="refl1d")',
         "",
         "# ========== Load Data ==========",
-        f'probe = load4("{abs_data_file}")',
+        f'probe = load4("{abs_data_file}", FWHM=True)',
     ]
 
     lines.extend(
@@ -889,15 +893,20 @@ def _format_refinement_explanation(
     changes: list[str],
     issues: list[str],
     suggestions: list[str],
+    *,
+    iteration: int = 0,
 ) -> str:
     """Format a human-readable explanation of the model refinement."""
-    lines = ["**Model Refinement:**"]
+    header = (
+        f"**Model Refinement (iteration {iteration}):**"
+        if iteration
+        else "**Model Refinement:**"
+    )
+    lines = [header]
     lines.append("")
 
     if issues:
-        lines.append("**Issues addressed:**")
-        for issue in issues:
-            lines.append(f"- {issue}")
+        lines.append(f"Addressing {len(issues)} issue(s) from evaluation above.")
         lines.append("")
 
     lines.append("**Changes made:**")
@@ -1018,21 +1027,65 @@ def _summarize_definition_changes(old_model: dict, new_model: dict) -> list[str]
     added = new_names - old_names
     removed = old_names - new_names
     if added:
-        changes.append(f"Added materials: {', '.join(added)}")
+        changes.append(f"Added materials: {', '.join(sorted(added))}")
     if removed:
-        changes.append(f"Removed materials: {', '.join(removed)}")
+        changes.append(f"Removed materials: {', '.join(sorted(removed))}")
 
-    # Check for significant bound changes
+    # All numeric attributes that can change on a layer
+    _LAYER_ATTRS = (
+        "sld", "sld_min", "sld_max",
+        "thickness", "thickness_min", "thickness_max",
+        "roughness", "roughness_min", "roughness_max",
+    )
+
+    # Check for changes in matched layers
     for nl in new_layers:
         for ol in old_layers:
             if nl["name"] == ol["name"]:
-                for attr in ("sld_min", "sld_max", "thickness_min", "thickness_max"):
+                for attr in _LAYER_ATTRS:
                     ov = ol.get(attr)
                     nv = nl.get(attr)
-                    if ov is not None and nv is not None and abs(nv - ov) > 0.1:
-                        changes.append(f"{nl['name']} {attr}: {ov:.1f} → {nv:.1f}")
-                        break  # One note per layer is enough
+                    if ov is not None and nv is not None and abs(nv - ov) > 0.01:
+                        changes.append(f"{nl['name']} {attr}: {ov} → {nv}")
+                    elif ov is None and nv is not None:
+                        changes.append(f"{nl['name']} {attr}: (unset) → {nv}")
+                    elif ov is not None and nv is None:
+                        changes.append(f"{nl['name']} {attr}: {ov} → (removed)")
                 break
+
+    # Check ambient changes
+    _AMB_ATTRS = ("sld", "sld_min", "sld_max", "roughness", "roughness_max")
+    old_amb = old_model.get("ambient", {})
+    new_amb = new_model.get("ambient", {})
+    if old_amb.get("name") != new_amb.get("name"):
+        changes.append(
+            f"Ambient changed: {old_amb.get('name', '?')} → {new_amb.get('name', '?')}"
+        )
+    for attr in _AMB_ATTRS:
+        ov = old_amb.get(attr)
+        nv = new_amb.get(attr)
+        if ov is not None and nv is not None and abs(nv - ov) > 0.01:
+            changes.append(f"Ambient {attr}: {ov} → {nv}")
+        elif ov is None and nv is not None:
+            changes.append(f"Ambient {attr}: (unset) → {nv}")
+
+    # Check substrate changes
+    old_sub = old_model.get("substrate", {})
+    new_sub = new_model.get("substrate", {})
+    for attr in ("sld", "roughness", "roughness_max"):
+        ov = old_sub.get(attr)
+        nv = new_sub.get(attr)
+        if ov is not None and nv is not None and abs(nv - ov) > 0.01:
+            changes.append(f"Substrate {attr}: {ov} → {nv}")
+
+    # Check intensity changes
+    old_int = old_model.get("intensity", {})
+    new_int = new_model.get("intensity", {})
+    for attr in ("value", "min", "max"):
+        ov = old_int.get(attr)
+        nv = new_int.get(attr)
+        if ov is not None and nv is not None and abs(nv - ov) > 0.01:
+            changes.append(f"Intensity {attr}: {ov} → {nv}")
 
     if not changes:
         changes.append("Parameter values and bounds adjusted")

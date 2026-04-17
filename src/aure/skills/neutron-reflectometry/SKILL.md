@@ -95,3 +95,28 @@ signal from more important layers. If an SiO₂ layer is already in the model,
 consider removing it or fixing its thickness to < 20 Å to free up fitting capacity
 for unknown layers. **However**, if the user explicitly requests an SiO₂ layer,
 you MUST add it.
+
+## Refinement Strategy — General
+
+When χ² is above the acceptance threshold, follow this priority order:
+
+1. **Constrain unphysical parameters first.** If a fitted value is far from its
+   nominal/expected value (e.g., Ti thickness 5× nominal), tighten that parameter's
+   bounds to a physically realistic range before trying other changes.
+2. **Widen bounds on parameters hitting limits.** If a parameter is pinned at its
+   bound, widen that bound — but only in the physically plausible direction.
+3. **Adjust starting values.** Set starting values to the best-fit values from the
+   previous iteration where they are physically reasonable.
+4. **Check the ambient SLD.** If the fitted ambient SLD deviates significantly from
+   the expected value for the stated solvent, flag this and constrain it. This is a
+   common source of high χ² that does not require structural model changes.
+5. **Structural changes are a last resort.** Only add or remove layers when:
+   - χ² remains > 10 after parameter adjustments, AND
+   - residual fringes clearly indicate an unmodeled layer, AND
+   - BIC analysis supports the added complexity.
+6. **Never make multiple structural changes at once.** Add or remove one layer at
+   a time so the effect can be evaluated.
+7. **When multi-file chi² values are uneven** (one segment much worse than others),
+   focus suggestions on the Q-range where the fit is worst. Common causes:
+   - Intensity normalization mismatch between segments
+   - Model features (e.g., thin-layer fringes) falling in one Q-range

@@ -57,3 +57,22 @@ metadata:
   a linear combination: SLD_mix = f_D × SLD_D + (1 - f_D) × SLD_H
 - Allow the ambient SLD to vary within a range that covers the expected mixture
   composition uncertainty.
+
+## Refinement Strategy — Solvent Contrast
+
+When refining models with solvent ambients:
+
+- **Ambient SLD mismatch**: If the fitted ambient SLD deviates >0.5 from the
+  expected solvent SLD, this is often the dominant source of high χ². Constrain
+  the ambient SLD to ±1.0 around the expected value before making structural
+  model changes.
+- **Isotope confusion**: If the fitted SLD suggests a different isotope variant
+  (e.g., fitted 6.3 for stated THF at 0.18), flag this issue. The sample
+  likely uses dTHF, not THF. Correct the ambient SLD range accordingly.
+- **Intensity and ambient coupling**: Intensity normalization and ambient SLD
+  can trade off. If both are hitting bounds, widen both ranges slightly —
+  intensity to [0.5, 1.3] and ambient SLD by ±0.5.
+- **Multi-file contrast series**: When co-refining multiple contrasts, ensure
+  each file has independent intensity normalization but shared structural
+  parameters. If one contrast fits much worse, check that its ambient SLD
+  is correctly set for the specific solvent used.

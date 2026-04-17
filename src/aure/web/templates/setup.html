@@ -27,32 +27,24 @@
         <div class="card-body">
           <form id="setup-form" onsubmit="return false;">
 
-            {# Data file #}
+            {# Data files #}
+            <input type="hidden" id="data-file" />
             <div class="mb-3">
-              <label class="form-label fw-semibold">Data File</label>
-              <div class="input-group">
-                <input type="text" id="data-file" class="form-control" readonly
-                       placeholder="Select a reflectivity data file…" required />
-                <button class="btn btn-outline-secondary" type="button"
-                        onclick="openBrowser('file')">
-                  <i class="bi bi-folder2-open"></i> Browse
-                </button>
-              </div>
-            </div>
-
-            <div class="mb-3">
-              <label class="form-label fw-semibold">Reflectivity Preview (R(Q))</label>
+              <label class="form-label fw-semibold">Reflectivity Data</label>
               <div id="setup-rq-chart" style="height:320px" class="border rounded bg-white"></div>
               <div class="mt-2">
-                <button class="btn btn-sm btn-outline-secondary" type="button"
-                        onclick="openBrowser('compare-file')">
-                  <i class="bi bi-plus-lg"></i> Add Comparison File
+                <button class="btn btn-sm btn-outline-primary" type="button"
+                        onclick="openBrowser('file')">
+                  <i class="bi bi-folder2-open"></i> Load Data
                 </button>
               </div>
               <div class="mt-2">
-                <label class="form-label fw-semibold mb-1">Plotted Files</label>
+                <div class="form-text mb-1">
+                  Tick the checkbox to include a file in the fit.
+                  Multiple checked files trigger co-refinement with shared structural parameters.
+                </div>
                 <div id="setup-plotted-files" class="list-group list-group-flush border rounded bg-white">
-                  <div class="list-group-item text-muted small">No files plotted yet.</div>
+                  <div class="list-group-item text-muted small">No files loaded yet.</div>
                 </div>
               </div>
             </div>
@@ -276,6 +268,11 @@
 {% endblock %}
 
 {% block scripts %}
+{% if prev_run is defined and prev_run %}
+<script>
+  var _prevRun = {{ prev_run | tojson }};
+</script>
+{% endif %}
 <script src="{{ url_for('web.static', filename='setup.js') }}"></script>
 {% if run_state.status in ('running', 'waiting_for_user') %}
 <script>pollStatus();</script>

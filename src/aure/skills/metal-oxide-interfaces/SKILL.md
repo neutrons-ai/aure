@@ -3,8 +3,10 @@ name: metal-oxide-interfaces
 description: >
   Domain knowledge for metal oxide interface analysis in reflectometry. Covers
   native oxide formation on metals (Cu→CuO, Ti→TiO₂), oxide thickness ranges,
-  and rules for when to add or avoid oxide layers. Use when the sample involves
-  metal oxides, copper oxide, titanium oxide, native oxides, or SiO₂.
+  and rules for when to add or avoid oxide layers. Always use when the sample involves
+  metals, copper, titanium, native oxides, or SiO₂. The user may not have specified
+  the oxide layer, but if the metal is exposed to ambient conditions, it is likely
+  present and should be considered in the model.
 metadata:
   author: aure
   version: "1.0"
@@ -55,3 +57,41 @@ should NOT have oxide layers added on them. Their SLD bounds should be wider
 (±3.0) to account for intermixing with adjacent layers:
 - Titanium adhesion: SLD range -5.0 to 1.0
 - Chromium adhesion: SLD range 1.0 to 5.0
+
+## Refinement Strategy — Metal Oxide Interfaces
+
+When refining a model with metal layers, apply these rules in order:
+
+### Adhesion Layer Parameter Drift
+
+Thin adhesion layers (Ti, Cr) are prone to parameter trade-offs during fitting:
+- **Thickness inflation**: If fitted Ti thickness is >2× nominal (e.g., 100 Å when
+  50 Å is expected), tighten thickness bounds close to the nominal value
+  (e.g., 30–80 Å for a nominal 50 Å layer). The fitter uses the adhesion layer
+  as a contrast sink when given too much freedom.
+- **SLD drift**: If fitted Ti SLD deviates >50% from nominal (-1.95), check whether
+  the SLD bounds are too wide. Narrowing to ±2.0 around nominal may help, but keep
+  bounds wide enough for realistic intermixing (minimum ±1.5).
+- **Roughness pinning**: If adhesion layer roughness is pinned at its lower bound,
+  the bound may be too restrictive. Ensure roughness_min ≥ 5 Å and roughness_max
+  is at least 20 Å.
+
+### Metal Surface Oxide
+
+If the outermost metal layer shows high χ² and there is no oxide in the model:
+- First try adjusting the metal's SLD and roughness bounds before adding an oxide.
+- Only add a surface oxide layer if χ² remains > 10 after parameter adjustments
+  AND residual fringes suggest a thin (10–50 Å) unmodeled layer.
+- When adding an oxide, use the table above for initial SLD and thickness values.
+- Do NOT add an oxide layer to a metal that is covered by another layer or solvent
+  unless the sample description indicates oxide formation is expected.
+
+### Multi-Layer Metal Stacks (e.g., Cu on Ti on Si)
+
+- The Cu/Ti interface roughness should typically be 5–15 Å. If it grows larger
+  than 20 Å, consider whether intermixing is being used to compensate for a
+  missing interface layer.
+- Keep the Cu SLD bounds within ±2.0 of the nominal 6.55 value.
+- For Ti under Cu, the Ti SLD can deviate more due to intermixing — use bounds
+  of -5.0 to 1.0 but flag deviations beyond -4.0 or above 0.0 as potential
+  unphysical behavior.

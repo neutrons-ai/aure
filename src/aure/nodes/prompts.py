@@ -132,6 +132,9 @@ FIT_EVALUATION_PROMPT = """You are evaluating the results of a neutron reflectiv
 - Method: {method}
 - Converged: {converged}
 
+## Per-File Fit Quality (multi-file co-refinement)
+{per_file_chi2}
+
 ## Best-fit Parameters
 {parameters}
 
@@ -262,6 +265,25 @@ def _format_complexity_assessment(
     return "\n".join(lines)
 
 
+def _format_per_file_chi2(per_file_results: list | None) -> str:
+    """Format per-file χ² breakdown for LLM prompts."""
+    if not per_file_results:
+        return "  (single-file fit — not applicable)"
+
+    lines = []
+    for pf in per_file_results:
+        chi2 = pf.get("chi_squared", float("inf"))
+        lines.append(f"  - **{pf.get('label', '?')}**: χ² = {chi2:.3f}")
+    lines.append("")
+    lines.append(
+        "  The data was fit jointly across multiple Q-range segments. "
+        "All structural parameters are shared; each file has its own "
+        "intensity normalization. If one segment fits much worse than "
+        "the others, focus suggestions on the Q-range where the fit is poor."
+    )
+    return "\n".join(lines)
+
+
 def format_fit_evaluation_prompt(
     sample_description: str,
     hypothesis: str | None,
@@ -279,6 +301,7 @@ def format_fit_evaluation_prompt(
     n_params: int = 0,
     n_layers: int = 0,
     skill_context: str = "",
+    per_file_results: list | None = None,
 ) -> str:
     """
     Format the fit evaluation prompt.
@@ -346,6 +369,7 @@ def format_fit_evaluation_prompt(
             n_layers=n_layers,
         ),
         skill_context=skill_context or "(no additional domain knowledge)",
+        per_file_chi2=_format_per_file_chi2(per_file_results),
     )
 
 

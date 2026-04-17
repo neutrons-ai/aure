@@ -20,6 +20,41 @@ logger = logging.getLogger(__name__)
 
 
 # ======================================================================
+# Data loading
+# ======================================================================
+
+
+def load_probe(file_path: str, *, dq_is_fwhm: bool = True):
+    """Load a reflectivity data file into a refl1d ``Probe`` object.
+
+    This is the single entry-point for data loading into refl1d.
+    Different loading strategies can be dispatched here in the future
+    (e.g., ORSO, polarised, event-mode).
+
+    Parameters
+    ----------
+    file_path
+        Path to the reflectivity data file (ASCII 4-column, .refl, .ort).
+    dq_is_fwhm
+        Whether the dQ column is FWHM (True) or 1-sigma (False).
+        Defaults to True, which is the convention for most instrument
+        reduction software.
+
+    Returns
+    -------
+    probe
+        A refl1d ``Probe`` (or ``QProbe``) object.
+    """
+    import warnings
+
+    warnings.filterwarnings("ignore", category=UserWarning, module="refl1d")
+    from refl1d.names import load4
+
+    abs_path = os.path.abspath(file_path)
+    return load4(abs_path, FWHM=dq_is_fwhm)
+
+
+# ======================================================================
 # Build refl1d objects from ModelDefinition
 # ======================================================================
 
@@ -40,17 +75,45 @@ def build_experiment(definition: dict):
     import warnings
 
     warnings.filterwarnings("ignore", category=UserWarning, module="refl1d")
-    from refl1d.names import SLD, Experiment, load4
+    from refl1d.names import Experiment
 
     data_file = definition["data_file"]
-    abs_data_file = os.path.abspath(data_file)
-    probe = load4(abs_data_file)
+    dq_is_fwhm = definition.get("dq_is_fwhm", True)
+    probe = load_probe(data_file, dq_is_fwhm=dq_is_fwhm)
+    intensity = definition.get("intensity", {})
+
+    sample = _build_sample(definition)
+
+    # Probe intensity
+    if not intensity.get("fixed", False):
+        int_min = intensity.get("min", 0.7)
+        int_max = intensity.get("max", 1.1)
+        probe.intensity.range(int_min, int_max)
+
+    experiment = Experiment(probe=probe, sample=sample)
+    return experiment
+
+
+def _build_sample(definition: dict):
+    """Build a refl1d sample stack with parameter ranges from a ModelDefinition.
+
+    The returned ``sample`` is a refl1d stack object suitable for passing
+    to ``Experiment(probe=..., sample=sample)``.  All parameter ranges
+    (thickness, SLD, roughness) are applied.
+
+    This is factored out of :func:`build_experiment` so that
+    :func:`build_multi_problem` can share a single sample across
+    multiple experiments for multi-file co-refinement.
+    """
+    import warnings
+
+    warnings.filterwarnings("ignore", category=UserWarning, module="refl1d")
+    from refl1d.names import SLD
 
     substrate_info = definition["substrate"]
     ambient_info = definition["ambient"]
     layers_info = definition.get("layers", [])
     back_reflection = definition.get("back_reflection", False)
-    intensity = definition.get("intensity", {})
 
     # --- Materials ---
     substrate = SLD(name=substrate_info["name"], rho=substrate_info["sld"])
@@ -62,8 +125,6 @@ def build_experiment(definition: dict):
 
     # --- Sample stack ---
     if back_reflection:
-        # Beam enters from substrate side:
-        #   ambient(0, roughness) | material_n(...) | ... | material_1(...) | substrate
         roughness_first = layers_info[-1]["roughness"] if layers_info else 3.0
         stack_parts = [ambient(0, roughness_first)]
         for i in reversed(range(len(layers_info))):
@@ -71,8 +132,6 @@ def build_experiment(definition: dict):
             stack_parts.append(materials[i](layer["thickness"], layer["roughness"]))
         stack_parts.append(substrate)
     else:
-        # Normal geometry: beam enters from ambient side:
-        #   substrate(0, roughness) | material_1(...) | ... | material_n(...) | ambient
         stack_parts = [substrate(0, substrate_info.get("roughness", 3.0))]
         for i, layer in enumerate(layers_info):
             stack_parts.append(materials[i](layer["thickness"], layer["roughness"]))
@@ -83,7 +142,6 @@ def build_experiment(definition: dict):
         sample = sample | part
 
     # --- Parameter ranges ---
-    # Ambient SLD (if not air / zero)
     if (
         ambient_info.get("name", "").lower() != "air"
         and ambient_info.get("sld", 0) != 0
@@ -100,36 +158,25 @@ def build_experiment(definition: dict):
         else:
             idx = i + 1
 
-        # Thickness
         t_min = layer.get("thickness_min", layer["thickness"] * 0.5)
         t_max = layer.get("thickness_max", layer["thickness"] * 2.0)
         sample[idx].thickness.range(t_min, t_max)
 
-        # SLD
         sld_min = layer.get("sld_min", layer["sld"] - 2.5)
         sld_max = layer.get("sld_max", layer["sld"] + 2.5)
         sample[idx].material.rho.range(sld_min, sld_max)
 
-        # Roughness
         r_min = layer.get("roughness_min", 5.0)
         r_max = layer.get("roughness_max", 30.0)
         sample[idx].interface.range(r_min, r_max)
 
-    # First-element interface roughness
     if back_reflection:
         sample[0].interface.range(0, 30.0)
     else:
         sub_rough_max = substrate_info.get("roughness_max", 15.0)
         sample[0].interface.range(0, sub_rough_max)
 
-    # Probe intensity
-    if not intensity.get("fixed", False):
-        int_min = intensity.get("min", 0.7)
-        int_max = intensity.get("max", 1.1)
-        probe.intensity.range(int_min, int_max)
-
-    experiment = Experiment(probe=probe, sample=sample)
-    return experiment
+    return sample
 
 
 def build_problem(definition: dict):
@@ -148,6 +195,72 @@ def build_problem(definition: dict):
 
     experiment = build_experiment(definition)
     return FitProblem(experiment)
+
+
+def build_multi_problem(definition: dict, data_files: list[dict]):
+    """Build a joint ``FitProblem`` for multi-file co-refinement.
+
+    A *single* refl1d ``Sample`` is shared across multiple
+    ``Experiment`` objects, each with its own ``Probe`` (loaded from a
+    separate data file).  Because the ``Sample`` is shared, all
+    structural parameters (thickness, SLD, roughness) are automatically
+    tied — they are the same ``bumps.parameter.Parameter`` objects.
+    Each probe gets its own independent intensity parameter.
+
+    Parameters
+    ----------
+    definition
+        A ``ModelDefinition`` dict (the model structure).
+    data_files
+        List of ``DatasetInfo`` dicts, each with ``"file"`` (path) and
+        ``"label"`` (human-readable tag).
+
+    Returns
+    -------
+    problem : bumps.fitproblem.FitProblem
+        A ``FitProblem`` wrapping a list of experiments.
+    experiments : list
+        The individual ``Experiment`` objects (sorted by increasing Q).
+    sorted_data_files : list
+        The *data_files* list reordered to match *experiments*.
+    """
+    import warnings
+
+    warnings.filterwarnings("ignore", category=UserWarning, module="refl1d")
+    from refl1d.names import Experiment
+    from bumps.fitproblem import FitProblem
+
+    sample = _build_sample(definition)
+    intensity = definition.get("intensity", {})
+    default_fwhm = definition.get("dq_is_fwhm", True)
+
+    # Sort data files by minimum Q so experiments are in increasing Q order
+    indexed = list(enumerate(data_files))
+    probes = []
+    for _i, ds in indexed:
+        fwhm = ds.get("dq_is_fwhm", default_fwhm)
+        probes.append(load_probe(ds["file"], dq_is_fwhm=fwhm))
+
+    sort_order = sorted(
+        range(len(probes)),
+        key=lambda k: float(probes[k].Q.min()) if len(probes[k].Q) else 0.0,
+    )
+
+    sorted_data_files = [data_files[k] for k in sort_order]
+    sorted_probes = [probes[k] for k in sort_order]
+
+    experiments = []
+    for probe in sorted_probes:
+        # Each probe gets its own independent intensity parameter
+        if not intensity.get("fixed", False):
+            int_min = intensity.get("min", 0.7)
+            int_max = intensity.get("max", 1.1)
+            probe.intensity.range(int_min, int_max)
+
+        experiments.append(Experiment(probe=probe, sample=sample))
+
+    problem = FitProblem(experiments)
+    return problem, experiments, sorted_data_files
 
 
 def apply_parameters(problem, params: Dict[str, float]) -> None:
@@ -305,6 +418,7 @@ def export_model_script(
     data_file = definition.get("data_file", "")
     back_reflection = definition.get("back_reflection", False)
     intensity = definition.get("intensity", {})
+    dq_is_fwhm = definition.get("dq_is_fwhm", True)
 
     abs_data_file = os.path.abspath(data_file) if data_file else data_file
 
@@ -348,7 +462,7 @@ def export_model_script(
             'warnings.filterwarnings("ignore", category=UserWarning, module="refl1d")',
             "",
             "# ========== Load Data ==========",
-            f'probe = load4("{abs_data_file}")',
+            f'probe = load4("{abs_data_file}", FWHM={dq_is_fwhm})',
             "",
             "# ========== Materials ==========",
         ]

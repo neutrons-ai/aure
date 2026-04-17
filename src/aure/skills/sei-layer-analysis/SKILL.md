@@ -62,3 +62,24 @@ Common battery electrolyte solvents and their SLDs:
 | EC (ethylene carbonate) | ~1.0 | ~5.5 |
 | DMC (dimethyl carbonate) | ~0.5 | ~5.0 |
 | THF | 0.18 | 6.35 (d8-THF) |
+
+## Refinement Strategy — Battery Interfaces
+
+When refining battery/SEI models:
+
+- **SEI thickness uncertainty**: SEI layers are inherently diffuse. If the fitted
+  SEI thickness is very different from the 50–200 Å typical range AND χ² is high,
+  first try widening the SLD bounds (0.5–5.0) rather than changing thickness bounds.
+  SEI composition (and therefore SLD) varies more than its thickness.
+- **Lithium plating detection**: If residual fringes suggest a thin (~10–50 Å)
+  unmodeled layer between the electrode and SEI, consider adding a Li plating
+  layer (SLD ≈ -0.9). Only add if the BIC supports it.
+- **Oxide reduction**: If the sample description says the native oxide "reduces
+  away" but an oxide layer is still in the model, remove it and replace with
+  SEI/plating layers as described.
+- **Electrode roughness**: Battery electrodes can have high roughness (10–30 Å).
+  If the electrode roughness is pinned at its upper bound, widen the roughness
+  range before adding interface layers.
+- **Electrolyte SLD**: Verify the fitted electrolyte (ambient) SLD matches the
+  stated solvent. Battery electrolytes are often deuterated for contrast — check
+  for isotope confusion.

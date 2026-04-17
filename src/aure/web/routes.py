@@ -208,6 +208,32 @@ def index():
     return render_template("setup.html", active_tab="setup", run_state=run_state)
 
 
+@bp.route("/setup")
+def setup():
+    """Setup page – always accessible, pre-populated from previous run."""
+    run_state = current_app.config["RUN_STATE"]
+    prev_run = {}
+    rd = _run_data()
+    if rd:
+        ri = rd.get_run_info()
+        if ri:
+            prev_run = {
+                "data_file": ri.get("data_file", ""),
+                "sample_description": ri.get("sample_description", ""),
+                "hypothesis": ri.get("hypothesis") or "",
+                "output_dir": str(
+                    Path(current_app.config.get("OUTPUT_DIR", "")).parent
+                ),
+                "data_files": ri.get("data_files", []),
+            }
+    return render_template(
+        "setup.html",
+        active_tab="setup",
+        run_state=run_state,
+        prev_run=prev_run,
+    )
+
+
 @bp.route("/history")
 def history():
     if not _has_output():
@@ -568,7 +594,14 @@ def api_start_analysis():
         return jsonify({"errors": errors}), 400
 
     # Determine run sub-directory
-    run_name = _extract_run_name(data_file)
+    data_files = body.get("data_files")  # list of {file, label} or None
+    if data_files and len(data_files) > 1:
+        # For co-refinement: use the lowest run number across all files
+        run_names = [_extract_run_name(df["file"]) for df in data_files]
+        numeric = [int(r) for r in run_names if r.isdigit()]
+        run_name = str(min(numeric)) if numeric else run_names[0]
+    else:
+        run_name = _extract_run_name(data_file)
     output_dir = str(Path(output_root).expanduser().resolve() / run_name)
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
@@ -622,6 +655,8 @@ def api_start_analysis():
                     run_state["Q"] = state["Q"]
                     run_state["R"] = state["R"]
                     run_state["dR"] = state.get("dR", [])
+                if "data_files" not in run_state and state.get("data_files"):
+                    run_state["data_files"] = state["data_files"]
                 if state.get("fit_results"):
                     run_state["fit_results"] = list(state["fit_results"])
 
@@ -666,6 +701,7 @@ def api_start_analysis():
                 checkpoint_callback=_checkpoint_cb,
                 interactive=interactive,
                 pause_callback=pause_callback,
+                data_files=data_files,
             )
             with lock:
                 run_state["status"] = "complete"
@@ -693,6 +729,7 @@ def api_live_results():
         Q = run_state.get("Q", [])
         R = run_state.get("R", [])
         dR = run_state.get("dR", [])
+        data_files = run_state.get("data_files", [])
 
     if not fit_results:
         return jsonify(
@@ -706,21 +743,41 @@ def api_live_results():
             }
         )
 
+    has_multi = len(data_files) > 1 and any(ds.get("Q") for ds in data_files)
+
     # Build model curves
     models = []
     profiles = []
     for fr in fit_results:
         it = fr.get("iteration", 0)
         chi2 = fr.get("chi_squared")
-        label = f"Iteration {it}"
-        if chi2 is not None:
-            label += f" (\u03c7\u00b2={chi2:.2f})"
-        if fr.get("Q_fit") and fr.get("R_fit"):
-            models.append(
-                {"label": label, "Q": fr["Q_fit"], "R": fr["R_fit"], "chi2": chi2}
-            )
+        per_file = fr.get("per_file_results") or []
+
+        if has_multi and per_file:
+            for pf in per_file:
+                pf_label = pf.get("label", "?")
+                pf_chi2 = pf.get("chi_squared")
+                label = f"{pf_label} \u2013 iter {it}"
+                if pf_chi2 is not None:
+                    label += f" (\u03c7\u00b2={pf_chi2:.2f})"
+                if pf.get("Q_fit") and pf.get("R_fit"):
+                    models.append(
+                        {"label": label, "Q": pf["Q_fit"], "R": pf["R_fit"], "chi2": pf_chi2, "iteration": it}
+                    )
+        else:
+            label = f"Iteration {it}"
+            if chi2 is not None:
+                label += f" (\u03c7\u00b2={chi2:.2f})"
+            if fr.get("Q_fit") and fr.get("R_fit"):
+                models.append(
+                    {"label": label, "Q": fr["Q_fit"], "R": fr["R_fit"], "chi2": chi2, "iteration": it}
+                )
+
         if fr.get("sld_z") and fr.get("sld_rho"):
-            profiles.append({"label": label, "z": fr["sld_z"], "sld": fr["sld_rho"]})
+            sld_label = f"Iteration {it}"
+            if chi2 is not None:
+                sld_label += f" (\u03c7\u00b2={chi2:.2f})"
+            profiles.append({"label": sld_label, "z": fr["sld_z"], "sld": fr["sld_rho"]})
 
     # Latest fit parameters
     latest = fit_results[-1]
@@ -736,21 +793,27 @@ def api_live_results():
             }
         )
 
-    return jsonify(
-        {
-            "Q": Q,
-            "R": R,
-            "dR": dR,
-            "models": models,
-            "profiles": profiles,
-            "chi_squared": latest.get("chi_squared"),
-            "method": latest.get("method"),
-            "converged": latest.get("converged"),
-            "parameters": params_list,
-            "issues": latest.get("issues", []),
-            "suggestions": latest.get("suggestions", []),
-        }
-    )
+    result = {
+        "Q": Q,
+        "R": R,
+        "dR": dR,
+        "models": models,
+        "profiles": profiles,
+        "chi_squared": latest.get("chi_squared"),
+        "method": latest.get("method"),
+        "converged": latest.get("converged"),
+        "parameters": params_list,
+        "issues": latest.get("issues", []),
+        "suggestions": latest.get("suggestions", []),
+    }
+
+    if has_multi:
+        result["data_files"] = [
+            {"label": ds.get("label", ""), "Q": ds.get("Q", []), "R": ds.get("R", []), "dR": ds.get("dR", [])}
+            for ds in data_files
+        ]
+
+    return jsonify(result)
 
 
 @bp.route("/api/user-feedback", methods=["POST"])

@@ -57,3 +57,21 @@ metadata:
 - Polymer films may swell in solvent, changing thickness and SLD.
 - The SLD of a swollen layer is a volume-weighted average of polymer and solvent SLDs.
 - If fitting a swollen film, allow wider SLD and thickness bounds than the dry film values.
+
+## Refinement Strategy — Polymer Films
+
+When refining polymer thin film models:
+
+- **Thickness drift**: Polymer film thickness can vary from nominal due to
+  processing conditions. Allow thickness bounds of ±50% around the nominal
+  value for spin-coated films.
+- **SLD between isotope variants**: If the fitted SLD falls between h- and d-
+  values (e.g., 3.9 for PS where h-PS = 1.4 and d-PS = 6.4), this suggests
+  partial deuteration or isotope blending. Adjust bounds to the appropriate
+  intermediate range rather than forcing a pure-isotope SLD.
+- **Brush/grafted layers**: These often have graded density profiles. If χ²
+  is high and roughness is large relative to thickness, consider whether
+  the single-slab approximation is adequate before adding sublayers.
+- **Swollen films**: When the sample is measured in solvent, the layer SLD
+  should be allowed to vary between the dry polymer SLD and the solvent SLD.
+  Set SLD bounds accordingly.
