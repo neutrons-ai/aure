@@ -49,59 +49,133 @@ def _read_file_header(file_path: str) -> str:
     return "\n".join(lines)
 
 
-_DQ_INSPECTION_PROMPT = """\
-You are inspecting a neutron reflectometry data file header to determine
-how the resolution column (dQ) is encoded.
+def _parse_theta_from_header(file_path: str) -> float:
+    """Extract incident angle (theta) from a REF_L data file header.
 
-The file header and first few data lines are shown below:
+    Looks for the metadata table that contains ``TwoTheta(deg)`` and
+    extracts the value.  For a single-segment file the table has one
+    data row; theta is half of TwoTheta.
+
+    Returns 0.0 if the angle cannot be determined (e.g. combined file
+    with multiple segments, or non-REF_L format).
+    """
+    header = _read_file_header(file_path)
+    if not header:
+        return 0.0
+
+    lines = header.split("\n")
+    # Find the column header line containing TwoTheta
+    col_idx = -1
+    header_line_idx = -1
+    for i, line in enumerate(lines):
+        if "TwoTheta" in line and line.startswith("#"):
+            cols = line.lstrip("# ").split()
+            for j, col in enumerate(cols):
+                if col.startswith("TwoTheta"):
+                    col_idx = j
+                    header_line_idx = i
+                    break
+            break
+
+    if col_idx < 0:
+        return 0.0
+
+    # Collect data rows after the header line (comment lines with numeric data)
+    data_rows = []
+    for line in lines[header_line_idx + 1 :]:
+        if not line.startswith("#"):
+            break
+        parts = line.lstrip("# ").split()
+        if len(parts) > col_idx:
+            try:
+                float(parts[col_idx])
+                data_rows.append(parts)
+            except ValueError:
+                continue
+
+    if len(data_rows) != 1:
+        # Combined file (multiple segments) or no data — can't assign a single theta
+        return 0.0
+
+    try:
+        two_theta = float(data_rows[0][col_idx])
+        return two_theta / 2.0
+    except (ValueError, IndexError):
+        return 0.0
+
+
+_HEADER_METADATA_PROMPT = """\
+You are inspecting a neutron reflectometry data file header.  Extract the
+metadata listed below and return it as a single JSON object.
+
+Header:
 ```
 {header}
 ```
 
-The file has 4 columns: Q, R, dR, dQ.
+Return a JSON object with these fields:
 
-Is the dQ column expressed as **FWHM** (full width at half maximum) or as
-**1-sigma** (standard deviation)?
+- "dq_is_fwhm" (bool): true if the dQ (resolution) column is FWHM,
+  false if it is 1-sigma.  Most reduction software outputs FWHM; assume
+  true unless the header explicitly says otherwise (e.g. "dQ (1-sigma)",
+  "sigma_Q", "dQ [sigma]").
 
-Most neutron reflectometry reduction software outputs dQ as FWHM. This is
-the default assumption unless the header explicitly states otherwise (e.g.,
-"dQ (1-sigma)", "sigma_Q", "dQ [sigma]", or similar).
+- "num_segments" (int): number of measurement segments / runs listed in
+  the metadata table (count the data rows in the table that lists
+  DataRun, TwoTheta, etc.).  1 for a single-segment file.  0 if no such
+  table is present.
 
-Respond with ONLY a JSON object:
-{{"dq_is_fwhm": true}}   if dQ is FWHM (or if the header is ambiguous)
-{{"dq_is_fwhm": false}}  if dQ is explicitly stated as 1-sigma
+- "theta" (float): incident angle **in degrees**.  For single-segment
+  files (num_segments == 1), compute TwoTheta / 2.  For combined files
+  (num_segments > 1) or if the angle cannot be determined, use 0.0.
+
+- "instrument" (string | null): instrument identifier if recognisable
+  from the header (e.g. "REF_L", "REF_M", "INTER").  null if unknown.
+
+If you are unsure about any field, use the safe defaults:
+{{"dq_is_fwhm": true, "num_segments": 0, "theta": 0.0, "instrument": null}}
+
+Respond with ONLY the JSON object.
 """
 
 
-def detect_dq_convention(file_path: str) -> bool:
-    """Determine whether the dQ column in a data file is FWHM.
+# -- Default metadata returned when parsing is not possible ---------------
+_DEFAULT_HEADER_METADATA = {
+    "dq_is_fwhm": True,
+    "num_segments": 0,
+    "theta": 0.0,
+    "instrument": None,
+}
 
-    Uses the LLM to inspect the file header.  Falls back to True
-    (FWHM) if the LLM is unavailable or parsing fails.
 
-    Parameters
-    ----------
-    file_path
-        Path to the reflectivity data file.
+def parse_file_header(file_path: str) -> dict:
+    """Extract structured metadata from a reflectometry data file header.
+
+    Makes a single LLM call that returns dQ convention, incident angle,
+    number of segments, and instrument.  Falls back to deterministic
+    heuristics (``_parse_theta_from_header``) when the LLM is
+    unavailable, and safe defaults for anything that cannot be inferred.
 
     Returns
     -------
-    bool
-        True if dQ is FWHM, False if 1-sigma.
+    dict
+        Keys: ``dq_is_fwhm``, ``num_segments``, ``theta``, ``instrument``.
     """
     header = _read_file_header(file_path)
     if not header:
-        logger.debug("[INTAKE] Could not read header from %s; assuming FWHM", file_path)
-        return True
+        logger.debug("[INTAKE] Could not read header from %s; using defaults", file_path)
+        return dict(_DEFAULT_HEADER_METADATA)
 
     if not llm_available():
-        logger.debug("[INTAKE] LLM not available for dQ inspection; assuming FWHM")
-        return True
+        logger.debug("[INTAKE] LLM not available; falling back to heuristics")
+        result = dict(_DEFAULT_HEADER_METADATA)
+        result["theta"] = _parse_theta_from_header(file_path)
+        return result
 
     try:
         from langchain_core.messages import HumanMessage
 
-        prompt = _DQ_INSPECTION_PROMPT.format(header=header)
+        prompt = _HEADER_METADATA_PROMPT.format(header=header)
         llm = get_llm(temperature=0)
         response = invoke_with_timeout(llm, [HumanMessage(content=prompt)])
         content = response.content.strip()
@@ -113,16 +187,43 @@ def detect_dq_convention(file_path: str) -> bool:
 
         match = re.search(r"\{[\s\S]*\}", content)
         if match:
-            result = json.loads(match.group())
-            is_fwhm = result.get("dq_is_fwhm", True)
-            logger.info("[INTAKE] dQ convention for %s: %s",
-                        file_path, "FWHM" if is_fwhm else "1-sigma")
-            return bool(is_fwhm)
+            parsed = json.loads(_fix_llm_json(match.group()))
+            # Merge with defaults so missing keys never cause KeyErrors
+            result = dict(_DEFAULT_HEADER_METADATA)
+            for key in result:
+                if key in parsed:
+                    result[key] = parsed[key]
+            logger.info(
+                "[INTAKE] Header metadata for %s: dq_is_fwhm=%s, theta=%.4f, "
+                "segments=%d, instrument=%s",
+                file_path,
+                result["dq_is_fwhm"],
+                result["theta"],
+                result["num_segments"],
+                result["instrument"],
+            )
+            return result
     except Exception as e:
-        logger.warning("[INTAKE] dQ inspection failed for %s: %s; assuming FWHM",
-                       file_path, e)
+        logger.warning(
+            "[INTAKE] Header metadata extraction failed for %s: %s; "
+            "falling back to heuristics",
+            file_path,
+            e,
+        )
 
-    return True
+    # Fallback: heuristic theta + safe defaults for the rest
+    result = dict(_DEFAULT_HEADER_METADATA)
+    result["theta"] = _parse_theta_from_header(file_path)
+    return result
+
+
+def detect_dq_convention(file_path: str) -> bool:
+    """Determine whether the dQ column in a data file is FWHM.
+
+    Convenience wrapper that delegates to :func:`parse_file_header` and
+    returns only the ``dq_is_fwhm`` flag.
+    """
+    return parse_file_header(file_path)["dq_is_fwhm"]
 
 
 # ============================================================================
@@ -246,6 +347,12 @@ def intake_node(state: ReflectivityState) -> Dict[str, Any]:
                     enriched["Q"] = extra_data["Q"].tolist()
                     enriched["R"] = extra_data["R"].tolist()
                     enriched["dR"] = extra_data.get("dR", [0.0] * len(extra_data["Q"])).tolist() if extra_data.get("dR") is not None else [0.0] * len(extra_data["Q"])
+                    # Parse header metadata (dQ convention, theta, etc.)
+                    meta = parse_file_header(ds["file"])
+                    if "theta" not in enriched:
+                        enriched["theta"] = meta["theta"]
+                    if "dq_is_fwhm" not in enriched:
+                        enriched["dq_is_fwhm"] = meta["dq_is_fwhm"]
                     validated_files.append(enriched)
                 except Exception as e:
                     updates["messages"].append(
@@ -280,14 +387,8 @@ def intake_node(state: ReflectivityState) -> Dict[str, Any]:
     # ========== 2. Detect dQ Convention ==========
     # Inspect the primary data file header to determine if dQ is FWHM.
     # The result is stored in the state so model_builder can pass it to load4.
-    primary_dq_fwhm = detect_dq_convention(state["data_file"])
-    updates["dq_is_fwhm"] = primary_dq_fwhm
-
-    # Apply to each data_files entry as well (each file may differ)
-    if "data_files" in updates:
-        for ds in updates["data_files"]:
-            if "dq_is_fwhm" not in ds:
-                ds["dq_is_fwhm"] = detect_dq_convention(ds["file"])
+    primary_meta = parse_file_header(state["data_file"])
+    updates["dq_is_fwhm"] = primary_meta["dq_is_fwhm"]
 
     # ========== 3. Parse Sample Description ==========
     if state["sample_description"]:

@@ -604,4 +604,23 @@ def _expand_model_bounds(model: dict, boundary_hits: list) -> dict:
                 spread = intensity["max"] - intensity.get("min", 0.7)
                 intensity["max"] = intensity["max"] + spread * 0.5
 
+        # Handle sample_broadening
+        if not matched and "sample_broadening" in name.lower():
+            sb = model.get("sample_broadening", {})
+            if sb.get("enabled"):
+                if side == "upper" and "max" in sb:
+                    spread = sb["max"] - sb.get("min", 0.0)
+                    sb["max"] = sb["max"] + spread * 0.5
+
+        # Handle theta_offset
+        if not matched and "theta_offset" in name.lower():
+            to = model.get("theta_offset", {})
+            if to.get("enabled"):
+                if side == "lower" and "min" in to:
+                    spread = to.get("max", 0.02) - to["min"]
+                    to["min"] = to["min"] - spread * 0.5
+                elif side == "upper" and "max" in to:
+                    spread = to["max"] - to.get("min", -0.02)
+                    to["max"] = to["max"] + spread * 0.5
+
     return model

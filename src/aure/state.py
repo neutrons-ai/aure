@@ -125,6 +125,7 @@ class DatasetInfo(TypedDict):
     file: str  # Absolute path to the data file
     label: str  # Short human-readable label (e.g. "low-Q", "file1")
     dq_is_fwhm: bool  # Whether dQ column is FWHM (True) or 1-sigma (False)
+    theta: float  # Incident angle in degrees (half of TwoTheta from header)
 
 
 class PerFileFitResult(TypedDict, total=False):

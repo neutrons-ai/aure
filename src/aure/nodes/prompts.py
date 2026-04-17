@@ -606,6 +606,16 @@ You must output a COMPLETE, valid JSON object matching this schema:
     "min": <min intensity>,
     "max": <max intensity>,
     "fixed": <true/false>
+  }},
+  "sample_broadening": {{
+    "enabled": <true/false>,
+    "min": <min broadening in degrees, default 0.0>,
+    "max": <max broadening in degrees, default 0.5>
+  }},
+  "theta_offset": {{
+    "enabled": <true/false>,
+    "min": <min offset in degrees, default -0.02>,
+    "max": <max offset in degrees, default 0.02>
   }}
 }}
 ```
@@ -620,6 +630,8 @@ Rules:
 5. Use best-fit parameter values as starting points where physically reasonable.
 6. Unless the data is stated as perfectly normalized, keep intensity varying (fixed: false).
 7. Apply all domain-specific rules from the Domain Knowledge section above.
+8. sample_broadening and theta_offset only work with angle-based probes (multi-segment data with theta info). Only set "enabled": true when angle info is available and the fit quality warrants it. These give each segment independent resolution/alignment corrections.
+9. When sample_broadening or theta_offset are already enabled and hitting bounds, widen their ranges.
 
 {user_constraints}
 

@@ -153,6 +153,15 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
             new_model["data_file"] = current_model.get("data_file", "")
             new_model["back_reflection"] = current_model.get("back_reflection", False)
             new_model["dq_is_fwhm"] = current_model.get("dq_is_fwhm", True)
+            # Carry over probe-level params if LLM omitted them
+            if "sample_broadening" not in new_model:
+                new_model["sample_broadening"] = current_model.get(
+                    "sample_broadening", {"enabled": False, "min": 0.0, "max": 0.5}
+                )
+            if "theta_offset" not in new_model:
+                new_model["theta_offset"] = current_model.get(
+                    "theta_offset", {"enabled": False, "min": -0.02, "max": 0.02}
+                )
             updates["llm_calls"].append(
                 LLMCallRecord(
                     node="modeling",
@@ -365,6 +374,16 @@ def _build_initial_model(state: ReflectivityState) -> Dict[str, Any]:
             "data_file": os.path.abspath(state["data_file"]),
             "intensity": intensity,
             "dq_is_fwhm": state.get("dq_is_fwhm", True),
+            "sample_broadening": {
+                "enabled": False,
+                "min": 0.0,
+                "max": 0.5,
+            },
+            "theta_offset": {
+                "enabled": False,
+                "min": -0.02,
+                "max": 0.02,
+            },
         }
         updates["current_model"] = model_def
         updates["model_history"] = [

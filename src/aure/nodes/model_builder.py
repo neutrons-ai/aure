@@ -54,6 +54,49 @@ def load_probe(file_path: str, *, dq_is_fwhm: bool = True):
     return load4(abs_path, FWHM=dq_is_fwhm)
 
 
+def load_probe_from_angle(file_path: str, theta: float, *, dq_is_fwhm: bool = True):
+    """Load a reflectivity data file and create an angle-based ``NeutronProbe``.
+
+    Unlike :func:`load_probe` (which creates a Q-based ``QProbe``), this
+    builds a ``NeutronProbe`` using the incident angle *theta*.  This
+    enables ``sample_broadening`` and ``theta_offset`` as fittable
+    parameters — important for multi-segment co-refinement where each
+    segment may need independent resolution corrections.
+
+    Parameters
+    ----------
+    file_path
+        Path to the reflectivity data file (ASCII 4-column).
+    theta
+        Incident angle in degrees (half of TwoTheta from the header).
+    dq_is_fwhm
+        Whether the dQ column is FWHM (True) or 1-sigma (False).
+    """
+    import numpy as np
+    from refl1d.probe import make_probe
+
+    abs_path = os.path.abspath(file_path)
+    q, r, dr, dq = np.loadtxt(abs_path).T
+
+    if not dq_is_fwhm:
+        dq = dq * (2 * np.sqrt(2 * np.log(2)))
+
+    theta_rad = np.deg2rad(theta)
+    wl = 4 * np.pi * np.sin(theta_rad) / q
+    dT = dq / q * np.tan(theta_rad) * 180.0 / np.pi
+    dL = np.zeros_like(q)
+
+    return make_probe(
+        T=theta,
+        dT=dT,
+        L=wl,
+        dL=dL,
+        data=(r, dr),
+        radiation="neutron",
+        resolution="uniform",
+    )
+
+
 # ======================================================================
 # Build refl1d objects from ModelDefinition
 # ======================================================================
@@ -239,7 +282,11 @@ def build_multi_problem(definition: dict, data_files: list[dict]):
     probes = []
     for _i, ds in indexed:
         fwhm = ds.get("dq_is_fwhm", default_fwhm)
-        probes.append(load_probe(ds["file"], dq_is_fwhm=fwhm))
+        theta = ds.get("theta", 0.0)
+        if theta and theta > 0:
+            probes.append(load_probe_from_angle(ds["file"], theta, dq_is_fwhm=fwhm))
+        else:
+            probes.append(load_probe(ds["file"], dq_is_fwhm=fwhm))
 
     sort_order = sorted(
         range(len(probes)),
@@ -249,6 +296,9 @@ def build_multi_problem(definition: dict, data_files: list[dict]):
     sorted_data_files = [data_files[k] for k in sort_order]
     sorted_probes = [probes[k] for k in sort_order]
 
+    broadening = definition.get("sample_broadening", {})
+    offset = definition.get("theta_offset", {})
+
     experiments = []
     for probe in sorted_probes:
         # Each probe gets its own independent intensity parameter
@@ -256,6 +306,17 @@ def build_multi_problem(definition: dict, data_files: list[dict]):
             int_min = intensity.get("min", 0.7)
             int_max = intensity.get("max", 1.1)
             probe.intensity.range(int_min, int_max)
+
+        # sample_broadening / theta_offset only exist on NeutronProbe
+        # (angle-based), not on QProbe (Q-based from load4).
+        if broadening.get("enabled") and hasattr(probe, "sample_broadening"):
+            probe.sample_broadening.range(
+                broadening.get("min", 0.0), broadening.get("max", 0.5)
+            )
+        if offset.get("enabled") and hasattr(probe, "theta_offset"):
+            probe.theta_offset.range(
+                offset.get("min", -0.02), offset.get("max", 0.02)
+            )
 
         experiments.append(Experiment(probe=probe, sample=sample))
 
