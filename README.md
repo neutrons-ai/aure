@@ -108,6 +108,61 @@ If `ALCF_ACCESS_TOKEN` is not set AuRE will try, in order:
 See the [ALCF docs](https://docs.alcf.anl.gov/services/inference-endpoints/#2-authenticate)
 for initial Globus authentication setup.
 
+## Co-refinement (multi-file fitting)
+
+When you have multiple reflectivity datasets measured on the same sample
+(e.g. different Q-range segments, or different contrasts with shared
+structural parameters), AuRE can fit them simultaneously. All structural
+layer parameters (thickness, SLD, roughness) are tied across files while
+each file gets its own intensity normalization.
+
+### CLI
+
+Pass extra files with `-d` / `--extra-data` (repeatable):
+
+```bash
+aure analyze low-Q.dat "Cu/Ti on Si" -d mid-Q.dat -d high-Q.dat -o ./output -v
+```
+
+### Manifest (batch)
+
+List the additional files under `data_files` alongside the primary `data_file`:
+
+```yaml
+jobs:
+  - name: copper_corefinement
+    data_file: data/REFL_218386.txt
+    data_files:
+      - data/REFL_218387.txt
+      - data/REFL_218388.txt
+    sample_description: 50 nm copper on 5 nm Ti on silicon
+```
+
+### Web UI
+
+In the setup page, click **Load Data** multiple times to add files.  Tick the
+checkbox next to each file to include it in the fit — multiple checked files
+trigger co-refinement automatically.
+
+### Python API
+
+```python
+from aure import run_analysis
+
+result = run_analysis(
+    data_file="data/REFL_218386.txt",
+    sample_description="Cu/Ti on Si in dTHF",
+    data_files=[
+        {"file": "data/REFL_218386.txt", "label": "REFL_218386"},
+        {"file": "data/REFL_218387.txt", "label": "REFL_218387"},
+        {"file": "data/REFL_218388.txt", "label": "REFL_218388"},
+    ],
+    output_dir="./output",
+)
+```
+
+The output directory is named after the lowest run number in the set.
+
 ## CLI reference
 
 After installation the `aure` command is available:
@@ -115,6 +170,20 @@ After installation the `aure` command is available:
 ```
 aure [OPTIONS] COMMAND [ARGS]...
 ```
+
+### `aure check-llm`
+
+Check LLM configuration and connectivity.
+
+```bash
+aure check-llm [--json] [--no-test] [--fix]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--json` | Output as JSON |
+| `--no-test` | Skip the live connection test |
+| `--fix` | Attempt to fix issues (e.g. download ALCF auth script) |
 
 ### `aure analyze`
 
@@ -129,6 +198,8 @@ aure analyze DATA_FILE SAMPLE_DESCRIPTION [OPTIONS]
 | `-o, --output-dir PATH` | Save checkpoints and model scripts to this directory |
 | `-m, --max-refinements N` | Maximum refinement iterations (default: 5) |
 | `-h, --hypothesis TEXT` | Optional hypothesis to test |
+| `-d, --extra-data PATH` | Additional data file for co-refinement (repeatable) |
+| `-c, --config PATH` | YAML config file with evaluation criteria and model constraints |
 | `-v, --verbose` | Stream workflow progress to stderr |
 | `--json` | Emit results as JSON |
 
@@ -138,8 +209,11 @@ aure analyze DATA_FILE SAMPLE_DESCRIPTION [OPTIONS]
 # Basic analysis
 aure analyze data.txt "100 nm polystyrene on silicon"
 
-# Save all outputs and increase refinement budget
+# Save outputs, increase refinement budget
 aure analyze data.txt "Cu/Ti bilayer on Si in dTHF" -o ./output -m 8 -v
+
+# Multi-file co-refinement
+aure analyze low-Q.dat "multilayer" -d mid-Q.dat -d high-Q.dat -o ./output
 ```
 
 ### `aure batch`
@@ -265,11 +339,10 @@ aure mcp-server --transport sse --port 8080  # HTTP/SSE
 
 ### `aure serve`
 
-Launch a local web viewer to explore the results of a completed (or
-in-progress) workflow run.
+Launch the AuRE web interface.
 
 ```bash
-aure serve OUTPUT_DIR [OPTIONS]
+aure serve [OUTPUT_DIR] [OPTIONS]
 ```
 
 | Option | Description |
@@ -278,8 +351,16 @@ aure serve OUTPUT_DIR [OPTIONS]
 | `--host HOST` | Interface to bind to (default: `127.0.0.1`; use `0.0.0.0` inside Docker) |
 | `--no-browser` | Don't open a browser automatically |
 
-The viewer has two tabs:
+When `OUTPUT_DIR` is given the app opens in **viewer mode** showing results
+from a completed run.  When omitted it starts in **interactive setup mode**
+where you can load data files, describe the sample, and launch an analysis
+from the browser.
 
+The viewer has three tabs:
+
+- **Setup** — load data files, enter sample description, and start a new
+  analysis.  When viewing results from a previous run the form is
+  pre-populated so you can rerun with the same or modified inputs.
 - **History** — step-by-step checkpoint timeline and an interactive χ²
   progression chart (Plotly.js, zoomable).
 - **Results** — log-log R(Q) plot with experimental data and model curves
@@ -309,8 +390,17 @@ persisted in the browser across sessions and prepended to the LLM-generated
 context description in the exported manifest.
 
 ```bash
-aure serve ./output
+aure serve               # interactive mode
+aure serve ./output      # viewer mode
 aure serve ./output --port 8080 --no-browser
+```
+
+### `aure interactive`
+
+Alias for `aure serve` in interactive setup mode (no output directory).
+
+```bash
+aure interactive [--port N] [--host HOST]
 ```
 
 ## Python API

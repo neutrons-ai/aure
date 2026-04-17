@@ -834,6 +834,11 @@ def batch(manifest: str, job: tuple, dry_run: bool):
         output_dir = str(Path(output_root) / merged["name"])
         click.echo(f"  • {merged['name']}")
         click.echo(f"      data   : {data_file}")
+        # Show extra data files for co-refinement
+        if merged.get("data_files"):
+            for df in merged["data_files"]:
+                extra = _resolve_path(df if isinstance(df, str) else df["file"], manifest_dir)
+                click.echo(f"             + {extra}")
         click.echo(f"      sample : {merged['sample_description'][:72]}")
         click.echo(f"      output : {output_dir}")
         if merged.get("hypothesis"):
@@ -862,6 +867,19 @@ def batch(manifest: str, job: tuple, dry_run: bool):
         data_file = _resolve_path(merged["data_file"], manifest_dir)
         output_root = _resolve_path(merged.get("output_root", "./output"), manifest_dir)
         output_dir = str(Path(output_root) / name)
+
+        # Build data_files list for co-refinement
+        data_files = None
+        raw_extra = merged.get("data_files")
+        if raw_extra and isinstance(raw_extra, list):
+            all_files = [data_file] + [
+                _resolve_path(df if isinstance(df, str) else df["file"], manifest_dir)
+                for df in raw_extra
+            ]
+            data_files = [
+                {"file": str(f), "label": Path(f).stem}
+                for f in all_files
+            ]
 
         click.echo(click.style(f"  [{idx}/{len(jobs)}] {name}", fg="cyan", bold=True))
 
@@ -898,6 +916,7 @@ def batch(manifest: str, job: tuple, dry_run: bool):
                 max_iterations=int(merged.get("max_refinements", 5)),
                 output_dir=output_dir,
                 checkpoint_callback=checkpoint_cb if not output_json else None,
+                data_files=data_files,
             )
             chi2 = None
             if result.get("fit_results"):
