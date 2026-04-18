@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import logging
 import math
-import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -31,9 +30,9 @@ class RunData:
         ├── checkpoints/
         │   ├── 001_intake.json
         │   └── ...
-        └── models/
-            ├── model_initial.py
-            └── ...
+        └── refl1d_output/
+            └── fit_iter0_dream/
+                └── problem.json
     """
 
     def __init__(self, output_dir: str) -> None:
@@ -254,7 +253,11 @@ class RunData:
                 seen.add(it)
                 # Aggregate chi2 from fit_results for this iteration
                 fr_match = next(
-                    (fr for fr in state.get("fit_results", []) if fr.get("iteration") == it),
+                    (
+                        fr
+                        for fr in state.get("fit_results", [])
+                        if fr.get("iteration") == it
+                    ),
                     None,
                 )
                 agg_chi2 = fr_match.get("chi_squared") if fr_match else None
@@ -264,7 +267,9 @@ class RunData:
                 iterations.append({"iteration": it, "label": label})
 
         result = {
-            "Q": Q, "R": R, "dR": dR,
+            "Q": Q,
+            "R": R,
+            "dR": dR,
             "models": models,
             "best_iteration": best_iteration,
             "iterations": iterations,
@@ -273,7 +278,12 @@ class RunData:
         # Include per-file experimental data for the frontend
         if has_multi:
             result["data_files"] = [
-                {"label": ds.get("label", ""), "Q": ds.get("Q", []), "R": ds.get("R", []), "dR": ds.get("dR", [])}
+                {
+                    "label": ds.get("label", ""),
+                    "Q": ds.get("Q", []),
+                    "R": ds.get("R", []),
+                    "dR": ds.get("dR", []),
+                }
                 for ds in data_files
             ]
 
@@ -349,7 +359,9 @@ class RunData:
                         {"label": label, "z": result["z"], "sld": result["sld"]}
                     )
             except Exception as exc:
-                logger.debug("Could not compute SLD for iteration %d: %s", iteration, exc)
+                logger.debug(
+                    "Could not compute SLD for iteration %d: %s", iteration, exc
+                )
 
         self._sld_cache = {"profiles": profiles}
         return self._sld_cache
@@ -437,7 +449,8 @@ class RunData:
         }
 
     def _read_bounds_from_model_definition(
-        self, model: object | None = None,
+        self,
+        model: object | None = None,
     ) -> dict:
         """Extract parameter bounds from a ModelDefinition dict.
 
@@ -473,7 +486,7 @@ class RunData:
         sub = model.get("substrate", {})
         sub_name = sub.get("name", "substrate")
         r_max = sub.get("roughness_max")
-        r_val = sub.get("roughness", 0)
+        # r_val = sub.get("roughness", 0)
         if r_max is not None:
             bounds[f"{sub_name} interface"] = [0, r_max]
         return bounds
@@ -557,7 +570,10 @@ class RunData:
         if has_multi and isinstance(model, dict):
             try:
                 return _compute_multi_file_simulation(
-                    model, data_files, parameters, bounds=bounds,
+                    model,
+                    data_files,
+                    parameters,
+                    bounds=bounds,
                 )
             except Exception as exc:
                 return {"error": str(exc)}
@@ -637,10 +653,6 @@ def _compute_from_model(
 ) -> Optional[Dict[str, Any]]:
     """Build a model, apply parameters, and extract curves.
 
-    Handles both new JSON ``ModelDefinition`` dicts and legacy script
-    strings.  For dicts the model is built via ``model_builder``; for
-    strings the old ``_execute_model_file`` code-path is used.
-
     Returns a dict with keys ``z``, ``sld``, and optionally ``Q_fit``,
     ``R_fit``, ``chi_squared``.
     """
@@ -648,26 +660,10 @@ def _compute_from_model(
         apply_bounds,
         apply_parameters,
         build_problem,
-        is_legacy_script,
     )
 
-    if is_legacy_script(model):
-        # Legacy: find a model file on disk and exec() it
-        if output_dir is None:
-            return None
-        models_dir = output_dir / "models"
-        model_file = models_dir / "model_final.py"
-        if not model_file.exists():
-            return None
-        Q_data = np.array([])  # not needed for SLD-only
-        return _execute_model_file(
-            model_file,
-            Q_data,
-            working_dir=output_dir.parent,
-            fitted_parameters=parameters or None,
-            parameter_bounds=bounds,
-            compute_reflectivity=compute_reflectivity,
-        )
+    if not isinstance(model, dict):
+        return None
 
     # New JSON ModelDefinition path
     definition = dict(model)  # type: ignore[arg-type]
@@ -732,7 +728,9 @@ def _compute_multi_file_simulation(
     )
 
     definition = dict(model)
-    problem, experiments, sorted_data_files = build_multi_problem(definition, data_files)
+    problem, experiments, sorted_data_files = build_multi_problem(
+        definition, data_files
+    )
 
     if bounds:
         apply_bounds(problem, bounds)
@@ -773,190 +771,3 @@ def _compute_multi_file_simulation(
         result["chi_squared"] = None
 
     return result
-
-
-# ======================================================================
-# Model-file execution helper  (adapted from cli.py)
-# ======================================================================
-
-
-def _execute_model_file(
-    model_file: Path,
-    Q_data: np.ndarray,
-    working_dir: Optional[Path] = None,
-    fitted_parameters: Optional[Dict[str, float]] = None,
-    parameter_bounds: Optional[Dict[str, list]] = None,
-    compute_reflectivity: bool = False,
-) -> Optional[dict]:
-    """Execute a refl1d model script and extract SLD profile.
-
-    Parameters
-    ----------
-    fitted_parameters
-        If provided, a ``{name: value}`` mapping of best-fit parameter
-        values.  After the script is executed the parameters of the
-        resulting ``FitProblem`` are updated to these values so that the
-        SLD profile reflects the actual fit result rather than the
-        (possibly arbitrary) defaults in the script.
-    parameter_bounds
-        Optional ``{name: [lo, hi]}`` overrides for parameter bounds.
-        Applied *before* values so that the new value falls within the
-        updated range and chi² reflects only data misfit.
-    compute_reflectivity
-        If *True*, also compute the reflectivity curve and chi² from the
-        model with the current parameter values.
-    """
-    original_cwd = os.getcwd()
-    try:
-        script = model_file.read_text()
-
-        if working_dir and working_dir.exists():
-            os.chdir(working_dir)
-
-        globs: Dict[str, Any] = {"__file__": str(model_file)}
-        exec(compile(script, str(model_file), "exec"), globs)
-
-        experiment = globs.get("experiment")
-        problem = globs.get("problem")
-
-        if experiment is None and problem is not None:
-            fitness = getattr(problem, "fitness", problem)
-            if hasattr(fitness, "_models"):
-                experiment = fitness._models[0]
-            elif hasattr(fitness, "reflectivity"):
-                experiment = fitness
-
-        if experiment is None:
-            return None
-
-        # ---- Apply fitted parameter values --------------------------
-        # Values are applied FIRST so that the original model bounds can
-        # disambiguate duplicate parameter names (e.g. two parameters
-        # both named "silicon interface" with different bound ranges).
-        if fitted_parameters and problem is not None:
-            _apply_fitted_parameters(problem, fitted_parameters)
-        elif fitted_parameters and experiment is not None:
-            # problem may not exist; try wrapping experiment
-            try:
-                from bumps.fitproblem import FitProblem
-
-                tmp_problem = FitProblem(experiment)
-                _apply_fitted_parameters(tmp_problem, fitted_parameters)
-                problem = tmp_problem
-            except Exception:
-                pass
-
-        # ---- Widen bounds to UI ranges (after values) ---------------
-        # Done after value assignment so that chi² does not penalise
-        # values the user intentionally moved outside the original range.
-        if parameter_bounds and problem is not None:
-            _apply_parameter_bounds(problem, parameter_bounds)
-
-        result: Dict[str, Any] = {}
-
-        # ---- SLD profile --------------------------------------------
-        z, sld = None, None
-        try:
-            z_arr, sld_arr, _ = experiment.smooth_profile(dz=1.0)
-            z = np.array(z_arr).tolist()
-            sld = np.array(sld_arr).tolist()
-        except Exception:
-            pass
-        result["z"] = z
-        result["sld"] = sld
-
-        # ---- Reflectivity + chi² (optional) -------------------------
-        if compute_reflectivity:
-            try:
-                experiment.update()
-                Q_arr, R_arr = experiment.reflectivity()
-                result["Q_fit"] = np.array(Q_arr).tolist()
-                result["R_fit"] = np.array(R_arr).tolist()
-            except Exception:
-                result["Q_fit"] = None
-                result["R_fit"] = None
-            try:
-                if problem is not None:
-                    chi2 = float(problem.chisq())
-                    result["chi_squared"] = chi2 if math.isfinite(chi2) else None
-                else:
-                    result["chi_squared"] = None
-            except Exception:
-                result["chi_squared"] = None
-
-        return result
-    except Exception as exc:
-        raise RuntimeError(f"Model execution failed: {exc}") from exc
-    finally:
-        os.chdir(original_cwd)
-
-
-def _apply_parameter_bounds(problem: Any, bounds: Dict[str, list]) -> None:
-    """Widen parameter bounds on a bumps ``FitProblem`` to user-specified ranges.
-
-    For each parameter whose name appears in *bounds*, the bounds and
-    prior are set to the union of the model's current range and the UI
-    range so that the requested value is always within bounds and chi²
-    reflects only data misfit.
-    """
-    from bumps.bounds import init_bounds
-
-    params = getattr(problem, "_parameters", None)
-    if params is None:
-        return
-    for par in params:
-        name = str(par.name)
-        if name not in bounds:
-            continue
-        lo_new, hi_new = bounds[name]
-        cur_bounds = getattr(par, "bounds", None)
-        if isinstance(cur_bounds, tuple) and len(cur_bounds) == 2:
-            lo = min(cur_bounds[0], lo_new)
-            hi = max(cur_bounds[1], hi_new)
-        else:
-            lo, hi = lo_new, hi_new
-        par.range(lo, hi)
-        par.prior = init_bounds((lo, hi))
-
-
-def _apply_fitted_parameters(problem: Any, fitted_parameters: Dict[str, float]) -> None:
-    """Set parameter values on a bumps ``FitProblem`` from a name→value dict.
-
-    When multiple model parameters share the same name (e.g. substrate and
-    a layer with identical material produce two "silicon interface" entries),
-    assign the value only to the parameter whose current bounds contain it.
-    If *all* or *none* of the duplicates contain the value, set them all to
-    avoid silently dropping updates.
-    """
-    params = getattr(problem, "_parameters", None)
-    if params is None:
-        return
-
-    # Group parameters by name so we can detect duplicates.
-    from collections import defaultdict
-
-    by_name: dict[str, list] = defaultdict(list)
-    for par in params:
-        by_name[str(par.name)].append(par)
-
-    for name, value in fitted_parameters.items():
-        group = by_name.get(name)
-        if not group:
-            continue
-        if len(group) == 1:
-            group[0].value = float(value)
-        else:
-            # Multiple params share this name – prefer those whose bounds
-            # contain the requested value.
-            in_bounds = []
-            for par in group:
-                cur_bounds = getattr(par, "bounds", None)
-                if isinstance(cur_bounds, tuple) and len(cur_bounds) == 2:
-                    lo, hi = cur_bounds
-                else:
-                    lo, hi = -float("inf"), float("inf")
-                if lo <= value <= hi:
-                    in_bounds.append(par)
-            targets = in_bounds if in_bounds else group
-            for par in targets:
-                par.value = float(value)

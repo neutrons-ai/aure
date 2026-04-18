@@ -9,12 +9,11 @@ Key functions:
 - build_experiment()  — JSON → refl1d Experiment
 - build_problem()     — JSON → bumps FitProblem
 - extract_definition() — fitted FitProblem → updated ModelDefinition
-- export_model_script() — JSON → human-readable Python script
 """
 
 import logging
 import os
-from typing import Dict, List, Optional
+from typing import Dict
 
 logger = logging.getLogger(__name__)
 
@@ -314,9 +313,7 @@ def build_multi_problem(definition: dict, data_files: list[dict]):
                 broadening.get("min", 0.0), broadening.get("max", 0.5)
             )
         if offset.get("enabled") and hasattr(probe, "theta_offset"):
-            probe.theta_offset.range(
-                offset.get("min", -0.02), offset.get("max", 0.02)
-            )
+            probe.theta_offset.range(offset.get("min", -0.02), offset.get("max", 0.02))
 
         experiments.append(Experiment(probe=probe, sample=sample))
 
@@ -435,207 +432,6 @@ def extract_definition(
             layer["roughness"] = fitted[f"{layer_name} interface"]
 
     return defn
-
-
-# ======================================================================
-# Export a Python script from ModelDefinition
-# ======================================================================
-
-
-def export_model_script(
-    definition: dict,
-    fitted_params: Optional[Dict[str, float]] = None,
-    fitted_uncertainties: Optional[Dict[str, float]] = None,
-    chi_squared: Optional[float] = None,
-    method: Optional[str] = None,
-    include_ranges: bool = True,
-) -> str:
-    """Generate a human-readable refl1d Python script from a ModelDefinition.
-
-    Parameters
-    ----------
-    definition
-        A ``ModelDefinition`` dict.
-    fitted_params
-        If provided, substitute these values into the script.
-    fitted_uncertainties
-        If provided, add uncertainty comments to the header.
-    chi_squared
-        If provided, add to the header.
-    method
-        Fitting method name for header.
-    include_ranges
-        If *True*, include ``.range()`` calls.  If *False*, comment them
-        out (for ``model_final.py`` style output).
-
-    Returns
-    -------
-    script : str
-        A complete, executable refl1d Python script.
-    """
-    substrate = definition["substrate"]
-    ambient = definition["ambient"]
-    layers = definition.get("layers", [])
-    data_file = definition.get("data_file", "")
-    back_reflection = definition.get("back_reflection", False)
-    intensity = definition.get("intensity", {})
-    dq_is_fwhm = definition.get("dq_is_fwhm", True)
-
-    abs_data_file = os.path.abspath(data_file) if data_file else data_file
-
-    # Use fitted values if provided, falling back to definition values
-    params = fitted_params or definition.get("fitted_parameters", {})
-
-    lines: List[str] = []
-
-    # Header
-    if chi_squared is not None:
-        lines.extend(
-            [
-                "# " + "=" * 68,
-                f"# Best-fit result (chi2 = {chi_squared:.4f}, method = {method or 'unknown'})",
-                "#",
-                "# Parameter values below are the optimised values from the fit.",
-            ]
-        )
-        if not include_ranges:
-            lines.append(
-                "# .range() constraints have been removed; each line shows the"
-            )
-            lines.append("# original range as a comment for reference.")
-        if fitted_uncertainties:
-            lines.append("#")
-            lines.append("# Uncertainties (1-sigma):")
-            for pname, unc in fitted_uncertainties.items():
-                lines.append(f"#   {pname}: \u00b1{unc:.4f}")
-        lines.append("# " + "=" * 68)
-        lines.append("")
-
-    lines.extend(
-        [
-            '"""',
-            "Auto-generated refl1d model.",
-            '"""',
-            "",
-            "import warnings",
-            "from refl1d.names import *",
-            "",
-            'warnings.filterwarnings("ignore", category=UserWarning, module="refl1d")',
-            "",
-            "# ========== Load Data ==========",
-            f'probe = load4("{abs_data_file}", FWHM={dq_is_fwhm})',
-            "",
-            "# ========== Materials ==========",
-        ]
-    )
-
-    # Substrate SLD (use fitted value if available)
-    sub_sld = params.get(f"{substrate['name']} rho", substrate["sld"])
-    lines.append(f'substrate = SLD(name="{substrate["name"]}", rho={sub_sld:.4f})')
-
-    # Ambient SLD
-    amb_sld = params.get(f"{ambient['name']} rho", ambient["sld"])
-    lines.append(f'ambient = SLD(name="{ambient["name"]}", rho={amb_sld:.4f})')
-
-    for i, layer in enumerate(layers):
-        mat_sld = params.get(f"{layer['name']} rho", layer["sld"])
-        lines.append(
-            f'material{i + 1} = SLD(name="{layer["name"]}", rho={mat_sld:.4f})'
-        )
-
-    lines.extend(["", "# ========== Sample Structure =========="])
-
-    # Build sample stack
-    if back_reflection:
-        lines.append("# Neutrons come from substrate side (back reflection)")
-        lines.append(
-            "# Stack ordered in beam direction: ambient -> layers -> substrate"
-        )
-        roughness_first = layers[-1]["roughness"] if layers else 3.0
-        r_first = (
-            params.get(f"{layers[-1]['name']} interface", roughness_first)
-            if layers
-            else 3.0
-        )
-        stack_parts = [f"ambient(0, {r_first:.1f})"]
-        for i in reversed(range(len(layers))):
-            layer = layers[i]
-            t = params.get(f"{layer['name']} thickness", layer["thickness"])
-            r = params.get(f"{layer['name']} interface", layer["roughness"])
-            stack_parts.append(f"material{i + 1}({t:.1f}, {r:.1f})")
-        stack_parts.append("substrate")
-    else:
-        lines.append("# Built from substrate (bottom) to ambient (top)")
-        sub_rough = params.get(
-            f"{substrate['name']} interface", substrate.get("roughness", 3.0)
-        )
-        stack_parts = [f"substrate(0, {sub_rough:.1f})"]
-        for i, layer in enumerate(layers):
-            t = params.get(f"{layer['name']} thickness", layer["thickness"])
-            r = params.get(f"{layer['name']} interface", layer["roughness"])
-            stack_parts.append(f"material{i + 1}({t:.1f}, {r:.1f})")
-        stack_parts.append("ambient")
-
-    lines.append(f"sample = {' | '.join(stack_parts)}")
-    lines.extend(["", "# ========== Fit Parameters =========="])
-
-    def _range_line(target: str, lo: float, hi: float) -> str:
-        if include_ranges:
-            return f"{target}.range({lo:.2f}, {hi:.2f})"
-        return f"# {target}.range({lo:.2f}, {hi:.2f})"
-
-    # Ambient SLD range
-    if ambient.get("name", "").lower() != "air" and ambient.get("sld", 0) != 0:
-        amb_sld_val = ambient["sld"]
-        amb_min = max(amb_sld_val * 0.8, -1.0)
-        amb_max = amb_sld_val * 1.2
-        amb_idx = 0 if back_reflection else len(layers) + 1
-        lines.append(_range_line(f"sample[{amb_idx}].material.rho", amb_min, amb_max))
-
-    for i, layer in enumerate(layers):
-        idx = (len(layers) - i) if back_reflection else (i + 1)
-
-        t_min = layer.get("thickness_min", layer["thickness"] * 0.5)
-        t_max = layer.get("thickness_max", layer["thickness"] * 2.0)
-        lines.append(_range_line(f"sample[{idx}].thickness", t_min, t_max))
-
-        sld_min = layer.get("sld_min", layer["sld"] - 2.5)
-        sld_max = layer.get("sld_max", layer["sld"] + 2.5)
-        lines.append(_range_line(f"sample[{idx}].material.rho", sld_min, sld_max))
-
-        r_max = layer.get("roughness_max", 30.0)
-        lines.append(_range_line(f"sample[{idx}].interface", 0, r_max))
-
-    # First-element roughness
-    if back_reflection:
-        lines.append(_range_line("sample[0].interface", 0, 30.0))
-    else:
-        sub_rough_max = substrate.get("roughness_max", 15.0)
-        lines.append(_range_line("sample[0].interface", 0, sub_rough_max))
-
-    # Probe intensity
-    if not intensity.get("fixed", False):
-        int_min = intensity.get("min", 0.7)
-        int_max = intensity.get("max", 1.1)
-        lines.extend(
-            [
-                "",
-                "# ========== Probe Intensity ===========",
-                "# Allow intensity to vary to account for normalization uncertainty",
-                _range_line("probe.intensity", int_min, int_max),
-            ]
-        )
-
-    lines.extend(
-        [
-            "",
-            "# ========== Experiment ==========",
-            "experiment = Experiment(probe=probe, sample=sample)",
-            "problem = FitProblem(experiment)",
-        ]
-    )
-
-    return "\n".join(lines)
 
 
 # ======================================================================

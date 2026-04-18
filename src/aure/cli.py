@@ -7,13 +7,6 @@ Usage:
     python -m aure.cli mcp-server
 """
 
-import warnings
-
-# Suppress compatibility warnings before any imports that might trigger them
-warnings.filterwarnings(
-    "ignore", message="Core Pydantic V1 functionality isn't compatible"
-)
-
 import json
 import logging
 import subprocess
@@ -29,8 +22,8 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
-from .config import load_user_config
-from .llm import (
+from .config import load_user_config  # noqa: E402
+from .llm import (  # noqa: E402
     get_llm_info,
     get_llm,
     invoke_with_timeout,
@@ -519,8 +512,7 @@ def analyze(
         from pathlib import Path as _Path
 
         data_files = [
-            {"file": str(_Path(f).resolve()), "label": _Path(f).stem}
-            for f in all_files
+            {"file": str(_Path(f).resolve()), "label": _Path(f).stem} for f in all_files
         ]
 
     if not output_json:
@@ -677,8 +669,8 @@ def _print_analysis_results(result: dict, output_dir: Optional[str] = None):
     if result.get("current_model"):
         click.echo(click.style("  Final Model", fg="green", bold=True))
         click.echo(result.get("current_model"))
-#        model_lines = result["current_model"].split("\n")
-#        click.echo(f"    Script: {len(model_lines)} lines")
+        #        model_lines = result["current_model"].split("\n")
+        #        click.echo(f"    Script: {len(model_lines)} lines")
         click.echo()
 
     # Fit results — pull from fit_results list (last entry is the final fit)
@@ -741,7 +733,6 @@ def _print_analysis_results(result: dict, output_dir: Optional[str] = None):
         click.echo()
         click.echo(click.style("  Output Directory", fg="cyan", bold=True))
         click.echo(f"    Checkpoints: {output_dir}/checkpoints/")
-        click.echo(f"    Models: {output_dir}/models/")
         click.echo(f"    Final state: {output_dir}/final_state.json")
 
 
@@ -837,7 +828,9 @@ def batch(manifest: str, job: tuple, dry_run: bool):
         # Show extra data files for co-refinement
         if merged.get("data_files"):
             for df in merged["data_files"]:
-                extra = _resolve_path(df if isinstance(df, str) else df["file"], manifest_dir)
+                extra = _resolve_path(
+                    df if isinstance(df, str) else df["file"], manifest_dir
+                )
                 click.echo(f"             + {extra}")
         click.echo(f"      sample : {merged['sample_description'][:72]}")
         click.echo(f"      output : {output_dir}")
@@ -876,10 +869,7 @@ def batch(manifest: str, job: tuple, dry_run: bool):
                 _resolve_path(df if isinstance(df, str) else df["file"], manifest_dir)
                 for df in raw_extra
             ]
-            data_files = [
-                {"file": str(f), "label": Path(f).stem}
-                for f in all_files
-            ]
+            data_files = [{"file": str(f), "label": Path(f).stem} for f in all_files]
 
         click.echo(click.style(f"  [{idx}/{len(jobs)}] {name}", fg="cyan", bold=True))
 
@@ -1296,23 +1286,16 @@ def inspect_checkpoint(checkpoint_path: str, show_state: bool, output_json: bool
     is_flag=True,
     help="Don't display plot interactively (useful with --save)",
 )
-@click.option(
-    "--workspace",
-    "-w",
-    type=click.Path(exists=True),
-    help="Workspace directory where data files are located (default: current directory)",
-)
 def plot_results(
     output_dir: str,
     save: Optional[str],
     offset: float,
     no_show: bool,
-    workspace: Optional[str],
 ):
     """
-    Plot reflectivity and SLD profiles from workflow checkpoints.
+    Plot reflectivity and SLD profiles from workflow results.
 
-    OUTPUT_DIR: Path to the output directory containing checkpoints
+    OUTPUT_DIR: Path to the output directory containing refl1d_output
 
     Creates a two-panel plot:
     - Left: R(Q) curves (log-log) with data and model predictions from each iteration
@@ -1326,8 +1309,8 @@ def plot_results(
         # Save to file
         python -m aure.cli plot-results ./results -s results.png
 
-        # Save without display (from a different directory)
-        python -m aure.cli plot-results /path/to/results -s results.pdf --no-show -w /path/to/workspace
+        # Save without display
+        python -m aure.cli plot-results /path/to/results -s results.pdf --no-show
     """
     from pathlib import Path
     from .workflow import CheckpointManager
@@ -1341,23 +1324,26 @@ def plot_results(
         sys.exit(1)
 
     output_path = Path(output_dir)
-    models_dir = output_path / "models"
+    refl1d_dir = output_path / "refl1d_output"
     checkpoints_dir = output_path / "checkpoints"
 
-    # Use provided workspace or current directory
-    working_dir = Path(workspace) if workspace else Path.cwd()
-
-    # Check for model files
-    if not models_dir.exists():
-        click.echo(click.style("No models directory found", fg="red"))
+    # Check for refl1d output
+    if not refl1d_dir.exists():
+        click.echo(click.style("No refl1d_output directory found", fg="red"))
         sys.exit(1)
 
-    model_files = sorted(models_dir.glob("*.py"))
-    if not model_files:
-        click.echo(click.style("No model files found in models/", fg="red"))
+    # Find problem.json files from fit iterations
+    fit_dirs = sorted(refl1d_dir.glob("fit_iter*_*"))
+    problem_files = [
+        (d, d / "problem.json") for d in fit_dirs if (d / "problem.json").exists()
+    ]
+    if not problem_files:
+        click.echo(
+            click.style("No problem.json files found in refl1d_output/", fg="red")
+        )
         sys.exit(1)
 
-    click.echo(click.style(f"  Found {len(model_files)} model file(s)", fg="cyan"))
+    click.echo(click.style(f"  Found {len(problem_files)} fit result(s)", fg="cyan"))
 
     # Get list of checkpoints for experimental data
     checkpoint_list = CheckpointManager.list_checkpoints(output_dir)
@@ -1394,75 +1380,66 @@ def plot_results(
             if chi2 is not None:
                 chi2_by_node[(node, iteration)] = chi2
 
-    # Load and execute each model file to get R(Q) and SLD
+    # Load and deserialize each problem.json to get R(Q) and SLD
     model_data = []
+    import json as _json
     import re
 
-    for model_file in model_files:
+    for fit_dir, problem_file in problem_files:
         try:
-            # Parse iteration and node type from filename
-            # Filenames like: model_initial.py, model_fitting_iter0.py, model_refined_iter1.py
-            name = model_file.stem
+            # Parse iteration from directory name (e.g. fit_iter0_dream)
+            match = re.search(r"fit_iter(\d+)_(\w+)", fit_dir.name)
+            iteration = int(match.group(1)) if match else len(model_data)
+            method = match.group(2) if match else "unknown"
+            label = f"Fit iter {iteration} ({method})"
+            sort_key = (iteration, 0)
 
-            if "initial" in name:
-                iteration = 0
-                node_type = "initial"
-                label = "Initial"
-                sort_key = (0, 0)  # (iteration, sub-order)
-            elif "fitting" in name:
-                match = re.search(r"iter(\d+)", name)
-                iteration = int(match.group(1)) if match else 0
-                node_type = "fitting"
-                label = f"Fit iter {iteration}"
-                sort_key = (iteration, 1)
-            elif "evaluation" in name:
-                match = re.search(r"iter(\d+)", name)
-                iteration = int(match.group(1)) if match else 0
-                node_type = "evaluation"
-                label = f"Eval iter {iteration}"
-                sort_key = (iteration, 2)
-            elif "refined" in name:
-                match = re.search(r"iter(\d+)", name)
-                iteration = int(match.group(1)) if match else 0
-                node_type = "refinement"
-                label = f"Refined iter {iteration}"
-                sort_key = (iteration, 3)
-            else:
-                iteration = len(model_data)
-                node_type = "unknown"
-                label = name
-                sort_key = (iteration, 0)
+            click.echo(f"    Loading {fit_dir.name}/problem.json...")
 
-            click.echo(f"    Loading {model_file.name}...")
-            result = _execute_model_file(model_file, Q_data, working_dir=working_dir)
+            from bumps.serialize import deserialize
 
-            if result:
-                # Look up chi2 by node type and iteration
-                # Only show checkpoint chi2 for fitted models (not initial)
-                chi2 = None
-                if node_type != "initial":
-                    chi2 = chi2_by_node.get((node_type, iteration))
-                    # Fallback to fitting chi2 for evaluation/refinement same iteration
-                    if chi2 is None:
-                        chi2 = chi2_by_node.get(("fitting", iteration))
+            with open(problem_file) as f:
+                problem = deserialize(_json.load(f))
 
-                model_data.append(
-                    {
-                        "iteration": iteration,
-                        "sort_key": sort_key,
-                        "label": label,
-                        "Q": result["Q"],
-                        "R": result["R"],
-                        "z": result.get("z"),
-                        "sld": result.get("sld"),
-                        "chi2": chi2,
-                        "file": model_file.name,
-                    }
-                )
+            fitness = problem.fitness
+            experiments = fitness._models if hasattr(fitness, "_models") else [fitness]
+
+            # Use the first experiment for reflectivity and SLD
+            exp = experiments[0]
+            exp.update()
+            Q_arr, R_arr = exp.reflectivity()
+
+            z, sld = None, None
+            try:
+                z_arr, sld_arr, _ = exp.smooth_profile(dz=1.0)
+                z = np.array(z_arr).tolist()
+                sld = np.array(sld_arr).tolist()
+            except Exception:
+                pass
+
+            chi2 = None
+            try:
+                chi2 = float(problem.chisq())
+            except Exception:
+                pass
+
+            model_data.append(
+                {
+                    "iteration": iteration,
+                    "sort_key": sort_key,
+                    "label": label,
+                    "Q": np.array(Q_arr).tolist(),
+                    "R": np.array(R_arr).tolist(),
+                    "z": z,
+                    "sld": sld,
+                    "chi2": chi2,
+                    "file": fit_dir.name,
+                }
+            )
         except Exception as e:
             click.echo(
                 click.style(
-                    f"    Warning: Could not load {model_file.name}: {e}", fg="yellow"
+                    f"    Warning: Could not load {fit_dir.name}: {e}", fg="yellow"
                 )
             )
 
@@ -1581,99 +1558,6 @@ def plot_results(
         plt.show()
 
     plt.close()
-
-
-def _execute_model_file(model_file, Q_data, working_dir=None) -> Optional[dict]:
-    """
-    Execute a refl1d model file and extract R(Q) and SLD profile.
-
-    Args:
-        model_file: Path to the model .py file
-        Q_data: Experimental Q values (for reference, may not be used)
-        working_dir: Directory to run the model in (for relative paths)
-
-    Returns:
-        Dictionary with 'Q', 'R', 'z', 'sld', 'chi2' or None on failure
-    """
-    import numpy as np
-    from pathlib import Path
-    import os
-
-    # Save current directory
-    original_cwd = os.getcwd()
-
-    try:
-        model_script = Path(model_file).read_text()
-
-        # Change to working directory for relative data paths
-        if working_dir and Path(working_dir).exists():
-            os.chdir(working_dir)
-
-        # Execute model script to get the problem
-        model_globals = {"__file__": str(model_file)}
-        exec(compile(model_script, model_file, "exec"), model_globals)
-
-        # First check for experiment directly (simpler models)
-        experiment = model_globals.get("experiment")
-        problem = model_globals.get("problem")
-
-        if experiment is None and problem is not None:
-            # Get the experiment from the problem
-            if hasattr(problem, "fitness"):
-                fitness = problem.fitness
-            else:
-                fitness = problem
-
-            if hasattr(fitness, "_models"):
-                experiment = fitness._models[0]
-            elif hasattr(fitness, "reflectivity"):
-                experiment = fitness
-
-        if experiment is None:
-            return None
-
-        # Compute reflectivity using the probe's Q values
-        # reflectivity() returns (Q, R) tuple
-        result = experiment.reflectivity()
-        if isinstance(result, tuple) and len(result) == 2:
-            Q, R = result
-        else:
-            # Some versions may return just R
-            Q = experiment.probe.Q
-            R = result
-
-        Q = np.array(Q)
-        R = np.array(R)
-
-        # Get chi-squared if available
-        chi2 = None
-        if problem is not None:
-            try:
-                chi2 = problem.chisq()
-            except Exception:
-                pass
-
-        # Extract SLD profile from the experiment (not sample)
-        z, sld = None, None
-        try:
-            z_arr, sld_arr, _ = experiment.smooth_profile(dz=1.0)
-            z = np.array(z_arr)
-            sld = np.array(sld_arr)
-        except Exception:
-            pass
-
-        return {
-            "Q": Q.tolist(),
-            "R": R.tolist() if hasattr(R, "tolist") else list(R),
-            "z": z.tolist() if z is not None else None,
-            "sld": sld.tolist() if sld is not None else None,
-            "chi2": chi2,
-        }
-    except Exception as e:
-        raise RuntimeError(f"Model execution failed: {e}")
-    finally:
-        # Restore original directory
-        os.chdir(original_cwd)
 
 
 # ============================================================================

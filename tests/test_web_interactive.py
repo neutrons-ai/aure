@@ -1,5 +1,5 @@
 """
-Tests for interactive parameter editing, simulation, model-script patching,
+Tests for interactive parameter editing, simulation, model-definition patching,
 restart-with-overrides, and ISAAC export with user_context.
 
 Covers the features added in the interactive-parameter-editor session:
@@ -38,10 +38,20 @@ def _make_state(output_dir: str, data_file: str = "/tmp/test.dat") -> dict:
         "extracted_features": {"n_fringes": 2},
         "current_chi2": 1.45,
         "best_chi2": 1.45,
-        "current_model": (
-            "# model script\ncopper_thickness = 500\ncopper_thickness.range(400, 600)\n"
-        ),
-        "best_model": "# model script",
+        "current_model": {
+            "substrate": {"name": "Si", "sld": 2.07},
+            "ambient": {"name": "air", "sld": 0.0},
+            "layers": [
+                {
+                    "name": "copper",
+                    "sld": 6.5,
+                    "thickness": 500,
+                    "roughness": 8.0,
+                }
+            ],
+            "data_file": data_file,
+        },
+        "best_model": None,
         "workflow_complete": True,
         "iteration": 1,
         "max_iterations": 3,
@@ -78,7 +88,6 @@ def _write_output_dir(tmp_path, state=None):
     output_dir = tmp_path / "output"
     output_dir.mkdir(exist_ok=True)
     (output_dir / "checkpoints").mkdir(exist_ok=True)
-    (output_dir / "models").mkdir(exist_ok=True)
 
     if state is None:
         state = _make_state(str(output_dir))
@@ -195,10 +204,6 @@ class TestRunDataSimulate:
     def test_simulate_returns_curves(self, output_dir):
         from aure.web.data import RunData
 
-        # Create a dummy model file
-        models = output_dir / "models"
-        (models / "model_fitting_iter0.py").write_text("# dummy model")
-
         rd = RunData(str(output_dir))
 
         mock_result = {
@@ -218,8 +223,12 @@ class TestRunDataSimulate:
         assert result["sld_rho"] == [2.0, 6.5]
         assert result["chi_squared"] == 1.23
 
-    def test_simulate_no_model_file_returns_error(self, output_dir):
+    def test_simulate_no_model_returns_error(self, tmp_path):
         from aure.web.data import RunData
+
+        state = _make_state(str(tmp_path / "output"))
+        state["current_model"] = None
+        output_dir = _write_output_dir(tmp_path, state)
 
         rd = RunData(str(output_dir))
         result = rd.simulate({"copper thickness": 500.0})
@@ -227,9 +236,6 @@ class TestRunDataSimulate:
 
     def test_simulate_execution_failure_returns_error(self, output_dir):
         from aure.web.data import RunData
-
-        models = output_dir / "models"
-        (models / "model_fitting_iter0.py").write_text("# dummy")
 
         rd = RunData(str(output_dir))
 
@@ -242,45 +248,6 @@ class TestRunDataSimulate:
         assert "error" in result
         assert "exec failed" in result["error"]
 
-    def test_simulate_returns_error_when_execute_returns_none(self, output_dir):
-        from aure.web.data import RunData
-
-        models = output_dir / "models"
-        (models / "model_fitting_iter0.py").write_text("# dummy")
-
-        rd = RunData(str(output_dir))
-
-        with patch("aure.web.data._execute_model_file", return_value=None):
-            result = rd.simulate({"copper thickness": 500.0})
-
-        assert "error" in result
-
-    def test_simulate_falls_back_to_model_final(self, tmp_path):
-        """When no model_fitting_iter*.py exists, fall back to model_final.py."""
-        from aure.web.data import RunData
-
-        # Create state with no fit_results iterations
-        state = _make_state(str(tmp_path / "output"))
-        state["fit_results"] = []
-        output_dir = _write_output_dir(tmp_path, state)
-
-        models = output_dir / "models"
-        (models / "model_final.py").write_text("# final model")
-
-        rd = RunData(str(output_dir))
-
-        mock_result = {
-            "Q_fit": [0.01],
-            "R_fit": [1.0],
-            "z": [0.0],
-            "sld": [2.0],
-            "chi_squared": 2.0,
-        }
-        with patch("aure.web.data._execute_model_file", return_value=mock_result):
-            result = rd.simulate({"copper thickness": 500.0})
-
-        assert result["Q_fit"] == [0.01]
-
 
 # ======================================================================
 # POST /api/simulate
@@ -291,9 +258,6 @@ class TestApiSimulate:
     """Integration tests for the /api/simulate endpoint."""
 
     def test_simulate_success(self, client, output_dir):
-        models = output_dir / "models"
-        (models / "model_fitting_iter0.py").write_text("# dummy")
-
         mock_result = {
             "Q_fit": [0.01, 0.02],
             "R_fit": [0.9, 0.4],
@@ -554,130 +518,6 @@ class TestApiExportUserContext:
         with mock.patch("aure.exporters.get_exporter", return_value=None):
             resp = client.post("/api/export", json={})
         assert resp.status_code == 400
-
-
-# ======================================================================
-# _execute_model_file with compute_reflectivity
-# ======================================================================
-
-
-class TestExecuteModelFileReflectivity:
-    """Test _execute_model_file with compute_reflectivity flag."""
-
-    def test_compute_reflectivity_returns_q_r(self, tmp_path):
-        """When compute_reflectivity=True, result includes Q_fit/R_fit."""
-        from aure.web.data import _execute_model_file
-        import numpy as np
-
-        # Create a model script that sets up a mock experiment and problem
-        model_script = tmp_path / "model.py"
-        model_script.write_text(
-            """
-import numpy as np
-
-class MockExperiment:
-    def smooth_profile(self, dz=1.0):
-        return [0.0, 10.0, 20.0], [2.07, 6.5, 0.0], [0.0, 0.0, 0.0]
-
-    def update(self):
-        pass
-
-    def reflectivity(self):
-        return np.array([0.01, 0.02, 0.03]), np.array([1.0, 0.5, 0.1])
-
-class MockProblem:
-    fitness = None
-    _parameters = []
-    def chisq(self):
-        return 1.23
-
-experiment = MockExperiment()
-problem = MockProblem()
-"""
-        )
-
-        Q = np.array([0.01, 0.02, 0.03])
-        result = _execute_model_file(model_script, Q, compute_reflectivity=True)
-
-        assert result is not None
-        assert result["Q_fit"] is not None
-        assert len(result["Q_fit"]) == 3
-        assert result["chi_squared"] == pytest.approx(1.23)
-        assert result["z"] is not None
-
-    def test_compute_reflectivity_false_no_q_r(self, tmp_path):
-        """When compute_reflectivity=False (default), no Q_fit/R_fit keys."""
-        from aure.web.data import _execute_model_file
-        import numpy as np
-
-        model_script = tmp_path / "model.py"
-        model_script.write_text(
-            """
-class MockExperiment:
-    def smooth_profile(self, dz=1.0):
-        return [0.0, 10.0], [2.07, 0.0], [0.0, 0.0]
-
-experiment = MockExperiment()
-problem = None
-"""
-        )
-
-        result = _execute_model_file(model_script, np.array([0.01, 0.02]))
-        assert result is not None
-        assert "Q_fit" not in result
-        assert result["z"] is not None
-
-
-# ======================================================================
-# _apply_fitted_parameters
-# ======================================================================
-
-
-class TestApplyFittedParameters:
-    """Test the parameter-setting helper."""
-
-    def test_sets_parameter_values(self):
-        from aure.web.data import _apply_fitted_parameters
-
-        class FakeParam:
-            def __init__(self, name, value):
-                self.name = name
-                self.value = value
-
-        class FakeProblem:
-            _parameters = [
-                FakeParam("copper thickness", 500.0),
-                FakeParam("copper roughness", 8.0),
-            ]
-
-        problem = FakeProblem()
-        _apply_fitted_parameters(problem, {"copper thickness": 510.0})
-
-        assert problem._parameters[0].value == 510.0
-        assert problem._parameters[1].value == 8.0  # unchanged
-
-    def test_ignores_missing_parameters(self):
-        from aure.web.data import _apply_fitted_parameters
-
-        class FakeParam:
-            def __init__(self, name, value):
-                self.name = name
-                self.value = value
-
-        class FakeProblem:
-            _parameters = [FakeParam("x", 1.0)]
-
-        problem = FakeProblem()
-        _apply_fitted_parameters(problem, {"nonexistent": 99.0})
-        assert problem._parameters[0].value == 1.0
-
-    def test_no_parameters_attribute(self):
-        from aure.web.data import _apply_fitted_parameters
-
-        class NoProblem:
-            pass
-
-        _apply_fitted_parameters(NoProblem(), {"x": 1.0})  # should not raise
 
 
 # ======================================================================

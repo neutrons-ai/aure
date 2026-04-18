@@ -386,68 +386,38 @@ def api_simulate():
     return jsonify(result)
 
 
-@bp.route("/api/export-script")
-def api_export_script():
-    """Export the model as a standalone refl1d Python script.
+@bp.route("/api/export-model")
+def api_export_model():
+    """Export the best-fit model as a refl1d problem.json.
 
-    Query parameters:
-        iteration (int, optional) — fit iteration to use for parameter values.
-            Defaults to the best-chi² iteration.
-        include_ranges (bool, optional) — include ``.range()`` calls.
-            Defaults to ``false``.
+    Returns the ``problem.json`` from the best fit iteration, which can
+    be loaded with ``bumps.serialize.deserialize()``.
 
-    Returns ``{"script": "<python source code>"}`` or an error.
+    Returns ``{"problem": <json>}`` or an error.
     """
     rd = _run_data()
     if not rd:
         return jsonify({"error": "No analysis output found"}), 404
 
-    state = rd.get_final_state()
-    model = state.get("best_model") or state.get("current_model")
-    if not model:
-        return jsonify({"error": "No model available"}), 404
+    # Try top-level problem.json first (copied by checkpoint manager)
+    import json as _json
 
-    if not isinstance(model, dict):
-        # Legacy: try to read model_final.py from disk
-        final_py = rd.output_dir / "models" / "model_final.py"
-        if final_py.exists():
-            return jsonify({"script": final_py.read_text()})
-        return jsonify({"error": "Legacy model — no JSON definition available"}), 404
+    top_level = rd.output_dir / "problem.json"
+    if top_level.exists():
+        with open(top_level) as f:
+            return jsonify({"problem": _json.load(f)})
 
-    from aure.nodes.model_builder import export_model_script
+    # Fall back to searching refl1d_output/
+    refl1d_dir = rd.output_dir / "refl1d_output"
+    if refl1d_dir.exists():
+        fit_dirs = sorted(refl1d_dir.glob("fit_iter*_*"))
+        for fit_dir in reversed(fit_dirs):
+            pj = fit_dir / "problem.json"
+            if pj.exists():
+                with open(pj) as f:
+                    return jsonify({"problem": _json.load(f)})
 
-    iteration = request.args.get("iteration", default=None, type=int)
-    include_ranges = request.args.get("include_ranges", "false").lower() in (
-        "true",
-        "1",
-        "yes",
-    )
-
-    fit_results = state.get("fit_results", [])
-    fitted_params: dict | None = None
-    uncertainties: dict | None = None
-
-    if fit_results:
-        if iteration is not None:
-            selected = next(
-                (fr for fr in fit_results if fr.get("iteration") == iteration),
-                None,
-            )
-        else:
-            selected = min(
-                fit_results, key=lambda f: f.get("chi_squared", float("inf"))
-            )
-        if selected:
-            fitted_params = selected.get("parameters")
-            uncertainties = selected.get("uncertainties")
-
-    script = export_model_script(
-        model,
-        fitted_params=fitted_params,
-        fitted_uncertainties=uncertainties,
-        include_ranges=include_ranges,
-    )
-    return jsonify({"script": script})
+    return jsonify({"error": "No problem.json found"}), 404
 
 
 @bp.route("/api/llm-status")
@@ -762,7 +732,13 @@ def api_live_results():
                     label += f" (\u03c7\u00b2={pf_chi2:.2f})"
                 if pf.get("Q_fit") and pf.get("R_fit"):
                     models.append(
-                        {"label": label, "Q": pf["Q_fit"], "R": pf["R_fit"], "chi2": pf_chi2, "iteration": it}
+                        {
+                            "label": label,
+                            "Q": pf["Q_fit"],
+                            "R": pf["R_fit"],
+                            "chi2": pf_chi2,
+                            "iteration": it,
+                        }
                     )
         else:
             label = f"Iteration {it}"
@@ -770,14 +746,22 @@ def api_live_results():
                 label += f" (\u03c7\u00b2={chi2:.2f})"
             if fr.get("Q_fit") and fr.get("R_fit"):
                 models.append(
-                    {"label": label, "Q": fr["Q_fit"], "R": fr["R_fit"], "chi2": chi2, "iteration": it}
+                    {
+                        "label": label,
+                        "Q": fr["Q_fit"],
+                        "R": fr["R_fit"],
+                        "chi2": chi2,
+                        "iteration": it,
+                    }
                 )
 
         if fr.get("sld_z") and fr.get("sld_rho"):
             sld_label = f"Iteration {it}"
             if chi2 is not None:
                 sld_label += f" (\u03c7\u00b2={chi2:.2f})"
-            profiles.append({"label": sld_label, "z": fr["sld_z"], "sld": fr["sld_rho"]})
+            profiles.append(
+                {"label": sld_label, "z": fr["sld_z"], "sld": fr["sld_rho"]}
+            )
 
     # Latest fit parameters
     latest = fit_results[-1]
@@ -809,7 +793,12 @@ def api_live_results():
 
     if has_multi:
         result["data_files"] = [
-            {"label": ds.get("label", ""), "Q": ds.get("Q", []), "R": ds.get("R", []), "dR": ds.get("dR", [])}
+            {
+                "label": ds.get("label", ""),
+                "Q": ds.get("Q", []),
+                "R": ds.get("R", []),
+                "dR": ds.get("dR", []),
+            }
             for ds in data_files
         ]
 
