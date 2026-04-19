@@ -1561,6 +1561,387 @@ def plot_results(
 
 
 # ============================================================================
+# Standalone Evaluation Command
+# ============================================================================
+
+
+@cli.command()
+@click.argument("refl1d_dir", type=click.Path(exists=True))
+@click.option(
+    "--context",
+    "-c",
+    "context_prompt",
+    default=None,
+    help="Optional description of the sample / model to give the LLM context",
+)
+@click.option(
+    "--hypothesis",
+    "-h",
+    default=None,
+    help="Optional hypothesis being tested",
+)
+@click.option(
+    "--json",
+    "output_json",
+    is_flag=True,
+    help="Output as JSON",
+)
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    help="Enable verbose logging",
+)
+def evaluate(
+    refl1d_dir: str,
+    context_prompt: Optional[str],
+    hypothesis: Optional[str],
+    output_json: bool,
+    verbose: bool,
+):
+    """
+    Evaluate a refl1d fit result using LLM analysis.
+
+    REFL1D_DIR: Path to a refl1d output directory containing problem.json
+                (e.g. output/refl1d_output/fit_iter0_dream)
+
+    This command loads a serialised bumps FitProblem, extracts fit results
+    (χ², parameters, theory curves, SLD profile, residuals), and asks the
+    LLM to assess the fit quality — without re-running the full workflow.
+
+    Use --context / -c to provide a natural-language description of the
+    sample so the LLM can judge physical plausibility.
+
+    \b
+    Examples:
+        aure evaluate output/refl1d_output/fit_iter0_dream
+
+        aure evaluate output/refl1d_output/fit_iter0_dream \\
+            -c "100 nm polystyrene film on silicon"
+
+        aure evaluate output/refl1d_output/fit_iter0_dream --json
+    """
+    import re as _re
+
+    if verbose:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(message)s",
+            stream=sys.stderr,
+        )
+
+    refl1d_path = Path(refl1d_dir)
+
+    # ── Locate problem.json ────────────────────────────────────
+    problem_file = refl1d_path / "problem.json"
+    if not problem_file.exists():
+        # Maybe the user pointed at the parent refl1d_output dir;
+        # pick the latest fit_iter* subdirectory.
+        fit_dirs = sorted(refl1d_path.glob("fit_iter*_*/problem.json"))
+        if fit_dirs:
+            problem_file = fit_dirs[-1]
+            refl1d_path = problem_file.parent
+        else:
+            click.echo(click.style(f"No problem.json found in {refl1d_dir}", fg="red"))
+            sys.exit(1)
+
+    # Parse iteration & method from directory name
+    match = _re.search(r"fit_iter(\d+)_(\w+)", refl1d_path.name)
+    iteration = int(match.group(1)) if match else 0
+    method = match.group(2) if match else "unknown"
+
+    if not output_json:
+        click.echo(click.style("═" * 60, fg="blue"))
+        click.echo(click.style("  Evaluate Refl1D Fit Result", fg="blue", bold=True))
+        click.echo(click.style("═" * 60, fg="blue"))
+        click.echo()
+        click.echo(f"  Directory: {refl1d_path}")
+        click.echo(f"  Iteration: {iteration}  Method: {method}")
+        if context_prompt:
+            click.echo(f"  Context: {context_prompt}")
+        click.echo()
+
+    # ── Check LLM ──────────────────────────────────────────────
+    llm_ok, llm_msg = _check_llm_status(quiet=output_json, test_connection=True)
+    if not output_json:
+        click.echo()
+    if not llm_ok:
+        if output_json:
+            click.echo(json.dumps({"error": f"LLM not available: {llm_msg}"}))
+        else:
+            click.echo(click.style(f"  Cannot proceed: {llm_msg}", fg="red"))
+        sys.exit(1)
+
+    # ── Deserialise problem.json ───────────────────────────────
+    if not output_json:
+        click.echo("  Loading problem.json...", nl=False)
+    try:
+        import json as _json
+        from bumps.serialize import deserialize
+
+        with open(problem_file) as f:
+            problem = deserialize(_json.load(f))
+        if not output_json:
+            click.echo(click.style(" done", fg="green"))
+    except Exception as e:
+        if not output_json:
+            click.echo(click.style(f" failed: {e}", fg="red"))
+        else:
+            click.echo(json.dumps({"error": f"Failed to load problem.json: {e}"}))
+        sys.exit(1)
+
+    # ── Extract FitResult ──────────────────────────────────────
+    if not output_json:
+        click.echo("  Extracting fit results...", nl=False)
+    try:
+        fit_result = _extract_fit_result_from_problem(
+            problem,
+            method=method,
+            iteration=iteration,
+            export_dir=str(refl1d_path),
+        )
+        if not output_json:
+            click.echo(click.style(" done", fg="green"))
+    except Exception as e:
+        if not output_json:
+            click.echo(click.style(f" failed: {e}", fg="red"))
+        else:
+            click.echo(json.dumps({"error": f"Failed to extract fit results: {e}"}))
+        sys.exit(1)
+
+    chi2 = fit_result["chi_squared"]
+    if not output_json:
+        click.echo(f"  χ² = {chi2:.4f}")
+        click.echo()
+
+    # ── Run LLM evaluation ─────────────────────────────────────
+    if not output_json:
+        click.echo("  Running LLM evaluation...", nl=False)
+
+    from .nodes.evaluation import (
+        analyze_fit_quality_with_llm,
+        _check_boundary_hits,
+        _get_chi2_max,
+    )
+
+    chi2_max = _get_chi2_max()
+    boundary_hits = _check_boundary_hits(fit_result)
+
+    try:
+        analysis = analyze_fit_quality_with_llm(
+            fit_result=fit_result,
+            sample_description=context_prompt,
+            hypothesis=hypothesis,
+            features=None,
+            chi2_max=chi2_max,
+            boundary_hits=boundary_hits,
+            per_file_results=fit_result.get("per_file_results"),
+        )
+        if not output_json:
+            click.echo(click.style(" done", fg="green"))
+    except Exception as e:
+        if not output_json:
+            click.echo(click.style(f" failed: {e}", fg="red"))
+        else:
+            click.echo(json.dumps({"error": f"LLM evaluation failed: {e}"}))
+        sys.exit(1)
+
+    # ── Output ─────────────────────────────────────────────────
+    if output_json:
+        result = {
+            "directory": str(refl1d_path),
+            "iteration": iteration,
+            "method": method,
+            "chi_squared": chi2,
+            "parameters": fit_result.get("parameters", {}),
+            "uncertainties": fit_result.get("uncertainties"),
+            "acceptable": analysis.get("acceptable", False),
+            "quality_assessment": analysis.get("quality_assessment", "unknown"),
+            "issues": analysis.get("issues", []),
+            "suggestions": analysis.get("suggestions", []),
+            "physical_concerns": analysis.get("physical_concerns", []),
+        }
+        click.echo(json.dumps(result, indent=2))
+    else:
+        click.echo()
+        # Parameters
+        click.echo(click.style("  Fit Parameters", fg="cyan", bold=True))
+        for name, value in fit_result["parameters"].items():
+            unc = (fit_result.get("uncertainties") or {}).get(name)
+            if unc:
+                click.echo(f"    {name}: {value:.4f} ± {unc:.4f}")
+            else:
+                click.echo(f"    {name}: {value:.4f}")
+        click.echo()
+
+        # Per-file chi2
+        per_file = fit_result.get("per_file_results")
+        if per_file:
+            click.echo(click.style("  Per-file χ²", fg="cyan", bold=True))
+            for pf in per_file:
+                click.echo(f"    {pf['label']}: χ² = {pf['chi_squared']:.3f}")
+            click.echo()
+
+        # Evaluation
+        acceptable = analysis.get("acceptable", False)
+        quality = analysis.get("quality_assessment", "unknown")
+        color = "green" if acceptable else "yellow"
+        click.echo(
+            click.style(
+                f"  Fit Quality: {quality} (χ² = {chi2:.3f})",
+                fg=color,
+                bold=True,
+            )
+        )
+
+        if analysis.get("issues"):
+            click.echo()
+            click.echo(click.style("  Issues:", fg="yellow"))
+            for issue in analysis["issues"]:
+                click.echo(f"    - {issue}")
+
+        if analysis.get("suggestions"):
+            click.echo()
+            click.echo(click.style("  Suggestions:", fg="cyan"))
+            for sug in analysis["suggestions"]:
+                click.echo(f"    - {sug}")
+
+        if analysis.get("physical_concerns"):
+            click.echo()
+            click.echo(click.style("  Physical Concerns:", fg="yellow"))
+            for concern in analysis["physical_concerns"]:
+                click.echo(f"    - {concern}")
+
+        click.echo()
+        verdict = (
+            click.style("  ✓ Fit ACCEPTABLE", fg="green", bold=True)
+            if acceptable
+            else click.style("  ✗ Fit NOT acceptable", fg="red", bold=True)
+        )
+        click.echo(verdict)
+        click.echo()
+
+
+def _extract_fit_result_from_problem(
+    problem, method: str, iteration: int, export_dir: str
+) -> dict:
+    """Build a FitResult-like dict from a deserialised bumps FitProblem.
+
+    This mirrors the logic in ``fitting._extract_bumps_results`` but works
+    on a problem that has already been optimised and exported (no ``fit_result``
+    object is available).
+    """
+    import numpy as np
+    from .nodes.fitting import _read_profile_dat
+    from .state import FitResult
+
+    chi_squared = float(problem.chisq())
+
+    # Detect multi-experiment problems via problem.models (generator)
+    experiments = list(problem.models)
+    is_multi = len(experiments) > 1
+
+    # Parameters & bounds (shared across experiments)
+    parameters = {}
+    uncertainties = {}  # not available from serialised problem
+    param_bounds = {}
+    for par in problem._parameters:
+        name = str(par.name)
+        parameters[name] = par.value
+        if par.bounds is not None:
+            lo, hi = par.bounds
+            param_bounds[name] = [float(lo), float(hi)]
+
+    # Theory curves and residuals from first (or only) experiment
+    Q_fit, R_fit = [], []
+    residuals, residual_ratio = [], []
+    per_file_results = None
+
+    if is_multi:
+        per_file_results = []
+        all_Q, all_R, all_res, all_ratio = [], [], [], []
+        for idx, exp in enumerate(experiments):
+            pf: dict = {"file": "", "label": f"dataset {idx + 1}"}
+            try:
+                exp.update()
+                Q_arr, R_arr = exp.reflectivity()
+                pf["Q_fit"] = Q_arr.tolist()
+                pf["R_fit"] = R_arr.tolist()
+                all_Q.extend(pf["Q_fit"])
+                all_R.extend(pf["R_fit"])
+
+                resid = exp.residuals()
+                n_pts = len(resid)
+                pf["chi_squared"] = (
+                    float(np.sum(resid**2) / n_pts) if n_pts > 0 else float("inf")
+                )
+
+                R_data = exp.probe.R
+                dR_data = exp.probe.dR
+                R_fit_arr = np.array(pf["R_fit"])
+                res, ratio = [], []
+                if R_data is not None and len(R_data) == len(R_fit_arr):
+                    if dR_data is not None and len(dR_data) == len(R_data):
+                        safe_dR = np.maximum(np.abs(dR_data), 1e-20)
+                        res = ((R_data - R_fit_arr) / safe_dR).tolist()
+                    safe_R_fit = np.maximum(R_fit_arr, 1e-20)
+                    ratio = (R_data / safe_R_fit).tolist()
+                pf["residuals"] = res
+                pf["residual_ratio"] = ratio
+                all_res.extend(res)
+                all_ratio.extend(ratio)
+            except Exception:
+                pf.setdefault("Q_fit", [])
+                pf.setdefault("R_fit", [])
+                pf.setdefault("chi_squared", float("inf"))
+                pf.setdefault("residuals", [])
+                pf.setdefault("residual_ratio", [])
+            per_file_results.append(pf)
+        Q_fit, R_fit = all_Q, all_R
+        residuals, residual_ratio = all_res, all_ratio
+    else:
+        exp = experiments[0]
+        try:
+            exp.update()
+            Q_arr, R_arr = exp.reflectivity()
+            Q_fit = Q_arr.tolist()
+            R_fit = R_arr.tolist()
+
+            R_data = exp.probe.R
+            dR_data = exp.probe.dR
+            R_fit_arr = np.array(R_fit)
+            if R_data is not None and len(R_data) == len(R_fit_arr):
+                if dR_data is not None and len(dR_data) == len(R_data):
+                    safe_dR = np.maximum(np.abs(dR_data), 1e-20)
+                    residuals = ((R_data - R_fit_arr) / safe_dR).tolist()
+                safe_R_fit = np.maximum(R_fit_arr, 1e-20)
+                residual_ratio = (R_data / safe_R_fit).tolist()
+        except Exception:
+            pass
+
+    sld_z, sld_rho = _read_profile_dat(export_dir)
+
+    return FitResult(
+        iteration=iteration,
+        method=method,
+        chi_squared=chi_squared,
+        converged=True,
+        parameters=parameters,
+        uncertainties=uncertainties if uncertainties else None,
+        bounds=param_bounds if param_bounds else None,
+        Q_fit=Q_fit,
+        R_fit=R_fit,
+        residuals=residuals,
+        residual_ratio=residual_ratio,
+        sld_z=sld_z,
+        sld_rho=sld_rho,
+        per_file_results=per_file_results,
+        issues=[],
+        suggestions=[],
+    )
+
+
+# ============================================================================
 # Material Database Commands
 # ============================================================================
 

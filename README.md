@@ -280,6 +280,41 @@ aure inspect-checkpoint CHECKPOINT_PATH [-s] [--json]
 
 `-s, --show-state` prints the full workflow state (can be large).
 
+### `aure evaluate`
+
+Evaluate a refl1d fit result using LLM analysis, without re-running the
+full workflow. Point it at a refl1d output directory containing a
+`problem.json` and optionally describe the sample so the LLM can judge
+physical plausibility.
+
+```bash
+aure evaluate REFL1D_DIR [OPTIONS]
+```
+
+| Option | Description |
+|--------|-------------|
+| `-c, --context TEXT` | Sample / model description to give the LLM context |
+| `-h, --hypothesis TEXT` | Optional hypothesis being tested |
+| `-v, --verbose` | Verbose logging |
+| `--json` | JSON output |
+
+If `REFL1D_DIR` is the parent `refl1d_output/` directory, the latest
+`fit_iter*` subdirectory is selected automatically.
+
+**Examples:**
+
+```bash
+# Evaluate a specific fit iteration
+aure evaluate output/refl1d_output/fit_iter0_dream
+
+# Provide sample context for better physical assessment
+aure evaluate output/refl1d_output/fit_iter1_dream \
+    -c "100 nm copper on 5 nm titanium on silicon, measured in D2O"
+
+# Machine-readable output
+aure evaluate output/refl1d_output/ --json
+```
+
 ### `aure plot-results`
 
 Plot R(Q) curves and SLD profiles from a completed run.
