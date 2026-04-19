@@ -10,14 +10,13 @@ the data using bumps.  Supports multiple fitting methods:
 
 import os
 import logging
-import tempfile
 from typing import Dict, Any, Optional
 from pathlib import Path
 
 import numpy as np
 
 from ..state import ReflectivityState, FitResult, PerFileFitResult, Message
-from .model_builder import build_problem, build_multi_problem, is_legacy_script
+from .model_builder import build_problem, build_multi_problem
 from .evaluation import _count_free_params, _compute_bic
 
 logger = logging.getLogger(__name__)
@@ -69,17 +68,7 @@ def fitting_node(state: ReflectivityState) -> Dict[str, Any]:
         data_files = state.get("data_files", [])
         is_multi = len(data_files) > 1 and isinstance(model, dict)
 
-        if is_legacy_script(model):
-            # Backward compatibility: exec-based path for old script models
-            result = _run_refl1d_fit_legacy(
-                model_script=model,
-                method=method,
-                iteration=iteration,
-                steps=steps,
-                burn=burn,
-                export_dir=export_dir,
-            )
-        elif is_multi:
+        if is_multi:
             result = run_multi_refl1d_fit(
                 model_definition=model,
                 data_files=data_files,
@@ -235,42 +224,6 @@ def run_multi_refl1d_fit(
         iteration=iteration,
         export_dir=export_dir,
     )
-
-
-def _run_refl1d_fit_legacy(
-    model_script: str,
-    method: str = "lm",
-    iteration: int = 0,
-    steps: int = 1000,
-    burn: int = 1000,
-    export_dir: Optional[str] = None,
-) -> FitResult:
-    """Legacy exec-based fitting for old script-string models."""
-    from bumps.fitters import fit as bumps_fit
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        model_file = Path(tmpdir) / "model.py"
-        model_file.write_text(model_script)
-
-        model_globals = {"__file__": str(model_file)}
-        exec(compile(model_script, model_file, "exec"), model_globals)
-
-        problem = model_globals.get("problem")
-        if problem is None:
-            raise ValueError("Model script must define a 'problem' variable")
-
-        fit_options = _build_fit_options(method, steps, burn, export_dir)
-
-        logger.info(f"[FITTING] Running {method.upper()} with bumps.fit (legacy)...")
-        result = bumps_fit(problem, **fit_options)
-
-        return _extract_bumps_results(
-            problem=problem,
-            fit_result=result,
-            method=method,
-            iteration=iteration,
-            export_dir=export_dir,
-        )
 
 
 def _build_fit_options(
@@ -475,10 +428,10 @@ def _extract_multi_bumps_results(
             # Per-file chi2 (Experiment has no .chisq(); compute from residuals)
             resid = exp.residuals()
             n_pts = len(resid)
-            pf["chi_squared"] = float(np.sum(resid**2) / n_pts) if n_pts > 0 else float("inf")
-            logger.info(
-                f"[FITTING]   {ds['label']}: χ² = {pf['chi_squared']:.3f}"
+            pf["chi_squared"] = (
+                float(np.sum(resid**2) / n_pts) if n_pts > 0 else float("inf")
             )
+            logger.info(f"[FITTING]   {ds['label']}: χ² = {pf['chi_squared']:.3f}")
 
             # Residuals
             R_data = exp.probe.R
@@ -497,7 +450,9 @@ def _extract_multi_bumps_results(
             all_residuals.extend(res)
             all_residual_ratio.extend(ratio)
         except Exception as e:
-            logger.warning(f"[FITTING] Could not extract results for {ds['label']}: {e}")
+            logger.warning(
+                f"[FITTING] Could not extract results for {ds['label']}: {e}"
+            )
             pf["Q_fit"] = []
             pf["R_fit"] = []
             pf["chi_squared"] = float("inf")

@@ -462,8 +462,3 @@ def definition_from_parsed_sample(
             "fixed": intensity_raw.get("fixed", False),
         },
     }
-
-
-def is_legacy_script(model: object) -> bool:
-    """Return *True* if *model* looks like a legacy Python-script string."""
-    return isinstance(model, str)
