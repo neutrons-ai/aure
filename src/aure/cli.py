@@ -737,6 +737,210 @@ def _print_analysis_results(result: dict, output_dir: Optional[str] = None):
 
 
 # ============================================================================
+# Prepare Command (intake → analysis → modeling only)
+# ============================================================================
+
+
+@cli.command()
+@click.argument("data_file", type=click.Path(exists=True))
+@click.argument("sample_description")
+@click.option(
+    "--hypothesis",
+    "-h",
+    help="Optional hypothesis to test",
+)
+@click.option(
+    "--output-dir",
+    "-o",
+    type=click.Path(),
+    help="Output directory for checkpoints, models, and problem.json "
+    "(default: ./output/<model-name>)",
+)
+@click.option(
+    "--model-name",
+    "-n",
+    help="Base name for artifacts and the generated problem.json "
+    "(default: derived from the data file stem)",
+)
+@click.option(
+    "--config",
+    "-c",
+    "config_file",
+    type=click.Path(exists=True),
+    help="YAML config file with model constraints",
+)
+@click.option(
+    "--json",
+    "output_json",
+    is_flag=True,
+    help="Output results as JSON",
+)
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    help="Enable verbose logging",
+)
+def prepare(
+    data_file: str,
+    sample_description: str,
+    hypothesis: Optional[str],
+    output_dir: Optional[str],
+    model_name: Optional[str],
+    config_file: Optional[str],
+    output_json: bool,
+    verbose: bool,
+):
+    """
+    Run intake, analysis, and modeling only; emit a refl1d-ready problem.json.
+
+    DATA_FILE: Path to the reflectivity data file (.dat, .txt, .refl)
+
+    SAMPLE_DESCRIPTION: Natural language description of the sample
+
+    This stops before fitting, producing a ModelDefinition and a
+    ``problem.json`` that can be loaded directly by refl1d (``refl1d
+    <file>.json``) or submitted to a remote fit service.
+
+    \b
+    Examples:
+        aure prepare data.dat "100 nm polystyrene on silicon"
+        aure prepare data.dat "multilayer" -o ./out -n my_model
+    """
+    if verbose:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(message)s",
+            stream=sys.stderr,
+        )
+
+    from .workflow import run_prepare
+    from .nodes.model_builder import save_problem_json
+
+    # Resolve model name and output directory defaults
+    resolved_model_name = model_name or Path(data_file).stem
+    resolved_output_dir = output_dir or str(Path("output") / resolved_model_name)
+
+    user_config = load_user_config(config_file)
+
+    if not output_json:
+        click.echo(click.style("═" * 60, fg="blue"))
+        click.echo(
+            click.style("  Reflectivity Analysis — Prepare", fg="blue", bold=True)
+        )
+        click.echo(click.style("═" * 60, fg="blue"))
+        click.echo()
+
+        llm_ok, llm_msg = _check_llm_status(quiet=False, test_connection=True)
+        click.echo()
+
+        click.echo(f"  Data file:  {data_file}")
+        click.echo(f"  Sample:     {sample_description}")
+        if hypothesis:
+            click.echo(f"  Hypothesis: {hypothesis}")
+        click.echo(f"  Model name: {resolved_model_name}")
+        click.echo(f"  Output dir: {resolved_output_dir}")
+        click.echo()
+    else:
+        llm_ok, llm_msg = _check_llm_status(quiet=True, test_connection=True)
+
+    if not llm_ok:
+        if output_json:
+            click.echo(
+                json.dumps(
+                    {"error": f"LLM not available: {llm_msg}", "llm": get_llm_info()}
+                )
+            )
+        else:
+            click.echo(click.style(f"  Cannot proceed: {llm_msg}", fg="red"))
+        sys.exit(1)
+
+    def checkpoint_callback(state, node_name):
+        if not output_json:
+            status = "✓" if not state.get("error") else "✗"
+            click.echo(
+                click.style(
+                    f"  [{status}] {node_name.title()}",
+                    fg="green" if status == "✓" else "red",
+                )
+            )
+
+    try:
+        result = run_prepare(
+            data_file=data_file,
+            sample_description=sample_description,
+            hypothesis=hypothesis,
+            output_dir=resolved_output_dir,
+            checkpoint_callback=checkpoint_callback if not output_json else None,
+            user_config=user_config,
+        )
+    except Exception as e:
+        if output_json:
+            click.echo(json.dumps({"error": str(e)}))
+        else:
+            click.echo(click.style(f"Error: {e}", fg="red"))
+        sys.exit(1)
+
+    if result.get("error"):
+        if output_json:
+            click.echo(json.dumps({"error": result["error"]}))
+        else:
+            click.echo(click.style(f"Error: {result['error']}", fg="red"))
+        sys.exit(1)
+
+    model = result.get("current_model")
+    if not model:
+        msg = "Modeling node did not produce a model"
+        if output_json:
+            click.echo(json.dumps({"error": msg}))
+        else:
+            click.echo(click.style(f"Error: {msg}", fg="red"))
+        sys.exit(1)
+
+    # Write problem.json
+    problem_path = Path(resolved_output_dir) / f"{resolved_model_name}.json"
+    try:
+        from .nodes.model_builder import is_legacy_script
+
+        if is_legacy_script(model):
+            raise RuntimeError(
+                "Cannot serialize a legacy script-string model to problem.json. "
+                "Re-run with an LLM that produces JSON ModelDefinitions."
+            )
+        save_problem_json(model, problem_path)
+    except Exception as e:
+        if output_json:
+            click.echo(json.dumps({"error": f"Failed to write problem.json: {e}"}))
+        else:
+            click.echo(click.style(f"Error writing problem.json: {e}", fg="red"))
+        sys.exit(1)
+
+    if output_json:
+        click.echo(
+            json.dumps(
+                {
+                    "success": True,
+                    "output_dir": resolved_output_dir,
+                    "model_name": resolved_model_name,
+                    "problem_json": str(problem_path),
+                    "n_points": len(result.get("Q", [])),
+                    "parsed_sample": result.get("parsed_sample"),
+                    "extracted_features": result.get("extracted_features"),
+                },
+                indent=2,
+            )
+        )
+    else:
+        _print_analysis_results(result, resolved_output_dir)
+        click.echo()
+        click.echo(click.style("  Problem JSON", fg="green", bold=True))
+        click.echo(f"    {problem_path}")
+        click.echo()
+        click.echo(click.style("  Next steps:", fg="cyan"))
+        click.echo(f"    refl1d {problem_path}")
+
+
+# ============================================================================
 # Batch / Manifest Command
 # ============================================================================
 

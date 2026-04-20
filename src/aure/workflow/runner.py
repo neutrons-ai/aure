@@ -136,12 +136,57 @@ def run_analysis(
         return result
 
 
+def run_prepare(
+    data_file: str,
+    sample_description: str,
+    hypothesis: str = None,
+    output_dir: Optional[str] = None,
+    checkpoint_callback: Optional[Callable[[Dict[str, Any], str], None]] = None,
+    user_config: Optional[dict] = None,
+) -> ReflectivityState:
+    """
+    Run only intake → analysis → modeling.
+
+    Produces a ModelDefinition ready to be serialized as a refl1d/bumps
+    ``problem.json``.  No fitting or evaluation is performed.
+
+    Args:
+        data_file: Path to reflectivity data file
+        sample_description: User's description of the sample
+        hypothesis: Optional hypothesis to test
+        output_dir: Optional directory for checkpoints and results
+        checkpoint_callback: Optional callback(state, node_name)
+        user_config: Optional user-supplied YAML configuration dict
+
+    Returns:
+        Final workflow state (stopped after modeling)
+    """
+    initial_state = create_initial_state(
+        data_file=data_file,
+        sample_description=sample_description,
+        hypothesis=hypothesis,
+        max_iterations=0,
+        user_config=user_config,
+    )
+
+    with TracedWorkflow(data_file, sample_description, hypothesis, 0) as tw:
+        result = run_workflow_with_checkpoints(
+            initial_state=initial_state,
+            output_dir=output_dir,
+            checkpoint_callback=checkpoint_callback,
+            stop_after="modeling",
+        )
+        tw.set_result(result)
+        return result
+
+
 def run_workflow_with_checkpoints(
     initial_state: ReflectivityState,
     output_dir: Optional[str] = None,
     checkpoint_callback: Optional[Callable[[Dict[str, Any], str], None]] = None,
     start_node: Optional[str] = None,
     pause_callback: Optional[Callable[[Dict[str, Any], str], Optional[str]]] = None,
+    stop_after: Optional[str] = None,
 ) -> ReflectivityState:
     """
     Run workflow with checkpoint support.
@@ -292,6 +337,11 @@ def run_workflow_with_checkpoints(
             break
 
         if state.get("workflow_complete"):
+            break
+
+        # Stop after a specific node (e.g. "modeling") if requested
+        if stop_after and current_node == stop_after:
+            state["workflow_complete"] = True
             break
 
         # Route to next node

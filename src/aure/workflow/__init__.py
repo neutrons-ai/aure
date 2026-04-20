@@ -24,6 +24,7 @@ Example usage:
 from .graph import create_workflow, create_workflow_app
 from .runner import (
     run_analysis,
+    run_prepare,
     run_workflow_with_checkpoints,
     run_from_checkpoint,
     NODE_ORDER,

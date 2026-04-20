@@ -321,6 +321,35 @@ def build_multi_problem(definition: dict, data_files: list[dict]):
     return problem, experiments, sorted_data_files
 
 
+def save_problem_json(definition: dict, path) -> str:
+    """Serialize a ``ModelDefinition`` to a bumps-compatible ``problem.json``.
+
+    Builds a ``FitProblem`` via :func:`build_problem` and writes a JSON
+    representation using ``bumps.serialize.save_file``.  The resulting file
+    can be loaded directly by refl1d / bumps (e.g. ``refl1d problem.json``)
+    or submitted to a remote fit service.
+
+    Parameters
+    ----------
+    definition
+        A ``ModelDefinition`` dict.
+    path
+        Output file path (str or Path).
+
+    Returns
+    -------
+    str
+        The absolute path to the written file.
+    """
+    from bumps.serialize import save_file
+
+    problem = build_problem(definition)
+    out = os.path.abspath(str(path))
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    save_file(out, problem)
+    return out
+
+
 def apply_parameters(problem, params: Dict[str, float]) -> None:
     """Apply fitted parameter values to a ``FitProblem`` by name.
 
