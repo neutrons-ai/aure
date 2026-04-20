@@ -565,6 +565,21 @@ def api_start_analysis():
 
     # Determine run sub-directory
     data_files = body.get("data_files")  # list of {file, label} or None
+    if data_files is not None:
+        # Validate data_files structure and file existence
+        if not isinstance(data_files, list):
+            return jsonify({"errors": ["data_files must be a list"]}), 400
+        df_errors = []
+        for idx, df in enumerate(data_files):
+            if not isinstance(df, dict) or "file" not in df or "label" not in df:
+                df_errors.append(
+                    f"data_files[{idx}]: each entry must have 'file' and 'label' keys"
+                )
+            elif not Path(df["file"]).is_file():
+                df_errors.append(f"data_files[{idx}]: file does not exist: {df['file']}")
+        if df_errors:
+            return jsonify({"errors": df_errors}), 400
+
     if data_files and len(data_files) > 1:
         # For co-refinement: use the lowest run number across all files
         run_names = [_extract_run_name(df["file"]) for df in data_files]

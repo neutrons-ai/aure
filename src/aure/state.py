@@ -119,8 +119,13 @@ class ExtractedFeatures(TypedDict):
     normalization_ok: bool
 
 
-class DatasetInfo(TypedDict):
-    """Information about one data file in a multi-file co-refinement."""
+class DatasetInfo(TypedDict, total=False):
+    """Information about one data file in a multi-file co-refinement.
+
+    ``file`` and ``label`` are the only fields required at construction time
+    (e.g. from the CLI/web layer).  ``dq_is_fwhm`` and ``theta`` are
+    populated later during the intake node and are therefore optional here.
+    """
 
     file: str  # Absolute path to the data file
     label: str  # Short human-readable label (e.g. "low-Q", "file1")

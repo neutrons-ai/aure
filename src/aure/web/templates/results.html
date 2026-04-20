@@ -242,10 +242,11 @@ document.addEventListener("DOMContentLoaded", async () => {
     iterSel.classList.remove("d-none");
     (reflData.models || []).forEach((m, i) => {
       const opt = document.createElement("option");
-      opt.value = String(m.iteration != null ? m.iteration : i);
+      const iterNum = m.iteration != null ? m.iteration : i;
+      opt.value = String(iterNum);
       let text = m.label;
       opt.textContent = text;
-      if (i === paramData.iteration) opt.selected = true;
+      if (iterNum === paramData.iteration) opt.selected = true;
       iterSel.appendChild(opt);
     });
   }

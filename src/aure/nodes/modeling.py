@@ -562,6 +562,7 @@ def build_refl1d_script(
     data_file: str,
     back_reflection: bool = False,
     intensity: dict = None,
+    dq_is_fwhm: bool = True,
 ) -> str:
     """
     Generate refl1d Python script for the model.
@@ -573,6 +574,8 @@ def build_refl1d_script(
         data_file: Path to data file
         back_reflection: If True, neutrons come from substrate side
         intensity: Dict with value, min, max, fixed for probe intensity
+        dq_is_fwhm: Whether the dQ column in the data file is FWHM (True)
+            or 1-sigma (False). Passed through to load4(FWHM=...).
 
     Returns:
         Python script string
@@ -597,7 +600,7 @@ def build_refl1d_script(
         'warnings.filterwarnings("ignore", category=UserWarning, module="refl1d")',
         "",
         "# ========== Load Data ==========",
-        f'probe = load4("{abs_data_file}", FWHM=True)',
+        f'probe = load4("{abs_data_file}", FWHM={dq_is_fwhm})',
     ]
 
     lines.extend(

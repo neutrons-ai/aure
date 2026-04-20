@@ -128,8 +128,10 @@ def build_experiment(definition: dict):
 
     # Probe intensity
     if not intensity.get("fixed", False):
+        int_val = intensity.get("value", 1.0)
         int_min = intensity.get("min", 0.7)
         int_max = intensity.get("max", 1.1)
+        probe.intensity.value = int_val
         probe.intensity.range(int_min, int_max)
 
     experiment = Experiment(probe=probe, sample=sample)
@@ -302,8 +304,10 @@ def build_multi_problem(definition: dict, data_files: list[dict]):
     for probe in sorted_probes:
         # Each probe gets its own independent intensity parameter
         if not intensity.get("fixed", False):
+            int_val = intensity.get("value", 1.0)
             int_min = intensity.get("min", 0.7)
             int_max = intensity.get("max", 1.1)
+            probe.intensity.value = int_val
             probe.intensity.range(int_min, int_max)
 
         # sample_broadening / theta_offset only exist on NeutronProbe
