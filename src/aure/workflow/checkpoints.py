@@ -316,8 +316,9 @@ class CheckpointManager:
         values = []
         for i, fr in enumerate(fit_results, 1):
             chi2 = fr.get("chi_squared")
+            iteration = fr.get("iteration", i)
             if chi2 is not None:
-                values.append(f"iter {i}: {chi2:.2f}")
+                values.append(f"iter {iteration}: {chi2:.2f}")
         if not values:
             return ""
         return "**χ² progression:** " + " → ".join(values)
