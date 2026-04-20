@@ -235,14 +235,15 @@ class RunData:
                     }
                 )
 
-        # Identify best-chi2 iteration (by iteration number, not array index)
+        # Identify best-chi2 iteration using aggregate chi_squared from fit_results
+        # (avoids picking based on a single segment's chi2 in multi-file mode)
         best_iteration = None
         best_chi2 = float("inf")
-        for m in models:
-            c = m.get("chi2")
+        for fr in state.get("fit_results", []):
+            c = fr.get("chi_squared")
             if c is not None and c < best_chi2:
                 best_chi2 = c
-                best_iteration = m.get("iteration")
+                best_iteration = fr.get("iteration")
 
         # Build unique iteration list for the selector
         seen = set()
