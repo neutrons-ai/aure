@@ -150,8 +150,9 @@ class SkillRegistry:
         meta = self._metadata.get(skill_name)
         if meta is None:
             raise KeyError(f"Unknown skill: '{skill_name}'")
-        target = (meta.path / ref_path).resolve()
+        base_path = meta.path.resolve()
+        target = (base_path / ref_path).resolve()
         # Ensure the target is under the skill directory (path traversal guard)
-        if not str(target).startswith(str(meta.path.resolve())):
+        if target != base_path and base_path not in target.parents:
             raise ValueError(f"Path traversal detected: {ref_path}")
         return target.read_text(encoding="utf-8")
