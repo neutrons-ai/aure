@@ -900,9 +900,7 @@ def prepare(
     # Write problem.json
     problem_path = Path(resolved_output_dir) / f"{resolved_model_name}.json"
     try:
-        from .nodes.model_builder import is_legacy_script
-
-        if is_legacy_script(model):
+        if isinstance(model, str):
             raise RuntimeError(
                 "Cannot serialize a legacy script-string model to problem.json. "
                 "Re-run with an LLM that produces JSON ModelDefinitions."
