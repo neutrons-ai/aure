@@ -116,6 +116,34 @@ def test_run_prepare_stops_after_modeling(tmp_path):
     assert cp_nodes == ["intake", "analysis", "modeling"]
 
 
+def test_run_prepare_passes_data_files(tmp_path):
+    """run_prepare should accept and preserve data_files for co-refinement."""
+    data_file = _write_tiny_data_file()
+    extra_file = _write_tiny_data_file()
+    datasets = [
+        {"file": data_file, "label": "primary"},
+        {"file": extra_file, "label": "extra"},
+    ]
+
+    stub_funcs = {
+        "intake": _stub_intake,
+        "analysis": _stub_analysis,
+        "modeling": _stub_modeling,
+    }
+    with patch.dict("aure.workflow.runner.NODE_FUNCTIONS", stub_funcs, clear=False):
+        result = run_prepare(
+            data_file=data_file,
+            sample_description="100 A film on silicon",
+            output_dir=str(tmp_path),
+            data_files=datasets,
+        )
+
+    assert result.get("error") is None
+    assert len(result.get("data_files", [])) == 2
+    assert result["data_files"][0]["label"] == "primary"
+    assert result["data_files"][1]["label"] == "extra"
+
+
 def test_stop_after_parameter_halts_runner(tmp_path):
     """run_workflow_with_checkpoints(stop_after=...) halts at the named node."""
     data_file = _write_tiny_data_file()

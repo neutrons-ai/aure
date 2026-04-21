@@ -11,6 +11,7 @@
 
 # ── Shared defaults (applied to every job unless overridden) ──
 defaults:
+  command: analyze            # analyze | prepare
   max_refinements: 5          # max refinement iterations per job
   output_root: ./output       # each job writes to <output_root>/<job name>
   verbose: true               # stream progress to stderr
@@ -63,3 +64,12 @@ jobs:
     sample_description: thin gold film on glass
     fit_method: lm             # fast local fit only
     fit_steps: 500
+
+  # Prepare-only job: generates <output_root>/<name>/<model_name>.json
+  - name: ps_prepare_only
+    command: prepare
+    data_file: data/ps_film.txt
+    sample_description: 100 nm polystyrene on silicon
+    data_files:
+      - data/ps_film_repeat.txt
+    model_name: ps_model

@@ -143,6 +143,7 @@ def run_prepare(
     output_dir: Optional[str] = None,
     checkpoint_callback: Optional[Callable[[Dict[str, Any], str], None]] = None,
     user_config: Optional[dict] = None,
+    data_files: Optional[list[dict]] = None,
 ) -> ReflectivityState:
     """
     Run only intake → analysis → modeling.
@@ -157,6 +158,7 @@ def run_prepare(
         output_dir: Optional directory for checkpoints and results
         checkpoint_callback: Optional callback(state, node_name)
         user_config: Optional user-supplied YAML configuration dict
+        data_files: Optional list of DatasetInfo dicts for multi-file co-refinement
 
     Returns:
         Final workflow state (stopped after modeling)
@@ -167,6 +169,7 @@ def run_prepare(
         hypothesis=hypothesis,
         max_iterations=0,
         user_config=user_config,
+        data_files=data_files,
     )
 
     with TracedWorkflow(data_file, sample_description, hypothesis, 0) as tw:

@@ -234,7 +234,7 @@ aure analyze low-Q.dat "multilayer" -d mid-Q.dat -d high-Q.dat -o ./output
 
 ### `aure batch`
 
-Run one or more analyses from a YAML manifest file.
+Run one or more jobs from a YAML manifest file.
 Ideal for automated / CI workflows where the full configuration lives in
 version control.
 
@@ -250,6 +250,10 @@ aure batch MANIFEST [OPTIONS]
 The manifest is a YAML file with a `defaults` section and a `jobs` list.
 See [manifest.example.yaml](manifest.example.yaml) for the full schema.
 
+Each job supports a `command` field — either `analyze` (default, full
+fit-and-refine workflow) or `prepare` (intake → analysis → modeling only,
+emits `problem.json`).
+
 **Examples:**
 
 ```bash
@@ -261,6 +265,43 @@ aure batch manifest.yaml -j copper_on_silicon
 
 # Preview without executing
 aure batch manifest.yaml --dry-run
+```
+
+**Minimal prepare-mode manifest:**
+
+```yaml
+defaults:
+  output_root: ./output
+
+jobs:
+  # Full workflow (fit + refine)
+  - name: copper_analysis
+    command: analyze
+    data_file: data/copper.txt
+    sample_description: 50 nm copper on silicon
+    max_refinements: 5
+
+  # Prepare only — stops before fitting, writes <output_root>/<name>/<model_name>.json
+  - name: copper_prepare
+    command: prepare
+    data_file: data/copper.txt
+    sample_description: 50 nm copper on silicon
+    model_name: copper_model        # optional; defaults to the job name
+
+  # Multi-file prepare with co-refinement (shared structure, per-file normalisation)
+  - name: copper_corefinement_prepare
+    command: prepare
+    data_file: data/low-Q.txt
+    data_files:
+      - data/mid-Q.txt
+      - data/high-Q.txt
+    sample_description: 50 nm copper on silicon
+```
+
+The resulting `problem.json` can be passed directly to refl1d:
+
+```bash
+refl1d output/copper_prepare/copper_model.json
 ```
 
 ### `aure resume`

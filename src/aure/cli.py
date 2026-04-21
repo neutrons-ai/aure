@@ -750,6 +750,13 @@ def _print_analysis_results(result: dict, output_dir: Optional[str] = None):
     help="Optional hypothesis to test",
 )
 @click.option(
+    "--extra-data",
+    "-d",
+    multiple=True,
+    type=click.Path(exists=True),
+    help="Additional data files for multi-file co-refinement (Q-range segments)",
+)
+@click.option(
     "--output-dir",
     "-o",
     type=click.Path(),
@@ -785,6 +792,7 @@ def prepare(
     data_file: str,
     sample_description: str,
     hypothesis: Optional[str],
+    extra_data: tuple,
     output_dir: Optional[str],
     model_name: Optional[str],
     config_file: Optional[str],
@@ -806,6 +814,7 @@ def prepare(
     Examples:
         aure prepare data.dat "100 nm polystyrene on silicon"
         aure prepare data.dat "multilayer" -o ./out -n my_model
+        aure prepare low-Q.dat "multilayer" -d mid-Q.dat -d high-Q.dat
     """
     if verbose:
         logging.basicConfig(
@@ -823,6 +832,16 @@ def prepare(
 
     user_config = load_user_config(config_file)
 
+    # Build data_files list for multi-file co-refinement
+    all_files = [data_file] + list(extra_data)
+    data_files = None
+    if len(all_files) > 1:
+        from pathlib import Path as _Path
+
+        data_files = [
+            {"file": str(_Path(f).resolve()), "label": _Path(f).stem} for f in all_files
+        ]
+
     if not output_json:
         click.echo(click.style("═" * 60, fg="blue"))
         click.echo(
@@ -835,6 +854,10 @@ def prepare(
         click.echo()
 
         click.echo(f"  Data file:  {data_file}")
+        if extra_data:
+            for ef in extra_data:
+                click.echo(f"  Extra data: {ef}")
+            click.echo(f"  Co-refinement: {len(all_files)} files (shared structure)")
         click.echo(f"  Sample:     {sample_description}")
         if hypothesis:
             click.echo(f"  Hypothesis: {hypothesis}")
@@ -873,6 +896,7 @@ def prepare(
             output_dir=resolved_output_dir,
             checkpoint_callback=checkpoint_callback if not output_json else None,
             user_config=user_config,
+            data_files=data_files,
         )
     except Exception as e:
         if output_json:
@@ -897,8 +921,9 @@ def prepare(
             click.echo(click.style(f"Error: {msg}", fg="red"))
         sys.exit(1)
 
-    # Write problem.json
+    # Write problem.json (bumps-serialised) and _definition.json (raw ModelDefinition)
     problem_path = Path(resolved_output_dir) / f"{resolved_model_name}.json"
+    definition_path = Path(resolved_output_dir) / f"{resolved_model_name}_definition.json"
     try:
         if isinstance(model, str):
             raise RuntimeError(
@@ -906,6 +931,8 @@ def prepare(
                 "Re-run with an LLM that produces JSON ModelDefinitions."
             )
         save_problem_json(model, problem_path)
+        definition_path.parent.mkdir(parents=True, exist_ok=True)
+        definition_path.write_text(json.dumps(model, indent=2), encoding="utf-8")
     except Exception as e:
         if output_json:
             click.echo(json.dumps({"error": f"Failed to write problem.json: {e}"}))
@@ -921,6 +948,7 @@ def prepare(
                     "output_dir": resolved_output_dir,
                     "model_name": resolved_model_name,
                     "problem_json": str(problem_path),
+                    "definition_json": str(definition_path),
                     "n_points": len(result.get("Q", [])),
                     "parsed_sample": result.get("parsed_sample"),
                     "extracted_features": result.get("extracted_features"),
@@ -933,6 +961,7 @@ def prepare(
         click.echo()
         click.echo(click.style("  Problem JSON", fg="green", bold=True))
         click.echo(f"    {problem_path}")
+        click.echo(f"    {definition_path}  (raw ModelDefinition)")
         click.echo()
         click.echo(click.style("  Next steps:", fg="cyan"))
         click.echo(f"    refl1d {problem_path}")
@@ -958,9 +987,9 @@ def prepare(
 )
 def batch(manifest: str, job: tuple, dry_run: bool):
     """
-    Run one or more analyses from a YAML manifest file.
+    Run one or more jobs from a YAML manifest file.
 
-    MANIFEST: Path to a YAML file describing the analysis jobs.
+    MANIFEST: Path to a YAML file describing batch jobs.
 
     The manifest contains a ``defaults`` section (shared settings) and a
     ``jobs`` list.  Each job must supply at least ``name``, ``data_file``,
@@ -1022,10 +1051,17 @@ def batch(manifest: str, job: tuple, dry_run: bool):
 
     for j in jobs:
         merged = {**defaults, **j}
+        command = str(merged.get("command", "analyze")).strip().lower()
+        if command not in {"analyze", "prepare"}:
+            raise click.BadParameter(
+                f"Job '{merged['name']}' has invalid command '{command}'. "
+                "Use 'analyze' or 'prepare'."
+            )
         data_file = _resolve_path(merged["data_file"], manifest_dir)
         output_root = _resolve_path(merged.get("output_root", "./output"), manifest_dir)
         output_dir = str(Path(output_root) / merged["name"])
         click.echo(f"  • {merged['name']}")
+        click.echo(f"      mode   : {command}")
         click.echo(f"      data   : {data_file}")
         # Show extra data files for co-refinement
         if merged.get("data_files"):
@@ -1038,12 +1074,15 @@ def batch(manifest: str, job: tuple, dry_run: bool):
         click.echo(f"      output : {output_dir}")
         if merged.get("hypothesis"):
             click.echo(f"      hypothesis : {merged['hypothesis'][:72]}")
-        click.echo(
-            f"      fit    : {merged.get('fit_method', 'dream')} "
-            f"steps={merged.get('fit_steps', 1000)} "
-            f"burn={merged.get('fit_burn', 1000)}"
-        )
-        click.echo(f"      refine : max {merged.get('max_refinements', 5)}")
+        if command == "analyze":
+            click.echo(
+                f"      fit    : {merged.get('fit_method', 'dream')} "
+                f"steps={merged.get('fit_steps', 1000)} "
+                f"burn={merged.get('fit_burn', 1000)}"
+            )
+            click.echo(f"      refine : max {merged.get('max_refinements', 5)}")
+        else:
+            click.echo(f"      model  : {merged.get('model_name', merged['name'])}")
         click.echo()
 
     if dry_run:
@@ -1051,7 +1090,8 @@ def batch(manifest: str, job: tuple, dry_run: bool):
         return
 
     # ── Execute ────────────────────────────────────────────────
-    from .workflow import run_analysis
+    from .workflow import run_analysis, run_prepare
+    from .nodes.model_builder import save_problem_json
     import os
 
     results_summary: list[dict] = []
@@ -1059,6 +1099,7 @@ def batch(manifest: str, job: tuple, dry_run: bool):
     for idx, j in enumerate(jobs, 1):
         merged = {**defaults, **j}
         name = merged["name"]
+        command = str(merged.get("command", "analyze")).strip().lower()
         data_file = _resolve_path(merged["data_file"], manifest_dir)
         output_root = _resolve_path(merged.get("output_root", "./output"), manifest_dir)
         output_dir = str(Path(output_root) / name)
@@ -1101,42 +1142,100 @@ def batch(manifest: str, job: tuple, dry_run: bool):
                 )
 
         try:
-            result = run_analysis(
-                data_file=data_file,
-                sample_description=merged["sample_description"],
-                hypothesis=merged.get("hypothesis"),
-                max_iterations=int(merged.get("max_refinements", 5)),
-                output_dir=output_dir,
-                checkpoint_callback=checkpoint_cb if not output_json else None,
-                data_files=data_files,
-            )
-            chi2 = None
-            if result.get("fit_results"):
-                chi2 = result["fit_results"][-1].get("chi_squared")
-
-            results_summary.append(
-                {
-                    "name": name,
-                    "success": True,
-                    "chi_squared": chi2,
-                    "output_dir": output_dir,
-                }
-            )
-
-            if output_json:
-                click.echo(
-                    json.dumps(
-                        {
-                            "job": name,
-                            "success": True,
-                            "chi_squared": chi2,
-                            "output_dir": output_dir,
-                        }
-                    )
+            if command == "prepare":
+                result = run_prepare(
+                    data_file=data_file,
+                    sample_description=merged["sample_description"],
+                    hypothesis=merged.get("hypothesis"),
+                    output_dir=output_dir,
+                    checkpoint_callback=checkpoint_cb if not output_json else None,
+                    data_files=data_files,
                 )
+                model = result.get("current_model")
+                if not model:
+                    raise RuntimeError("Modeling node did not produce a model")
+                if isinstance(model, str):
+                    raise RuntimeError(
+                        "Cannot serialize a legacy script-string model to problem.json"
+                    )
+
+                resolved_model_name = merged.get("model_name", name)
+                problem_path = Path(output_dir) / f"{resolved_model_name}.json"
+                definition_path = Path(output_dir) / f"{resolved_model_name}_definition.json"
+                save_problem_json(model, problem_path)
+                definition_path.parent.mkdir(parents=True, exist_ok=True)
+                definition_path.write_text(json.dumps(model, indent=2), encoding="utf-8")
+
+                results_summary.append(
+                    {
+                        "name": name,
+                        "command": command,
+                        "success": True,
+                        "problem_json": str(problem_path),
+                        "definition_json": str(definition_path),
+                        "output_dir": output_dir,
+                    }
+                )
+
+                if output_json:
+                    click.echo(
+                        json.dumps(
+                            {
+                                "job": name,
+                                "command": command,
+                                "success": True,
+                                "problem_json": str(problem_path),
+                                "definition_json": str(definition_path),
+                                "output_dir": output_dir,
+                            }
+                        )
+                    )
+                else:
+                    click.echo(
+                        click.style(
+                            f"    Done – wrote {problem_path.name}",
+                            fg="green",
+                        )
+                    )
             else:
-                chi_str = f"χ² = {chi2:.3f}" if chi2 is not None else "no fit"
-                click.echo(click.style(f"    Done – {chi_str}", fg="green"))
+                result = run_analysis(
+                    data_file=data_file,
+                    sample_description=merged["sample_description"],
+                    hypothesis=merged.get("hypothesis"),
+                    max_iterations=int(merged.get("max_refinements", 5)),
+                    output_dir=output_dir,
+                    checkpoint_callback=checkpoint_cb if not output_json else None,
+                    data_files=data_files,
+                )
+                chi2 = None
+                if result.get("fit_results"):
+                    chi2 = result["fit_results"][-1].get("chi_squared")
+
+                results_summary.append(
+                    {
+                        "name": name,
+                        "command": command,
+                        "success": True,
+                        "chi_squared": chi2,
+                        "output_dir": output_dir,
+                    }
+                )
+
+                if output_json:
+                    click.echo(
+                        json.dumps(
+                            {
+                                "job": name,
+                                "command": command,
+                                "success": True,
+                                "chi_squared": chi2,
+                                "output_dir": output_dir,
+                            }
+                        )
+                    )
+                else:
+                    chi_str = f"χ² = {chi2:.3f}" if chi2 is not None else "no fit"
+                    click.echo(click.style(f"    Done – {chi_str}", fg="green"))
 
         except Exception as e:
             results_summary.append(
