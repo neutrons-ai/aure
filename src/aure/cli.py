@@ -7,13 +7,6 @@ Usage:
     python -m aure.cli mcp-server
 """
 
-import warnings
-
-# Suppress compatibility warnings before any imports that might trigger them
-warnings.filterwarnings(
-    "ignore", message="Core Pydantic V1 functionality isn't compatible"
-)
-
 import json
 import logging
 import subprocess
@@ -29,8 +22,8 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
-from .config import load_user_config
-from .llm import (
+from .config import load_user_config  # noqa: E402
+from .llm import (  # noqa: E402
     get_llm_info,
     get_llm,
     invoke_with_timeout,
@@ -404,6 +397,13 @@ def check_llm(output_json: bool, no_test: bool, fix: bool):
     help="Optional hypothesis to test",
 )
 @click.option(
+    "--extra-data",
+    "-d",
+    multiple=True,
+    type=click.Path(exists=True),
+    help="Additional data files for multi-file co-refinement (Q-range segments)",
+)
+@click.option(
     "--max-refinements",
     "-m",
     default=5,
@@ -439,6 +439,7 @@ def analyze(
     data_file: str,
     sample_description: str,
     hypothesis: Optional[str],
+    extra_data: tuple,
     max_refinements: int,
     output_dir: Optional[str],
     output_json: bool,
@@ -455,6 +456,14 @@ def analyze(
     The workflow generates a model, fits it to the data, evaluates the fit,
     and refines the model if needed (up to --max-refinements iterations).
 
+    For multi-file co-refinement (e.g. spliced Q-range segments that share
+    the same sample state), pass additional files with --extra-data / -d:
+
+        aure analyze low-Q.dat "sample" -d mid-Q.dat -d high-Q.dat
+
+    All structural parameters are tied across files; each file gets its own
+    intensity normalization.
+
     When --output-dir is specified, checkpoints are saved after each workflow
     node (intake, analysis, modeling, fitting, evaluation, refinement).
     These can be used to inspect intermediate results or resume the workflow.
@@ -463,6 +472,9 @@ def analyze(
 
         # Basic analysis with default 5 refinement iterations
         python -m aure.cli analyze data.dat "100 nm polystyrene on silicon"
+
+        # Multi-file co-refinement
+        python -m aure.cli analyze low-Q.dat "multilayer" -d mid-Q.dat -d high-Q.dat
 
         # Save checkpoints to a directory
         python -m aure.cli analyze data.dat "multilayer" -o ./results
@@ -493,6 +505,16 @@ def analyze(
     # Load user config (evaluation criteria / model constraints)
     user_config = load_user_config(config_file)
 
+    # Build data_files list for multi-file co-refinement
+    all_files = [data_file] + list(extra_data)
+    data_files = None
+    if len(all_files) > 1:
+        from pathlib import Path as _Path
+
+        data_files = [
+            {"file": str(_Path(f).resolve()), "label": _Path(f).stem} for f in all_files
+        ]
+
     if not output_json:
         click.echo(click.style("═" * 60, fg="blue"))
         click.echo(
@@ -506,6 +528,10 @@ def analyze(
         click.echo()
 
         click.echo(f"  Data file: {data_file}")
+        if extra_data:
+            for ef in extra_data:
+                click.echo(f"  Extra data: {ef}")
+            click.echo(f"  Co-refinement: {len(all_files)} files (shared structure)")
         click.echo(f"  Sample: {sample_description}")
         if hypothesis:
             click.echo(f"  Hypothesis: {hypothesis}")
@@ -548,6 +574,7 @@ def analyze(
             output_dir=output_dir,
             checkpoint_callback=checkpoint_callback if not output_json else None,
             user_config=user_config,
+            data_files=data_files,
         )
     except Exception as e:
         if output_json:
@@ -642,8 +669,8 @@ def _print_analysis_results(result: dict, output_dir: Optional[str] = None):
     if result.get("current_model"):
         click.echo(click.style("  Final Model", fg="green", bold=True))
         click.echo(result.get("current_model"))
-#        model_lines = result["current_model"].split("\n")
-#        click.echo(f"    Script: {len(model_lines)} lines")
+        #        model_lines = result["current_model"].split("\n")
+        #        click.echo(f"    Script: {len(model_lines)} lines")
         click.echo()
 
     # Fit results — pull from fit_results list (last entry is the final fit)
@@ -706,8 +733,209 @@ def _print_analysis_results(result: dict, output_dir: Optional[str] = None):
         click.echo()
         click.echo(click.style("  Output Directory", fg="cyan", bold=True))
         click.echo(f"    Checkpoints: {output_dir}/checkpoints/")
-        click.echo(f"    Models: {output_dir}/models/")
         click.echo(f"    Final state: {output_dir}/final_state.json")
+
+
+# ============================================================================
+# Prepare Command (intake → analysis → modeling only)
+# ============================================================================
+
+
+@cli.command()
+@click.argument("data_file", type=click.Path(exists=True))
+@click.argument("sample_description")
+@click.option(
+    "--hypothesis",
+    "-h",
+    help="Optional hypothesis to test",
+)
+@click.option(
+    "--output-dir",
+    "-o",
+    type=click.Path(),
+    help="Output directory for checkpoints, models, and problem.json "
+    "(default: ./output/<model-name>)",
+)
+@click.option(
+    "--model-name",
+    "-n",
+    help="Base name for artifacts and the generated problem.json "
+    "(default: derived from the data file stem)",
+)
+@click.option(
+    "--config",
+    "-c",
+    "config_file",
+    type=click.Path(exists=True),
+    help="YAML config file with model constraints",
+)
+@click.option(
+    "--json",
+    "output_json",
+    is_flag=True,
+    help="Output results as JSON",
+)
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    help="Enable verbose logging",
+)
+def prepare(
+    data_file: str,
+    sample_description: str,
+    hypothesis: Optional[str],
+    output_dir: Optional[str],
+    model_name: Optional[str],
+    config_file: Optional[str],
+    output_json: bool,
+    verbose: bool,
+):
+    """
+    Run intake, analysis, and modeling only; emit a refl1d-ready problem.json.
+
+    DATA_FILE: Path to the reflectivity data file (.dat, .txt, .refl)
+
+    SAMPLE_DESCRIPTION: Natural language description of the sample
+
+    This stops before fitting, producing a ModelDefinition and a
+    ``problem.json`` that can be loaded directly by refl1d (``refl1d
+    <file>.json``) or submitted to a remote fit service.
+
+    \b
+    Examples:
+        aure prepare data.dat "100 nm polystyrene on silicon"
+        aure prepare data.dat "multilayer" -o ./out -n my_model
+    """
+    if verbose:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(message)s",
+            stream=sys.stderr,
+        )
+
+    from .workflow import run_prepare
+    from .nodes.model_builder import save_problem_json
+
+    # Resolve model name and output directory defaults
+    resolved_model_name = model_name or Path(data_file).stem
+    resolved_output_dir = output_dir or str(Path("output") / resolved_model_name)
+
+    user_config = load_user_config(config_file)
+
+    if not output_json:
+        click.echo(click.style("═" * 60, fg="blue"))
+        click.echo(
+            click.style("  Reflectivity Analysis — Prepare", fg="blue", bold=True)
+        )
+        click.echo(click.style("═" * 60, fg="blue"))
+        click.echo()
+
+        llm_ok, llm_msg = _check_llm_status(quiet=False, test_connection=True)
+        click.echo()
+
+        click.echo(f"  Data file:  {data_file}")
+        click.echo(f"  Sample:     {sample_description}")
+        if hypothesis:
+            click.echo(f"  Hypothesis: {hypothesis}")
+        click.echo(f"  Model name: {resolved_model_name}")
+        click.echo(f"  Output dir: {resolved_output_dir}")
+        click.echo()
+    else:
+        llm_ok, llm_msg = _check_llm_status(quiet=True, test_connection=True)
+
+    if not llm_ok:
+        if output_json:
+            click.echo(
+                json.dumps(
+                    {"error": f"LLM not available: {llm_msg}", "llm": get_llm_info()}
+                )
+            )
+        else:
+            click.echo(click.style(f"  Cannot proceed: {llm_msg}", fg="red"))
+        sys.exit(1)
+
+    def checkpoint_callback(state, node_name):
+        if not output_json:
+            status = "✓" if not state.get("error") else "✗"
+            click.echo(
+                click.style(
+                    f"  [{status}] {node_name.title()}",
+                    fg="green" if status == "✓" else "red",
+                )
+            )
+
+    try:
+        result = run_prepare(
+            data_file=data_file,
+            sample_description=sample_description,
+            hypothesis=hypothesis,
+            output_dir=resolved_output_dir,
+            checkpoint_callback=checkpoint_callback if not output_json else None,
+            user_config=user_config,
+        )
+    except Exception as e:
+        if output_json:
+            click.echo(json.dumps({"error": str(e)}))
+        else:
+            click.echo(click.style(f"Error: {e}", fg="red"))
+        sys.exit(1)
+
+    if result.get("error"):
+        if output_json:
+            click.echo(json.dumps({"error": result["error"]}))
+        else:
+            click.echo(click.style(f"Error: {result['error']}", fg="red"))
+        sys.exit(1)
+
+    model = result.get("current_model")
+    if not model:
+        msg = "Modeling node did not produce a model"
+        if output_json:
+            click.echo(json.dumps({"error": msg}))
+        else:
+            click.echo(click.style(f"Error: {msg}", fg="red"))
+        sys.exit(1)
+
+    # Write problem.json
+    problem_path = Path(resolved_output_dir) / f"{resolved_model_name}.json"
+    try:
+        if isinstance(model, str):
+            raise RuntimeError(
+                "Cannot serialize a legacy script-string model to problem.json. "
+                "Re-run with an LLM that produces JSON ModelDefinitions."
+            )
+        save_problem_json(model, problem_path)
+    except Exception as e:
+        if output_json:
+            click.echo(json.dumps({"error": f"Failed to write problem.json: {e}"}))
+        else:
+            click.echo(click.style(f"Error writing problem.json: {e}", fg="red"))
+        sys.exit(1)
+
+    if output_json:
+        click.echo(
+            json.dumps(
+                {
+                    "success": True,
+                    "output_dir": resolved_output_dir,
+                    "model_name": resolved_model_name,
+                    "problem_json": str(problem_path),
+                    "n_points": len(result.get("Q", [])),
+                    "parsed_sample": result.get("parsed_sample"),
+                    "extracted_features": result.get("extracted_features"),
+                },
+                indent=2,
+            )
+        )
+    else:
+        _print_analysis_results(result, resolved_output_dir)
+        click.echo()
+        click.echo(click.style("  Problem JSON", fg="green", bold=True))
+        click.echo(f"    {problem_path}")
+        click.echo()
+        click.echo(click.style("  Next steps:", fg="cyan"))
+        click.echo(f"    refl1d {problem_path}")
 
 
 # ============================================================================
@@ -799,6 +1027,13 @@ def batch(manifest: str, job: tuple, dry_run: bool):
         output_dir = str(Path(output_root) / merged["name"])
         click.echo(f"  • {merged['name']}")
         click.echo(f"      data   : {data_file}")
+        # Show extra data files for co-refinement
+        if merged.get("data_files"):
+            for df in merged["data_files"]:
+                extra = _resolve_path(
+                    df if isinstance(df, str) else df["file"], manifest_dir
+                )
+                click.echo(f"             + {extra}")
         click.echo(f"      sample : {merged['sample_description'][:72]}")
         click.echo(f"      output : {output_dir}")
         if merged.get("hypothesis"):
@@ -827,6 +1062,16 @@ def batch(manifest: str, job: tuple, dry_run: bool):
         data_file = _resolve_path(merged["data_file"], manifest_dir)
         output_root = _resolve_path(merged.get("output_root", "./output"), manifest_dir)
         output_dir = str(Path(output_root) / name)
+
+        # Build data_files list for co-refinement
+        data_files = None
+        raw_extra = merged.get("data_files")
+        if raw_extra and isinstance(raw_extra, list):
+            all_files = [data_file] + [
+                _resolve_path(df if isinstance(df, str) else df["file"], manifest_dir)
+                for df in raw_extra
+            ]
+            data_files = [{"file": str(f), "label": Path(f).stem} for f in all_files]
 
         click.echo(click.style(f"  [{idx}/{len(jobs)}] {name}", fg="cyan", bold=True))
 
@@ -863,6 +1108,7 @@ def batch(manifest: str, job: tuple, dry_run: bool):
                 max_iterations=int(merged.get("max_refinements", 5)),
                 output_dir=output_dir,
                 checkpoint_callback=checkpoint_cb if not output_json else None,
+                data_files=data_files,
             )
             chi2 = None
             if result.get("fit_results"):
@@ -1242,23 +1488,16 @@ def inspect_checkpoint(checkpoint_path: str, show_state: bool, output_json: bool
     is_flag=True,
     help="Don't display plot interactively (useful with --save)",
 )
-@click.option(
-    "--workspace",
-    "-w",
-    type=click.Path(exists=True),
-    help="Workspace directory where data files are located (default: current directory)",
-)
 def plot_results(
     output_dir: str,
     save: Optional[str],
     offset: float,
     no_show: bool,
-    workspace: Optional[str],
 ):
     """
-    Plot reflectivity and SLD profiles from workflow checkpoints.
+    Plot reflectivity and SLD profiles from workflow results.
 
-    OUTPUT_DIR: Path to the output directory containing checkpoints
+    OUTPUT_DIR: Path to the output directory containing refl1d_output
 
     Creates a two-panel plot:
     - Left: R(Q) curves (log-log) with data and model predictions from each iteration
@@ -1272,8 +1511,8 @@ def plot_results(
         # Save to file
         python -m aure.cli plot-results ./results -s results.png
 
-        # Save without display (from a different directory)
-        python -m aure.cli plot-results /path/to/results -s results.pdf --no-show -w /path/to/workspace
+        # Save without display
+        python -m aure.cli plot-results /path/to/results -s results.pdf --no-show
     """
     from pathlib import Path
     from .workflow import CheckpointManager
@@ -1287,23 +1526,26 @@ def plot_results(
         sys.exit(1)
 
     output_path = Path(output_dir)
-    models_dir = output_path / "models"
+    refl1d_dir = output_path / "refl1d_output"
     checkpoints_dir = output_path / "checkpoints"
 
-    # Use provided workspace or current directory
-    working_dir = Path(workspace) if workspace else Path.cwd()
-
-    # Check for model files
-    if not models_dir.exists():
-        click.echo(click.style("No models directory found", fg="red"))
+    # Check for refl1d output
+    if not refl1d_dir.exists():
+        click.echo(click.style("No refl1d_output directory found", fg="red"))
         sys.exit(1)
 
-    model_files = sorted(models_dir.glob("*.py"))
-    if not model_files:
-        click.echo(click.style("No model files found in models/", fg="red"))
+    # Find problem.json files from fit iterations
+    fit_dirs = sorted(refl1d_dir.glob("fit_iter*_*"))
+    problem_files = [
+        (d, d / "problem.json") for d in fit_dirs if (d / "problem.json").exists()
+    ]
+    if not problem_files:
+        click.echo(
+            click.style("No problem.json files found in refl1d_output/", fg="red")
+        )
         sys.exit(1)
 
-    click.echo(click.style(f"  Found {len(model_files)} model file(s)", fg="cyan"))
+    click.echo(click.style(f"  Found {len(problem_files)} fit result(s)", fg="cyan"))
 
     # Get list of checkpoints for experimental data
     checkpoint_list = CheckpointManager.list_checkpoints(output_dir)
@@ -1340,75 +1582,66 @@ def plot_results(
             if chi2 is not None:
                 chi2_by_node[(node, iteration)] = chi2
 
-    # Load and execute each model file to get R(Q) and SLD
+    # Load and deserialize each problem.json to get R(Q) and SLD
     model_data = []
+    import json as _json
     import re
 
-    for model_file in model_files:
+    for fit_dir, problem_file in problem_files:
         try:
-            # Parse iteration and node type from filename
-            # Filenames like: model_initial.py, model_fitting_iter0.py, model_refined_iter1.py
-            name = model_file.stem
+            # Parse iteration from directory name (e.g. fit_iter0_dream)
+            match = re.search(r"fit_iter(\d+)_(\w+)", fit_dir.name)
+            iteration = int(match.group(1)) if match else len(model_data)
+            method = match.group(2) if match else "unknown"
+            label = f"Fit iter {iteration} ({method})"
+            sort_key = (iteration, 0)
 
-            if "initial" in name:
-                iteration = 0
-                node_type = "initial"
-                label = "Initial"
-                sort_key = (0, 0)  # (iteration, sub-order)
-            elif "fitting" in name:
-                match = re.search(r"iter(\d+)", name)
-                iteration = int(match.group(1)) if match else 0
-                node_type = "fitting"
-                label = f"Fit iter {iteration}"
-                sort_key = (iteration, 1)
-            elif "evaluation" in name:
-                match = re.search(r"iter(\d+)", name)
-                iteration = int(match.group(1)) if match else 0
-                node_type = "evaluation"
-                label = f"Eval iter {iteration}"
-                sort_key = (iteration, 2)
-            elif "refined" in name:
-                match = re.search(r"iter(\d+)", name)
-                iteration = int(match.group(1)) if match else 0
-                node_type = "refinement"
-                label = f"Refined iter {iteration}"
-                sort_key = (iteration, 3)
-            else:
-                iteration = len(model_data)
-                node_type = "unknown"
-                label = name
-                sort_key = (iteration, 0)
+            click.echo(f"    Loading {fit_dir.name}/problem.json...")
 
-            click.echo(f"    Loading {model_file.name}...")
-            result = _execute_model_file(model_file, Q_data, working_dir=working_dir)
+            from bumps.serialize import deserialize
 
-            if result:
-                # Look up chi2 by node type and iteration
-                # Only show checkpoint chi2 for fitted models (not initial)
-                chi2 = None
-                if node_type != "initial":
-                    chi2 = chi2_by_node.get((node_type, iteration))
-                    # Fallback to fitting chi2 for evaluation/refinement same iteration
-                    if chi2 is None:
-                        chi2 = chi2_by_node.get(("fitting", iteration))
+            with open(problem_file) as f:
+                problem = deserialize(_json.load(f))
 
-                model_data.append(
-                    {
-                        "iteration": iteration,
-                        "sort_key": sort_key,
-                        "label": label,
-                        "Q": result["Q"],
-                        "R": result["R"],
-                        "z": result.get("z"),
-                        "sld": result.get("sld"),
-                        "chi2": chi2,
-                        "file": model_file.name,
-                    }
-                )
+            fitness = problem.fitness
+            experiments = fitness._models if hasattr(fitness, "_models") else [fitness]
+
+            # Use the first experiment for reflectivity and SLD
+            exp = experiments[0]
+            exp.update()
+            Q_arr, R_arr = exp.reflectivity()
+
+            z, sld = None, None
+            try:
+                z_arr, sld_arr, _ = exp.smooth_profile(dz=1.0)
+                z = np.array(z_arr).tolist()
+                sld = np.array(sld_arr).tolist()
+            except Exception:
+                pass
+
+            chi2 = None
+            try:
+                chi2 = float(problem.chisq())
+            except Exception:
+                pass
+
+            model_data.append(
+                {
+                    "iteration": iteration,
+                    "sort_key": sort_key,
+                    "label": label,
+                    "Q": np.array(Q_arr).tolist(),
+                    "R": np.array(R_arr).tolist(),
+                    "z": z,
+                    "sld": sld,
+                    "chi2": chi2,
+                    "file": fit_dir.name,
+                }
+            )
         except Exception as e:
             click.echo(
                 click.style(
-                    f"    Warning: Could not load {model_file.name}: {e}", fg="yellow"
+                    f"    Warning: Could not load {fit_dir.name}: {e}", fg="yellow"
                 )
             )
 
@@ -1529,97 +1762,385 @@ def plot_results(
     plt.close()
 
 
-def _execute_model_file(model_file, Q_data, working_dir=None) -> Optional[dict]:
+# ============================================================================
+# Standalone Evaluation Command
+# ============================================================================
+
+
+@cli.command()
+@click.argument("refl1d_dir", type=click.Path(exists=True))
+@click.option(
+    "--context",
+    "-c",
+    "context_prompt",
+    default=None,
+    help="Optional description of the sample / model to give the LLM context",
+)
+@click.option(
+    "--hypothesis",
+    "-h",
+    default=None,
+    help="Optional hypothesis being tested",
+)
+@click.option(
+    "--json",
+    "output_json",
+    is_flag=True,
+    help="Output as JSON",
+)
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    help="Enable verbose logging",
+)
+def evaluate(
+    refl1d_dir: str,
+    context_prompt: Optional[str],
+    hypothesis: Optional[str],
+    output_json: bool,
+    verbose: bool,
+):
     """
-    Execute a refl1d model file and extract R(Q) and SLD profile.
+    Evaluate a refl1d fit result using LLM analysis.
 
-    Args:
-        model_file: Path to the model .py file
-        Q_data: Experimental Q values (for reference, may not be used)
-        working_dir: Directory to run the model in (for relative paths)
+    REFL1D_DIR: Path to a refl1d output directory containing problem.json
+                (e.g. output/refl1d_output/fit_iter0_dream)
 
-    Returns:
-        Dictionary with 'Q', 'R', 'z', 'sld', 'chi2' or None on failure
+    This command loads a serialised bumps FitProblem, extracts fit results
+    (χ², parameters, theory curves, SLD profile, residuals), and asks the
+    LLM to assess the fit quality — without re-running the full workflow.
+
+    Use --context / -c to provide a natural-language description of the
+    sample so the LLM can judge physical plausibility.
+
+    \b
+    Examples:
+        aure evaluate output/refl1d_output/fit_iter0_dream
+
+        aure evaluate output/refl1d_output/fit_iter0_dream \\
+            -c "100 nm polystyrene film on silicon"
+
+        aure evaluate output/refl1d_output/fit_iter0_dream --json
     """
-    import numpy as np
-    from pathlib import Path
-    import os
+    import re as _re
 
-    # Save current directory
-    original_cwd = os.getcwd()
+    if verbose:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(message)s",
+            stream=sys.stderr,
+        )
+
+    refl1d_path = Path(refl1d_dir)
+
+    # ── Locate problem.json ────────────────────────────────────
+    problem_file = refl1d_path / "problem.json"
+    if not problem_file.exists():
+        # Maybe the user pointed at the parent refl1d_output dir;
+        # pick the latest fit_iter* subdirectory.
+        fit_dirs = sorted(refl1d_path.glob("fit_iter*_*/problem.json"))
+        if fit_dirs:
+            problem_file = fit_dirs[-1]
+            refl1d_path = problem_file.parent
+        else:
+            click.echo(click.style(f"No problem.json found in {refl1d_dir}", fg="red"))
+            sys.exit(1)
+
+    # Parse iteration & method from directory name
+    match = _re.search(r"fit_iter(\d+)_(\w+)", refl1d_path.name)
+    iteration = int(match.group(1)) if match else 0
+    method = match.group(2) if match else "unknown"
+
+    if not output_json:
+        click.echo(click.style("═" * 60, fg="blue"))
+        click.echo(click.style("  Evaluate Refl1D Fit Result", fg="blue", bold=True))
+        click.echo(click.style("═" * 60, fg="blue"))
+        click.echo()
+        click.echo(f"  Directory: {refl1d_path}")
+        click.echo(f"  Iteration: {iteration}  Method: {method}")
+        if context_prompt:
+            click.echo(f"  Context: {context_prompt}")
+        click.echo()
+
+    # ── Check LLM ──────────────────────────────────────────────
+    llm_ok, llm_msg = _check_llm_status(quiet=output_json, test_connection=True)
+    if not output_json:
+        click.echo()
+    if not llm_ok:
+        if output_json:
+            click.echo(json.dumps({"error": f"LLM not available: {llm_msg}"}))
+        else:
+            click.echo(click.style(f"  Cannot proceed: {llm_msg}", fg="red"))
+        sys.exit(1)
+
+    # ── Deserialise problem.json ───────────────────────────────
+    if not output_json:
+        click.echo("  Loading problem.json...", nl=False)
+    try:
+        import json as _json
+        from bumps.serialize import deserialize
+
+        with open(problem_file) as f:
+            problem = deserialize(_json.load(f))
+        if not output_json:
+            click.echo(click.style(" done", fg="green"))
+    except Exception as e:
+        if not output_json:
+            click.echo(click.style(f" failed: {e}", fg="red"))
+        else:
+            click.echo(json.dumps({"error": f"Failed to load problem.json: {e}"}))
+        sys.exit(1)
+
+    # ── Extract FitResult ──────────────────────────────────────
+    if not output_json:
+        click.echo("  Extracting fit results...", nl=False)
+    try:
+        fit_result = _extract_fit_result_from_problem(
+            problem,
+            method=method,
+            iteration=iteration,
+            export_dir=str(refl1d_path),
+        )
+        if not output_json:
+            click.echo(click.style(" done", fg="green"))
+    except Exception as e:
+        if not output_json:
+            click.echo(click.style(f" failed: {e}", fg="red"))
+        else:
+            click.echo(json.dumps({"error": f"Failed to extract fit results: {e}"}))
+        sys.exit(1)
+
+    chi2 = fit_result["chi_squared"]
+    if not output_json:
+        click.echo(f"  χ² = {chi2:.4f}")
+        click.echo()
+
+    # ── Run LLM evaluation ─────────────────────────────────────
+    if not output_json:
+        click.echo("  Running LLM evaluation...", nl=False)
+
+    from .nodes.evaluation import (
+        analyze_fit_quality_with_llm,
+        _check_boundary_hits,
+        _get_chi2_max,
+    )
+
+    chi2_max = _get_chi2_max()
+    boundary_hits = _check_boundary_hits(fit_result)
 
     try:
-        model_script = Path(model_file).read_text()
-
-        # Change to working directory for relative data paths
-        if working_dir and Path(working_dir).exists():
-            os.chdir(working_dir)
-
-        # Execute model script to get the problem
-        model_globals = {"__file__": str(model_file)}
-        exec(compile(model_script, model_file, "exec"), model_globals)
-
-        # First check for experiment directly (simpler models)
-        experiment = model_globals.get("experiment")
-        problem = model_globals.get("problem")
-
-        if experiment is None and problem is not None:
-            # Get the experiment from the problem
-            if hasattr(problem, "fitness"):
-                fitness = problem.fitness
-            else:
-                fitness = problem
-
-            if hasattr(fitness, "_models"):
-                experiment = fitness._models[0]
-            elif hasattr(fitness, "reflectivity"):
-                experiment = fitness
-
-        if experiment is None:
-            return None
-
-        # Compute reflectivity using the probe's Q values
-        # reflectivity() returns (Q, R) tuple
-        result = experiment.reflectivity()
-        if isinstance(result, tuple) and len(result) == 2:
-            Q, R = result
+        analysis = analyze_fit_quality_with_llm(
+            fit_result=fit_result,
+            sample_description=context_prompt,
+            hypothesis=hypothesis,
+            features=None,
+            chi2_max=chi2_max,
+            boundary_hits=boundary_hits,
+            per_file_results=fit_result.get("per_file_results"),
+        )
+        if not output_json:
+            click.echo(click.style(" done", fg="green"))
+    except Exception as e:
+        if not output_json:
+            click.echo(click.style(f" failed: {e}", fg="red"))
         else:
-            # Some versions may return just R
-            Q = experiment.probe.Q
-            R = result
+            click.echo(json.dumps({"error": f"LLM evaluation failed: {e}"}))
+        sys.exit(1)
 
-        Q = np.array(Q)
-        R = np.array(R)
+    # ── Output ─────────────────────────────────────────────────
+    if output_json:
+        result = {
+            "directory": str(refl1d_path),
+            "iteration": iteration,
+            "method": method,
+            "chi_squared": chi2,
+            "parameters": fit_result.get("parameters", {}),
+            "uncertainties": fit_result.get("uncertainties"),
+            "acceptable": analysis.get("acceptable", False),
+            "quality_assessment": analysis.get("quality_assessment", "unknown"),
+            "issues": analysis.get("issues", []),
+            "suggestions": analysis.get("suggestions", []),
+            "physical_concerns": analysis.get("physical_concerns", []),
+        }
+        click.echo(json.dumps(result, indent=2))
+    else:
+        click.echo()
+        # Parameters
+        click.echo(click.style("  Fit Parameters", fg="cyan", bold=True))
+        for name, value in fit_result["parameters"].items():
+            unc = (fit_result.get("uncertainties") or {}).get(name)
+            if unc:
+                click.echo(f"    {name}: {value:.4f} ± {unc:.4f}")
+            else:
+                click.echo(f"    {name}: {value:.4f}")
+        click.echo()
 
-        # Get chi-squared if available
-        chi2 = None
-        if problem is not None:
+        # Per-file chi2
+        per_file = fit_result.get("per_file_results")
+        if per_file:
+            click.echo(click.style("  Per-file χ²", fg="cyan", bold=True))
+            for pf in per_file:
+                click.echo(f"    {pf['label']}: χ² = {pf['chi_squared']:.3f}")
+            click.echo()
+
+        # Evaluation
+        acceptable = analysis.get("acceptable", False)
+        quality = analysis.get("quality_assessment", "unknown")
+        color = "green" if acceptable else "yellow"
+        click.echo(
+            click.style(
+                f"  Fit Quality: {quality} (χ² = {chi2:.3f})",
+                fg=color,
+                bold=True,
+            )
+        )
+
+        if analysis.get("issues"):
+            click.echo()
+            click.echo(click.style("  Issues:", fg="yellow"))
+            for issue in analysis["issues"]:
+                click.echo(f"    - {issue}")
+
+        if analysis.get("suggestions"):
+            click.echo()
+            click.echo(click.style("  Suggestions:", fg="cyan"))
+            for sug in analysis["suggestions"]:
+                click.echo(f"    - {sug}")
+
+        if analysis.get("physical_concerns"):
+            click.echo()
+            click.echo(click.style("  Physical Concerns:", fg="yellow"))
+            for concern in analysis["physical_concerns"]:
+                click.echo(f"    - {concern}")
+
+        click.echo()
+        verdict = (
+            click.style("  ✓ Fit ACCEPTABLE", fg="green", bold=True)
+            if acceptable
+            else click.style("  ✗ Fit NOT acceptable", fg="red", bold=True)
+        )
+        click.echo(verdict)
+        click.echo()
+
+
+def _extract_fit_result_from_problem(
+    problem, method: str, iteration: int, export_dir: str
+) -> dict:
+    """Build a FitResult-like dict from a deserialised bumps FitProblem.
+
+    This mirrors the logic in ``fitting._extract_bumps_results`` but works
+    on a problem that has already been optimised and exported (no ``fit_result``
+    object is available).
+    """
+    import numpy as np
+    from .nodes.fitting import _read_profile_dat
+    from .state import FitResult
+
+    chi_squared = float(problem.chisq())
+
+    # Detect multi-experiment problems via problem.models (generator)
+    experiments = list(problem.models)
+    is_multi = len(experiments) > 1
+
+    # Parameters & bounds (shared across experiments)
+    parameters = {}
+    uncertainties = {}  # not available from serialised problem
+    param_bounds = {}
+    for par in problem._parameters:
+        name = str(par.name)
+        parameters[name] = par.value
+        if par.bounds is not None:
+            lo, hi = par.bounds
+            param_bounds[name] = [float(lo), float(hi)]
+
+    # Theory curves and residuals from first (or only) experiment
+    Q_fit, R_fit = [], []
+    residuals, residual_ratio = [], []
+    per_file_results = None
+
+    if is_multi:
+        per_file_results = []
+        all_Q, all_R, all_res, all_ratio = [], [], [], []
+        for idx, exp in enumerate(experiments):
+            pf: dict = {"file": "", "label": f"dataset {idx + 1}"}
             try:
-                chi2 = problem.chisq()
-            except Exception:
-                pass
+                exp.update()
+                Q_arr, R_arr = exp.reflectivity()
+                pf["Q_fit"] = Q_arr.tolist()
+                pf["R_fit"] = R_arr.tolist()
+                all_Q.extend(pf["Q_fit"])
+                all_R.extend(pf["R_fit"])
 
-        # Extract SLD profile from the experiment (not sample)
-        z, sld = None, None
+                resid = exp.residuals()
+                n_pts = len(resid)
+                pf["chi_squared"] = (
+                    float(np.sum(resid**2) / n_pts) if n_pts > 0 else float("inf")
+                )
+
+                R_data = exp.probe.R
+                dR_data = exp.probe.dR
+                R_fit_arr = np.array(pf["R_fit"])
+                res, ratio = [], []
+                if R_data is not None and len(R_data) == len(R_fit_arr):
+                    if dR_data is not None and len(dR_data) == len(R_data):
+                        safe_dR = np.maximum(np.abs(dR_data), 1e-20)
+                        res = ((R_data - R_fit_arr) / safe_dR).tolist()
+                    safe_R_fit = np.maximum(R_fit_arr, 1e-20)
+                    ratio = (R_data / safe_R_fit).tolist()
+                pf["residuals"] = res
+                pf["residual_ratio"] = ratio
+                all_res.extend(res)
+                all_ratio.extend(ratio)
+            except Exception:
+                pf.setdefault("Q_fit", [])
+                pf.setdefault("R_fit", [])
+                pf.setdefault("chi_squared", float("inf"))
+                pf.setdefault("residuals", [])
+                pf.setdefault("residual_ratio", [])
+            per_file_results.append(pf)
+        Q_fit, R_fit = all_Q, all_R
+        residuals, residual_ratio = all_res, all_ratio
+    else:
+        exp = experiments[0]
         try:
-            z_arr, sld_arr, _ = experiment.smooth_profile(dz=1.0)
-            z = np.array(z_arr)
-            sld = np.array(sld_arr)
+            exp.update()
+            Q_arr, R_arr = exp.reflectivity()
+            Q_fit = Q_arr.tolist()
+            R_fit = R_arr.tolist()
+
+            R_data = exp.probe.R
+            dR_data = exp.probe.dR
+            R_fit_arr = np.array(R_fit)
+            if R_data is not None and len(R_data) == len(R_fit_arr):
+                if dR_data is not None and len(dR_data) == len(R_data):
+                    safe_dR = np.maximum(np.abs(dR_data), 1e-20)
+                    residuals = ((R_data - R_fit_arr) / safe_dR).tolist()
+                safe_R_fit = np.maximum(R_fit_arr, 1e-20)
+                residual_ratio = (R_data / safe_R_fit).tolist()
         except Exception:
             pass
 
-        return {
-            "Q": Q.tolist(),
-            "R": R.tolist() if hasattr(R, "tolist") else list(R),
-            "z": z.tolist() if z is not None else None,
-            "sld": sld.tolist() if sld is not None else None,
-            "chi2": chi2,
-        }
-    except Exception as e:
-        raise RuntimeError(f"Model execution failed: {e}")
-    finally:
-        # Restore original directory
-        os.chdir(original_cwd)
+    sld_z, sld_rho = _read_profile_dat(export_dir)
+
+    return FitResult(
+        iteration=iteration,
+        method=method,
+        chi_squared=chi_squared,
+        converged=True,
+        parameters=parameters,
+        uncertainties=uncertainties if uncertainties else None,
+        bounds=param_bounds if param_bounds else None,
+        Q_fit=Q_fit,
+        R_fit=R_fit,
+        residuals=residuals,
+        residual_ratio=residual_ratio,
+        sld_z=sld_z,
+        sld_rho=sld_rho,
+        per_file_results=per_file_results,
+        issues=[],
+        suggestions=[],
+    )
 
 
 # ============================================================================

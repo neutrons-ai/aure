@@ -10,14 +10,13 @@ the data using bumps.  Supports multiple fitting methods:
 
 import os
 import logging
-import tempfile
 from typing import Dict, Any, Optional
 from pathlib import Path
 
 import numpy as np
 
-from ..state import ReflectivityState, FitResult, Message
-from .model_builder import build_problem, is_legacy_script
+from ..state import ReflectivityState, FitResult, PerFileFitResult, Message
+from .model_builder import build_problem, build_multi_problem
 from .evaluation import _count_free_params, _compute_bic
 
 logger = logging.getLogger(__name__)
@@ -66,10 +65,13 @@ def fitting_node(state: ReflectivityState) -> Dict[str, Any]:
     try:
         logger.info(f"[FITTING] Running {method.upper()} optimization...")
 
-        if is_legacy_script(model):
-            # Backward compatibility: exec-based path for old script models
-            result = _run_refl1d_fit_legacy(
-                model_script=model,
+        data_files = state.get("data_files", [])
+        is_multi = len(data_files) > 1 and isinstance(model, dict)
+
+        if is_multi:
+            result = run_multi_refl1d_fit(
+                model_definition=model,
+                data_files=data_files,
                 method=method,
                 iteration=iteration,
                 steps=steps,
@@ -171,40 +173,57 @@ def run_refl1d_fit(
     )
 
 
-def _run_refl1d_fit_legacy(
-    model_script: str,
+def run_multi_refl1d_fit(
+    model_definition: dict,
+    data_files: list[dict],
     method: str = "lm",
     iteration: int = 0,
     steps: int = 1000,
     burn: int = 1000,
     export_dir: Optional[str] = None,
 ) -> FitResult:
-    """Legacy exec-based fitting for old script-string models."""
+    """Execute a joint fit across multiple data files (co-refinement).
+
+    A single sample is shared across all experiments so that all
+    structural parameters are automatically tied.  Each data file gets
+    its own probe with an independent intensity parameter.
+
+    Parameters
+    ----------
+    model_definition
+        A ``ModelDefinition`` dict.
+    data_files
+        List of ``DatasetInfo`` dicts (``file``, ``label``).
+    method, iteration, steps, burn, export_dir
+        Same as :func:`run_refl1d_fit`.
+
+    Returns
+    -------
+    FitResult
+        Aggregate results with per-file breakdowns in ``per_file_results``.
+    """
     from bumps.fitters import fit as bumps_fit
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        model_file = Path(tmpdir) / "model.py"
-        model_file.write_text(model_script)
+    problem, experiments, sorted_data_files = build_multi_problem(
+        model_definition, data_files
+    )
+    n_files = len(sorted_data_files)
+    logger.info(
+        f"[FITTING] Running {method.upper()} co-refinement across {n_files} files..."
+    )
 
-        model_globals = {"__file__": str(model_file)}
-        exec(compile(model_script, model_file, "exec"), model_globals)
+    fit_options = _build_fit_options(method, steps, burn, export_dir)
+    result = bumps_fit(problem, **fit_options)
 
-        problem = model_globals.get("problem")
-        if problem is None:
-            raise ValueError("Model script must define a 'problem' variable")
-
-        fit_options = _build_fit_options(method, steps, burn, export_dir)
-
-        logger.info(f"[FITTING] Running {method.upper()} with bumps.fit (legacy)...")
-        result = bumps_fit(problem, **fit_options)
-
-        return _extract_bumps_results(
-            problem=problem,
-            fit_result=result,
-            method=method,
-            iteration=iteration,
-            export_dir=export_dir,
-        )
+    return _extract_multi_bumps_results(
+        problem=problem,
+        experiments=experiments,
+        data_files=sorted_data_files,
+        fit_result=result,
+        method=method,
+        iteration=iteration,
+        export_dir=export_dir,
+    )
 
 
 def _build_fit_options(
@@ -334,6 +353,165 @@ def _extract_bumps_results(
         residual_ratio=residual_ratio,
         sld_z=sld_z,
         sld_rho=sld_rho,
+        per_file_results=None,
+        issues=[],
+        suggestions=[],
+    )
+
+
+def _extract_multi_bumps_results(
+    problem,
+    experiments: list,
+    data_files: list[dict],
+    fit_result,
+    method: str,
+    iteration: int,
+    export_dir: Optional[str] = None,
+) -> FitResult:
+    """Extract fit results from a multi-experiment FitProblem.
+
+    Returns an aggregate ``FitResult`` with per-file breakdowns stored
+    in ``per_file_results``.
+    """
+    import warnings
+
+    warnings.filterwarnings("ignore", category=UserWarning, module="bumps")
+
+    # Aggregate chi-squared
+    chi_squared = problem.chisq()
+
+    # Extract parameters.  Structural params are shared (single Parameter
+    # object across experiments) but per-probe params (intensity,
+    # sample_broadening, theta_offset) exist once per experiment and often
+    # carry the same ``.name`` — which would collide in a dict.  Build a
+    # map of id(par) -> file-label so we can disambiguate such names.
+    per_probe_attrs = ("intensity", "sample_broadening", "theta_offset")
+    probe_param_labels: dict[int, str] = {}
+    for exp, ds in zip(experiments, data_files):
+        probe = getattr(exp, "probe", None)
+        if probe is None:
+            continue
+        for attr in per_probe_attrs:
+            par = getattr(probe, attr, None)
+            if par is not None:
+                probe_param_labels[id(par)] = ds.get("label", "")
+
+    parameters: dict = {}
+    uncertainties: dict = {}
+    param_bounds: dict = {}
+    for i, par in enumerate(problem._parameters):
+        name = str(par.name)
+        # Disambiguate per-probe parameter names by appending the file label
+        # when the base name would collide with an already-seen entry.
+        if name in parameters and id(par) in probe_param_labels:
+            label = probe_param_labels[id(par)]
+            if label:
+                name = f"{name} {label}"
+        elif id(par) in probe_param_labels:
+            # Even on first sight, if this is a per-probe param and the
+            # same base name will appear again for another probe, pre-empt
+            # the collision by suffixing now.
+            label = probe_param_labels[id(par)]
+            same_name_probes = sum(
+                1
+                for p in problem._parameters
+                if str(p.name) == name and id(p) in probe_param_labels
+            )
+            if label and same_name_probes > 1:
+                name = f"{name} {label}"
+        parameters[name] = par.value
+        if hasattr(fit_result, "dx") and fit_result.dx is not None:
+            try:
+                if i < len(fit_result.dx):
+                    uncertainties[name] = fit_result.dx[i]
+            except (IndexError, TypeError):
+                pass
+        if par.bounds is not None:
+            lo, hi = par.bounds
+            param_bounds[name] = [float(lo), float(hi)]
+
+    converged = chi_squared < 100
+    if hasattr(fit_result, "success"):
+        converged = fit_result.success
+
+    logger.info(f"[FITTING] Multi-file fit complete: aggregate χ² = {chi_squared:.3f}")
+    for name, value in parameters.items():
+        unc_str = (
+            f" ± {uncertainties.get(name, 0):.3f}" if name in uncertainties else ""
+        )
+        logger.info(f"[FITTING]   {name}: {value:.3f}{unc_str}")
+
+    # Per-file theory curves, chi2, and residuals
+    per_file: list[PerFileFitResult] = []
+    all_Q: list[float] = []
+    all_R: list[float] = []
+    all_residuals: list[float] = []
+    all_residual_ratio: list[float] = []
+
+    for idx, (exp, ds) in enumerate(zip(experiments, data_files)):
+        pf: dict[str, Any] = {"file": ds["file"], "label": ds["label"]}
+        try:
+            exp.update()
+            Q_arr, R_arr = exp.reflectivity()
+            pf["Q_fit"] = Q_arr.tolist()
+            pf["R_fit"] = R_arr.tolist()
+            all_Q.extend(pf["Q_fit"])
+            all_R.extend(pf["R_fit"])
+
+            # Per-file chi2 (Experiment has no .chisq(); compute from residuals)
+            resid = exp.residuals()
+            n_pts = len(resid)
+            pf["chi_squared"] = (
+                float(np.sum(resid**2) / n_pts) if n_pts > 0 else float("inf")
+            )
+            logger.info(f"[FITTING]   {ds['label']}: χ² = {pf['chi_squared']:.3f}")
+
+            # Residuals
+            R_data = exp.probe.R
+            dR_data = exp.probe.dR
+            R_fit_arr = np.array(pf["R_fit"])
+            res = []
+            ratio = []
+            if R_data is not None and len(R_data) == len(R_fit_arr):
+                if dR_data is not None and len(dR_data) == len(R_data):
+                    safe_dR = np.maximum(np.abs(dR_data), 1e-20)
+                    res = ((R_data - R_fit_arr) / safe_dR).tolist()
+                safe_R_fit = np.maximum(R_fit_arr, 1e-20)
+                ratio = (R_data / safe_R_fit).tolist()
+            pf["residuals"] = res
+            pf["residual_ratio"] = ratio
+            all_residuals.extend(res)
+            all_residual_ratio.extend(ratio)
+        except Exception as e:
+            logger.warning(
+                f"[FITTING] Could not extract results for {ds['label']}: {e}"
+            )
+            pf["Q_fit"] = []
+            pf["R_fit"] = []
+            pf["chi_squared"] = float("inf")
+            pf["residuals"] = []
+            pf["residual_ratio"] = []
+
+        per_file.append(PerFileFitResult(**pf))
+
+    # Read SLD profile
+    sld_z, sld_rho = _read_profile_dat(export_dir)
+
+    return FitResult(
+        iteration=iteration,
+        method=method,
+        chi_squared=chi_squared,
+        converged=converged,
+        parameters=parameters,
+        uncertainties=uncertainties if uncertainties else None,
+        bounds=param_bounds if param_bounds else None,
+        Q_fit=all_Q,
+        R_fit=all_R,
+        residuals=all_residuals,
+        residual_ratio=all_residual_ratio,
+        sld_z=sld_z,
+        sld_rho=sld_rho,
+        per_file_results=per_file,
         issues=[],
         suggestions=[],
     )
@@ -357,6 +535,14 @@ def _format_fit_result(result: FitResult) -> str:
     lines.append(f"- **χ² = {chi2:.2f}** ({quality})")
     lines.append(f"- Method: {result['method'].upper()}")
     lines.append(f"- Converged: {'Yes' if result['converged'] else 'No'}")
+
+    # Per-file chi2 for multi-file co-refinement
+    per_file = result.get("per_file_results")
+    if per_file:
+        lines.append("")
+        lines.append("**Per-file χ²:**")
+        for pf in per_file:
+            lines.append(f"- {pf['label']}: χ² = {pf['chi_squared']:.2f}")
 
     if result["parameters"]:
         lines.append("")

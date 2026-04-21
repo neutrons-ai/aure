@@ -25,6 +25,9 @@ The user describes their sample as:
 
 {hypothesis_section}
 
+## Domain Knowledge
+{skill_context}
+
 Extract the following information in JSON format:
 {{
     "substrate": {{
@@ -64,45 +67,12 @@ Intensity normalization:
 - If user says "data is perfectly normalized" or similar, set fixed=true
 - If user says "data needs large normalization correction" or similar, expand the range (e.g., 0.5 to 1.3)
 
-Common SLD values (10^-6 Å^-2):
-- Silicon: 2.07
-- D2O: 6.36
-- H2O: -0.56
-- Air: 0.0
-- SiO2: 3.47
-- Gold: 4.5
-- Copper: 6.55
-- Titanium: -1.95
-- Polystyrene: 1.4
-- d-Polystyrene: 6.4
-- THF (protonated): 0.18
-- dTHF (deuterated): 6.35
-- Toluene: 0.94
-- d-Toluene: 5.66
-
-SLD RANGES:
-- Set sld_min and sld_max to at least ±2.0 around the nominal SLD value for each layer.
-  For example, for copper (SLD 6.55): sld_min = 4.5, sld_max = 8.5.
-  For titanium (SLD -1.95): sld_min = -4.0, sld_max = 0.1.
-- This allows the fitter enough freedom to find the correct values even when the
-  material is not perfectly stoichiometric, has intermixing, or partial isotopic substitution.
-- Never use ranges narrower than ±1.0.
-- For adhesion layers like titanium that can intermix with adjacent layers, use ranges
-  of ±3.0 or wider (e.g., -5.0 to 1.0 for Ti).
-
 HYPOTHESIZED / EXPECTED LAYERS:
 - If the description mentions expected, hypothesized, or likely layers (e.g., "we expect
   lithium plating", "likely to form an SEI layer", "oxide should reduce away"), you MUST
   include these as layers in the output with reasonable initial guesses.
 - Mark hypothesized layers by appending "(hypothetical)" to their name.
-- Place them in the physically correct position in the layer stack.  For example, for
-  electrochemistry on a copper electrode:
-    - SEI (solid electrolyte interphase) forms between the electrolyte and the electrode
-      surface.  Typical thickness: 50–200 Å, SLD: 1.0–4.0 × 10⁻⁶ Å⁻².
-    - Lithium plating appears between the SEI and the copper.  Typical thickness:
-      10–100 Å, SLD: −0.9 to 0.5 × 10⁻⁶ Å⁻².
-    - If the description says the native oxide "reduces away", do NOT include an oxide
-      layer; replace it with the hypothesized layer(s).
+- Place them in the physically correct position in the layer stack.
 - These layers are initial starting guesses — the fitter will optimise them.
 - Do NOT omit hypothesized layers just because their thickness or composition is uncertain.
 
@@ -118,6 +88,7 @@ IMPORTANT:
 def format_sample_parse_prompt(
     description: str,
     hypothesis: str | None = None,
+    skill_context: str = "",
 ) -> str:
     """
     Format the sample parsing prompt with the given description.
@@ -125,6 +96,7 @@ def format_sample_parse_prompt(
     Args:
         description: Free-form sample description from the user
         hypothesis: Optional hypothesis to test
+        skill_context: Domain knowledge injected from activated skills
 
     Returns:
         Formatted prompt string ready for LLM invocation
@@ -136,6 +108,98 @@ def format_sample_parse_prompt(
     return SAMPLE_PARSE_PROMPT.format(
         description=description,
         hypothesis_section=hypothesis_section,
+        skill_context=skill_context or "(no additional domain knowledge)",
+    )
+
+
+# ============================================================================
+# STRUCTURAL HYPOTHESIS RANKING
+# ============================================================================
+
+STRUCTURAL_HYPOTHESIS_PROMPT = """You are producing a ranked list of candidate
+structural changes for a neutron reflectivity analysis. The analysis will
+start by fitting the baseline model below; this list is consulted only when
+parameter-only refinement fails to reach the χ² acceptance threshold.
+
+## Domain Knowledge (active skills)
+{skill_context}
+
+## Sample Description
+{sample_description}
+
+## Baseline Parsed Model
+- Substrate: {substrate}
+- Layers (substrate → ambient): {layers}
+- Ambient: {ambient}
+- Back-reflection geometry: {back_reflection}
+
+## Task
+
+Follow the `structural-hypothesis-ranking` skill. Enumerate plausible
+structural changes to this baseline model, ranked by expected value.
+
+For each hypothesis, produce:
+- `title`: one short line
+- `rationale`: one sentence citing an active skill by name
+- `change`: concrete structural edit in neutral terms (insertion point,
+  thickness range Å, SLD range 10⁻⁶ Å⁻², roughness range Å)
+- `skill_source`: name of the skill motivating the hypothesis
+
+Return 2–6 hypotheses in rank order. If no structural change is plausible
+(e.g. the user has specified a complete model and all relevant skills are
+satisfied), return an empty list.
+
+Apply the ranking criteria and the "avoid unless justified" list from the
+`structural-hypothesis-ranking` skill. Do NOT include changes to the
+back-reflection geometry, the stacking order, the data file, or fitting
+method.
+
+Respond with ONLY a JSON array of objects:
+
+```json
+[
+  {{
+    "title": "Add native CuO on top of Cu",
+    "rationale": "metal-oxide-interfaces: an outermost Cu layer exposed to D2O develops a 10-50 A native oxide unless otherwise stated",
+    "change": "insert a CuO layer of 10-50 A (SLD 4.5-5.5) between Cu and D2O, roughness 3-15 A",
+    "skill_source": "metal-oxide-interfaces"
+  }}
+]
+```
+
+Output ONLY the JSON array, no markdown fences, no other text.
+"""
+
+
+def format_structural_hypothesis_prompt(
+    sample_description: str,
+    parsed_sample: dict,
+    skill_context: str,
+) -> str:
+    """Format the prompt that asks the LLM to produce ranked structural
+    hypotheses from the parsed sample and active skill bodies.
+
+    The prompt is intentionally decoupled from the initial sample parse so
+    that the LLM sees the concrete baseline model (not a free-form
+    description) when reasoning about what might be missing.
+    """
+    sub = parsed_sample.get("substrate", {}) or {}
+    amb = parsed_sample.get("ambient", {}) or {}
+    layers = parsed_sample.get("layers", []) or []
+    layer_str = (
+        ", ".join(
+            f"{l.get('name', '?')} (~{l.get('thickness', '?')} Å, SLD {l.get('sld', '?')})"
+            for l in layers
+        )
+        or "(none)"
+    )
+    return STRUCTURAL_HYPOTHESIS_PROMPT.format(
+        skill_context=skill_context or "(no additional domain knowledge)",
+        sample_description=sample_description or "(not provided)",
+        substrate=f"{sub.get('name', '?')} (SLD {sub.get('sld', '?')})",
+        layers=layer_str,
+        ambient=f"{amb.get('name', '?')} (SLD {amb.get('sld', '?')})",
+        back_reflection=parsed_sample.get("back_reflection", False),
     )
 
 
@@ -144,6 +208,9 @@ def format_sample_parse_prompt(
 # ============================================================================
 
 FIT_EVALUATION_PROMPT = """You are evaluating the results of a neutron reflectivity fit.
+
+## Domain Knowledge
+{skill_context}
 
 ## Sample Description
 {sample_description}
@@ -155,6 +222,12 @@ FIT_EVALUATION_PROMPT = """You are evaluating the results of a neutron reflectiv
 - χ² (chi-squared): {chi_squared:.3f}
 - Method: {method}
 - Converged: {converged}
+
+## χ² / BIC Trajectory (iterations in order)
+{trajectory}
+
+## Per-File Fit Quality (multi-file co-refinement)
+{per_file_chi2}
 
 ## Best-fit Parameters
 {parameters}
@@ -171,12 +244,22 @@ FIT_EVALUATION_PROMPT = """You are evaluating the results of a neutron reflectiv
 ## Model Complexity
 {complexity_assessment}
 
+## Ranked Structural Hypotheses
+{structural_hypotheses}
+
 ## Task
 Analyze the fit quality and determine:
 1. Is this fit acceptable for the user's goals?
 2. Are the fitted parameters physically reasonable?
 3. Are there any issues or concerns?
 4. What specific improvements could be made?
+
+Use the trajectory and the hypothesis list to choose between a parameter
+change and a structural change — follow the `structural-hypothesis-ranking`
+skill. If parameter tweaks have stopped making meaningful progress and
+there is a `pending` hypothesis, your suggestion should be to realize that
+hypothesis (cite it by title). If a hypothesis was just `rejected` by the
+BIC guardrail, do not re-propose it.
 
 Respond in JSON format:
 {{
@@ -186,48 +269,15 @@ Respond in JSON format:
     "suggestions": ["<list of actionable suggestions for improvement>"],
     "physical_concerns": ["<any physically unreasonable parameter values>"],
     "hypothesis_addressed": "<how well does this fit address the user's hypothesis, if any>",
-    "needs_user_guidance": <true/false - should we ask the user before proceeding?>
+    "needs_user_guidance": <true/false - should we ask the user before proceeding?>,
+    "next_action": "<one of: 'parameter_tweak', 'structural_change', 'accept'>",
+    "proposed_hypothesis_id": <id of the hypothesis to try next, or null if next_action != 'structural_change'>
 }}
 
 **Acceptance threshold: χ² ≤ {chi2_max}.**
 A fit with χ² within this threshold should be marked "acceptable": true.
 
-Guidelines for χ²:
-- χ² ≈ 1: Ideal fit (model matches data within error bars)
-- χ² < 0.5: Possible overfitting or overestimated errors
-- χ² 1-2: Excellent fit
-- χ² 2-5: Good fit, minor discrepancies
-- χ² 5-10: Marginal fit, model may be missing features
-- χ² > 10: Poor fit, significant model problems
-
 Consider the sample description when evaluating if parameters make physical sense.
-
-AMBIENT SLD CHECK:
-- Check if the ambient (fronting) SLD is reasonable for the stated medium.
-- In back-reflection geometry through a substrate (e.g., Si, SLD=2.07), a critical edge at low Q
-  indicates that either a film layer or the ambient has SLD > substrate SLD.
-- If the ambient is a protonated solvent (e.g., THF with SLD ≈ 0.18) but the fitted ambient SLD
-  is much higher, the solvent is likely deuterated (e.g., d8-THF with SLD ≈ 6.35).
-- If the fitted intensity is pinned at its lower or upper bound, this may indicate the
-  intensity normalization range is too narrow and should be widened.
-
-IMPORTANT CONSTRAINTS:
-- NEVER suggest changing the fitting engine/method (e.g., switching to Levenberg-Marquardt, differential evolution, etc.). The fitting method is chosen by the workflow and is not a model issue.
-- Do NOT suggest adding a native SiO₂ layer on the silicon substrate.  Native SiO₂ is
-  typically only 10–20 Å and has a minor effect on the reflectivity.  Adding it introduces
-  3 extra free parameters that can absorb signal from other layers and worsen the fit.
-  Focus on more impactful model improvements (layer SLDs, thicknesses, missing layers) first.
-- NEVER suggest reversing the layer order or changing the back-reflection geometry. The measurement geometry (which side the neutrons come from) is set by the user and must not be changed. If the sample description says neutrons come from the substrate side, that is correct.
-- NEVER suggest changing error bars, resolution, or Q-range — these are experimental parameters that cannot be modified.
-- If a metal layer (e.g., copper, gold, iron, nickel, aluminum) is **directly** in contact with the ambient medium (air, solvent, etc.) and no oxide, SEI, or other surface layer is already present between them, suggest adding a single thin native metal oxide layer (10–30 Å) between the metal and the ambient. Do NOT suggest oxides on internal layers (e.g., TiO₂ on an adhesion Ti layer buried beneath Cu) or on metals already covered by an oxide/surface layer.
-- Watch for physically unreasonable roughness values (higher than half adjacent layer thicknesses may lead to artifacts, lower than 5 Å may indicate unrealistic smoothing) and flag these as concerns.
-- Do NOT suggest splitting a single layer into sublayers (e.g., splitting 'copper oxide' into CuO + Cu₂O, or
-  splitting SEI into sub-layers) unless χ² > 10 and there is clear evidence in the residuals of unmodeled
-  contrast steps.  Keeping the model simple with fewer layers improves parameter stability.
-- Adding layers increases model complexity (each layer adds 3 free parameters). A new layer
-  must produce a significant χ² improvement (not just marginal) to justify the extra parameters.
-  Prefer adjusting existing parameter bounds or SLD values before suggesting structural changes.
-- Unless specifically requested by the user, never allow the substrate SLD to vary.
 
 {user_criteria}
 """
@@ -321,6 +371,69 @@ def _format_complexity_assessment(
     return "\n".join(lines)
 
 
+def _format_per_file_chi2(per_file_results: list | None) -> str:
+    """Format per-file χ² breakdown for LLM prompts."""
+    if not per_file_results:
+        return "  (single-file fit — not applicable)"
+
+    lines = []
+    for pf in per_file_results:
+        chi2 = pf.get("chi_squared", float("inf"))
+        lines.append(f"  - **{pf.get('label', '?')}**: χ² = {chi2:.3f}")
+    lines.append("")
+    lines.append(
+        "  The data was fit jointly across multiple Q-range segments. "
+        "All structural parameters are shared; each file has its own "
+        "intensity normalization. If one segment fits much worse than "
+        "the others, focus suggestions on the Q-range where the fit is poor."
+    )
+    return "\n".join(lines)
+
+
+def _format_trajectory(
+    fit_history: list | None, chi2_current: float, bic_current: float | None
+) -> str:
+    """Format the χ² and BIC trajectory across past iterations.
+
+    ``fit_history`` is the state's ``fit_results`` list (one entry per past
+    fit). The *current* fit's χ²/BIC are appended as the last row.
+    """
+    lines = []
+    for i, fr in enumerate(fit_history or []):
+        chi2 = fr.get("chi_squared", float("inf"))
+        bic = fr.get("bic")
+        bic_str = f"BIC={bic:.1f}" if bic is not None else "BIC=?"
+        lines.append(f"  - iter {i}: χ²={chi2:.3f}, {bic_str}")
+    # Append current fit as a distinct line if it is not already the last
+    # history entry (it usually is).
+    if lines:
+        return "\n".join(lines)
+    bic_str = f"BIC={bic_current:.1f}" if bic_current is not None else "BIC=?"
+    return f"  - iter 0: χ²={chi2_current:.3f}, {bic_str}"
+
+
+def _format_structural_hypotheses(hypotheses: list | None) -> str:
+    """Format the structural hypothesis list for LLM prompts."""
+    if not hypotheses:
+        return "  (no structural hypotheses enumerated at intake)"
+    lines = []
+    for h in hypotheses:
+        status = h.get("status", "pending")
+        iter_ = h.get("tried_in_iteration")
+        iter_str = f", tried iter {iter_}" if iter_ is not None else ""
+        lines.append(
+            f"  - #{h.get('id', '?')} [{status}{iter_str}] **{h.get('title', '?')}** "
+            f"(source: {h.get('skill_source', '?')})"
+        )
+        if h.get("change"):
+            lines.append(f"      change: {h['change']}")
+        if h.get("rationale"):
+            lines.append(f"      rationale: {h['rationale']}")
+        if h.get("notes"):
+            lines.append(f"      notes: {h['notes']}")
+    return "\n".join(lines)
+
+
 def format_fit_evaluation_prompt(
     sample_description: str,
     hypothesis: str | None,
@@ -337,6 +450,10 @@ def format_fit_evaluation_prompt(
     best_bic: float | None = None,
     n_params: int = 0,
     n_layers: int = 0,
+    skill_context: str = "",
+    per_file_results: list | None = None,
+    fit_history: list | None = None,
+    structural_hypotheses: list | None = None,
 ) -> str:
     """
     Format the fit evaluation prompt.
@@ -403,6 +520,10 @@ def format_fit_evaluation_prompt(
             n_params=n_params,
             n_layers=n_layers,
         ),
+        skill_context=skill_context or "(no additional domain knowledge)",
+        per_file_chi2=_format_per_file_chi2(per_file_results),
+        trajectory=_format_trajectory(fit_history, chi_squared, bic),
+        structural_hypotheses=_format_structural_hypotheses(structural_hypotheses),
     )
 
 
@@ -411,6 +532,9 @@ def format_fit_evaluation_prompt(
 # ============================================================================
 
 MODEL_REFINEMENT_PROMPT = """You are refining a neutron reflectivity model (refl1d script) that did not fit well enough.
+
+## Domain Knowledge
+{skill_context}
 
 ## Sample Description
 {sample_description}
@@ -453,40 +577,9 @@ Rules:
 6. Always include `probe.intensity.range(...)` for normalization.
 7. The script must end with `experiment = Experiment(probe=probe, sample=sample)` and `problem = FitProblem(experiment)`.
 8. NEVER change the fitting engine/method. The fitting method is chosen by the workflow — focus only on the model.
-9. By default, avoid adding an SiO₂ layer on the silicon substrate (see rule 16), unless the user explicitly requests it in their feedback below.
-10. NEVER change the back-reflection/measurement geometry. If the current model uses `back_reflectivity(...)` or `back_absorption(...)`, you MUST keep it. Do NOT reverse the layer order or swap the fronting/backing media. The geometry is determined by the physical experiment and is NOT a fitting parameter.
-11. NEVER change error bars, resolution, or Q-range — these are experimental parameters.
-12. Use SLD ranges of at least ±1.0 around nominal values for each material to give the fitter sufficient freedom.
-13. If a metal layer is **directly** in contact with the ambient medium (air, solvent, etc.)
-    and no oxide or surface layer of any kind is already present between them, you MAY add a
-    single thin native metal oxide layer (10–30 Å).  Common examples: CuO or Cu₂O on copper
-    (SLD ~4–6 ×10⁻⁶ Å⁻²), TiO₂ on titanium.  **However**:
-      - Do NOT add an oxide if there is already an oxide, SEI, or any other surface layer
-        between the metal and the ambient.
-      - Do NOT split an existing oxide into sublayers (e.g., CuO + Cu₂O).  Keep it simple.
-      - Do NOT add TiO₂ on titanium if Ti is an adhesion layer NOT in contact with the ambient.
-      - Prefer keeping the model simple (fewer layers) over adding speculative oxide layers.
-14. CRITICAL refl1d API rule: `SLD(...)` objects do NOT have `.material`, `.thickness`, or `.interface` attributes. Those attributes only exist on `Slab` objects inside the sample stack. You MUST set parameter bounds using `sample[i]` indexing, for example:
-      sample[0].material.rho.range(5.5, 7.0)   # ambient SLD
-      sample[1].thickness.range(10.0, 30.0)     # first layer thickness
-      sample[1].material.rho.range(2.0, 4.0)    # first layer SLD
-      sample[1].interface.range(0.0, 5.0)       # first layer roughness
-    NEVER write `copper.material.rho.range(...)` or `ambient.material.rho.range(...)` — this will crash with "'SLD' object has no attribute 'material'".
-15. When adding a new layer, set its initial thickness to a physically reasonable
-    value based on the material type:
-      - SEI / organic layers: 50–200 Å
-      - Metal oxide layers (CuO, Cu₂O, TiO₂): 10–50 Å
-      - Metallic plating (Li, Cu): 10–100 Å
-    NEVER add a layer with initial thickness < 5 Å — such layers cannot be resolved
-    by the fitter and will collapse.  Also give the thickness range enough room
-    (e.g., 5 to 500 Å for SEI, 5 to 200 Å for oxides).
-16. By default, avoid adding an SiO₂ layer on the silicon substrate.  Native SiO₂
-    is typically only 10–20 Å and in reflectometry it adds 3 parameters that can
-    absorb signal from more important layers.  If an SiO₂ layer is already in the
-    model, consider removing it or fixing its thickness to < 20 Å to free up fitting
-    capacity for unknown layers.  **However**, if the user explicitly requests an
-    SiO₂ layer in their feedback, you MUST add it.
-17. Unless specifically requested by the user, never allow the substrate SLD to vary.
+9. NEVER change the back-reflection/measurement geometry. If the current model uses `back_reflectivity(...)` or `back_absorption(...)`, you MUST keep it. Do NOT reverse the layer order or swap the fronting/backing media.
+10. NEVER change error bars, resolution, or Q-range — these are experimental parameters.
+11. Apply all domain-specific rules from the Domain Knowledge section above.
 
 {user_constraints}
 
@@ -505,6 +598,7 @@ def format_model_refinement_prompt(
     features: dict,
     user_constraints: str = "",
     user_feedback: str | None = None,
+    skill_context: str = "",
 ) -> str:
     """
     Format the model refinement prompt for the LLM.
@@ -584,6 +678,7 @@ def format_model_refinement_prompt(
             residual_analysis=_format_residual_analysis(
                 fit_result.get("residual_analysis")
             ),
+            skill_context=skill_context or "(no additional domain knowledge)",
         )
         + feedback_section
     )
@@ -594,6 +689,9 @@ def format_model_refinement_prompt(
 # ============================================================================
 
 MODEL_REFINEMENT_JSON_PROMPT = """You are refining a neutron reflectivity model that did not fit well enough.
+
+## Domain Knowledge
+{skill_context}
 
 ## Sample Description
 {sample_description}
@@ -622,6 +720,13 @@ MODEL_REFINEMENT_JSON_PROMPT = """You are refining a neutron reflectivity model 
 
 ## Residual Fringe Analysis
 {residual_analysis}
+
+## Ranked Structural Hypotheses
+{structural_hypotheses}
+
+## Evaluator's Chosen Next Action
+- `next_action`: {next_action}
+- `proposed_hypothesis_id`: {proposed_hypothesis_id}
 
 ## Task
 Generate an IMPROVED model definition that addresses the issues above.
@@ -662,6 +767,16 @@ You must output a COMPLETE, valid JSON object matching this schema:
     "min": <min intensity>,
     "max": <max intensity>,
     "fixed": <true/false>
+  }},
+  "sample_broadening": {{
+    "enabled": <true/false>,
+    "min": <min broadening in degrees, default 0.0>,
+    "max": <max broadening in degrees, default 0.5>
+  }},
+  "theta_offset": {{
+    "enabled": <true/false>,
+    "min": <min offset in degrees, default -0.02>,
+    "max": <max offset in degrees, default 0.02>
   }}
 }}
 ```
@@ -675,29 +790,28 @@ Rules:
 4. If there are systematic residuals, consider adding a layer.
 5. Use best-fit parameter values as starting points where physically reasonable.
 6. Unless the data is stated as perfectly normalized, keep intensity varying (fixed: false).
-7. Use SLD ranges of at least ±1.0 around nominal values.
-8. Avoid adding SiO₂ on silicon substrate unless user requests it.
-9. If a metal layer is directly in contact with the ambient and no oxide is present,
-   you MAY add a thin native oxide layer (10–30 Å).  Do NOT add oxides on buried layers.
-10. When adding a new layer, use physically reasonable thicknesses:
-    - SEI / organic layers: 50–200 Å (range: 5–500 Å)
-    - Metal oxide layers: 10–50 Å (range: 5–200 Å)
-    - Metallic plating: 10–100 Å (range: 5–300 Å)
-    NEVER add a layer with thickness < 5 Å.
-11. Unless requested by user, keep substrate SLD fixed (do not change its value).
-12. Do NOT split existing layers into sublayers unless χ² > 10 with clear evidence.
-13. Adding layers increases model complexity. Each additional layer adds 3 free
-    parameters. Only add a layer if residual fringe analysis strongly suggests
-    unmodeled structure. Prefer adjusting existing parameter bounds, SLD values,
-    or roughness first. If a previous attempt to add a layer was reverted due to
-    BIC regression, do NOT re-add the same layer — try a different approach.
+7. Apply all domain-specific rules from the Domain Knowledge section above.
+8. sample_broadening and theta_offset only work with angle-based probes (multi-segment data with theta info). Only set "enabled": true when angle info is available and the fit quality warrants it. These give each segment independent resolution/alignment corrections.
+9. When sample_broadening or theta_offset are already enabled and hitting bounds, widen their ranges.
+10. If the evaluator's `next_action` is `structural_change`, realize the
+    specified hypothesis (`proposed_hypothesis_id`) exactly as described in
+    its `change` field — insert/remove the layer at the correct position
+    with the suggested bounds. Also return an updated `structural_hypotheses`
+    list: mark that hypothesis with `status: "tried"` and stamp
+    `tried_in_iteration` with the current iteration. Preserve all other
+    hypotheses and their statuses verbatim.
+11. If `next_action` is `parameter_tweak`, keep the layer stack unchanged
+    and adjust only bounds/starting values. Return the `structural_hypotheses`
+    list unchanged.
 
 {user_constraints}
 
 IMPORTANT: If user feedback is provided below, it takes absolute priority over
 any of the rules above.
 
-Output ONLY the JSON object, no markdown fences, no explanation.
+Output ONLY the JSON object, no markdown fences, no explanation. The object
+may include an optional top-level `structural_hypotheses` array (the updated
+hypothesis list); if present, it must be the complete list.
 """
 
 
@@ -708,6 +822,10 @@ def format_model_refinement_prompt_json(
     features: dict,
     user_constraints: str = "",
     user_feedback: str | None = None,
+    skill_context: str = "",
+    structural_hypotheses: list | None = None,
+    next_action: str | None = None,
+    proposed_hypothesis_id: int | None = None,
 ) -> str:
     """Format the JSON-based model refinement prompt for the LLM.
 
@@ -807,6 +925,12 @@ def format_model_refinement_prompt_json(
             user_constraints=user_constraints,
             residual_analysis=_format_residual_analysis(
                 fit_result.get("residual_analysis")
+            ),
+            skill_context=skill_context or "(no additional domain knowledge)",
+            structural_hypotheses=_format_structural_hypotheses(structural_hypotheses),
+            next_action=next_action or "parameter_tweak",
+            proposed_hypothesis_id=(
+                proposed_hypothesis_id if proposed_hypothesis_id is not None else "null"
             ),
         )
         + feedback_section

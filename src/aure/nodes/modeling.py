@@ -23,6 +23,7 @@ from ..state import ReflectivityState, Message, LLMCallRecord
 from ..database import get_sld
 from ..llm import llm_available, get_llm
 from ..config import format_user_constraints
+from ..skills import SkillRegistry, load_skill_context
 from .prompts import format_model_refinement_prompt
 
 logger = logging.getLogger(__name__)
@@ -98,11 +99,25 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
         user_constraints = format_user_constraints(state.get("user_config"))
         user_feedback = state.get("pending_user_feedback")
 
+        # Load skill context
+        registry = SkillRegistry()
+        active_skills = state.get("active_skills", [])
+        skill_context = load_skill_context(active_skills, registry)
+
         # Update the definition with latest fitted values before sending to LLM
         model_for_llm = copy.deepcopy(current_model)
         fitted = latest_fit.get("parameters", {})
         if fitted:
             _apply_fitted_values_to_definition(model_for_llm, fitted)
+
+        # Pull structural-hypothesis signals from evaluation output
+        hypotheses_in = state.get("structural_hypotheses", []) or []
+        # analysis = latest_fit  # issues/suggestions already live here
+        # The evaluation node stores next_action/proposed_hypothesis_id on
+        # its analysis dict, which is merged back into the fit result via
+        # latest_fit["issues"] etc. Those two fields live alongside.
+        next_action = latest_fit.get("next_action")
+        proposed_hid = latest_fit.get("proposed_hypothesis_id")
 
         prompt = format_model_refinement_prompt_json(
             current_model=model_for_llm,
@@ -111,6 +126,10 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
             features=state.get("extracted_features") or {},
             user_constraints=user_constraints,
             user_feedback=user_feedback,
+            skill_context=skill_context,
+            structural_hypotheses=hypotheses_in,
+            next_action=next_action,
+            proposed_hypothesis_id=proposed_hid,
         )
         # Clear feedback after consumption
         if user_feedback:
@@ -145,6 +164,16 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
             # Ensure immutable fields are preserved
             new_model["data_file"] = current_model.get("data_file", "")
             new_model["back_reflection"] = current_model.get("back_reflection", False)
+            new_model["dq_is_fwhm"] = current_model.get("dq_is_fwhm", True)
+            # Carry over probe-level params if LLM omitted them
+            if "sample_broadening" not in new_model:
+                new_model["sample_broadening"] = current_model.get(
+                    "sample_broadening", {"enabled": False, "min": 0.0, "max": 0.5}
+                )
+            if "theta_offset" not in new_model:
+                new_model["theta_offset"] = current_model.get(
+                    "theta_offset", {"enabled": False, "min": -0.02, "max": 0.02}
+                )
             updates["llm_calls"].append(
                 LLMCallRecord(
                     node="modeling",
@@ -167,12 +196,34 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
             }
         ]
 
+        # Extract updated structural-hypothesis list from the LLM response
+        # (optional top-level field). Fall back to the existing state value.
+        hypotheses_out = new_model.pop("structural_hypotheses", None)
+        if (
+            hypotheses_out is None
+            and proposed_hid is not None
+            and next_action == "structural_change"
+        ):
+            # LLM didn't return an updated list but we expected it to realize a
+            # hypothesis — mark that hypothesis as `tried` ourselves so the
+            # next evaluation turn can reason about it.
+            hypotheses_out = [dict(h) for h in hypotheses_in]
+            for h in hypotheses_out:
+                if h.get("id") == proposed_hid and h.get("status") == "pending":
+                    h["status"] = "tried"
+                    h["tried_in_iteration"] = iteration
+                    break
+        if hypotheses_out is not None:
+            updates["structural_hypotheses"] = hypotheses_out
+
         # Format explanation message
         changes = _summarize_definition_changes(current_model, new_model)
         updates["messages"] = [
             Message(
                 role="assistant",
-                content=_format_refinement_explanation(changes, issues, suggestions),
+                content=_format_refinement_explanation(
+                    changes, issues, suggestions, iteration=iteration
+                ),
                 timestamp=None,
             )
         ]
@@ -354,6 +405,17 @@ def _build_initial_model(state: ReflectivityState) -> Dict[str, Any]:
             "back_reflection": back_reflection,
             "data_file": os.path.abspath(state["data_file"]),
             "intensity": intensity,
+            "dq_is_fwhm": state.get("dq_is_fwhm", True),
+            "sample_broadening": {
+                "enabled": False,
+                "min": 0.0,
+                "max": 0.5,
+            },
+            "theta_offset": {
+                "enabled": False,
+                "min": -0.02,
+                "max": 0.02,
+            },
         }
         updates["current_model"] = model_def
         updates["model_history"] = [
@@ -532,6 +594,7 @@ def build_refl1d_script(
     data_file: str,
     back_reflection: bool = False,
     intensity: dict = None,
+    dq_is_fwhm: bool = True,
 ) -> str:
     """
     Generate refl1d Python script for the model.
@@ -543,6 +606,8 @@ def build_refl1d_script(
         data_file: Path to data file
         back_reflection: If True, neutrons come from substrate side
         intensity: Dict with value, min, max, fixed for probe intensity
+        dq_is_fwhm: Whether the dQ column in the data file is FWHM (True)
+            or 1-sigma (False). Passed through to load4(FWHM=...).
 
     Returns:
         Python script string
@@ -567,7 +632,7 @@ def build_refl1d_script(
         'warnings.filterwarnings("ignore", category=UserWarning, module="refl1d")',
         "",
         "# ========== Load Data ==========",
-        f'probe = load4("{abs_data_file}")',
+        f'probe = load4("{abs_data_file}", FWHM={dq_is_fwhm})',
     ]
 
     lines.extend(
@@ -882,15 +947,20 @@ def _format_refinement_explanation(
     changes: list[str],
     issues: list[str],
     suggestions: list[str],
+    *,
+    iteration: int = 0,
 ) -> str:
     """Format a human-readable explanation of the model refinement."""
-    lines = ["**Model Refinement:**"]
+    header = (
+        f"**Model Refinement (iteration {iteration}):**"
+        if iteration
+        else "**Model Refinement:**"
+    )
+    lines = [header]
     lines.append("")
 
     if issues:
-        lines.append("**Issues addressed:**")
-        for issue in issues:
-            lines.append(f"- {issue}")
+        lines.append(f"Addressing {len(issues)} issue(s) from evaluation above.")
         lines.append("")
 
     lines.append("**Changes made:**")
@@ -1011,21 +1081,71 @@ def _summarize_definition_changes(old_model: dict, new_model: dict) -> list[str]
     added = new_names - old_names
     removed = old_names - new_names
     if added:
-        changes.append(f"Added materials: {', '.join(added)}")
+        changes.append(f"Added materials: {', '.join(sorted(added))}")
     if removed:
-        changes.append(f"Removed materials: {', '.join(removed)}")
+        changes.append(f"Removed materials: {', '.join(sorted(removed))}")
 
-    # Check for significant bound changes
+    # All numeric attributes that can change on a layer
+    _LAYER_ATTRS = (
+        "sld",
+        "sld_min",
+        "sld_max",
+        "thickness",
+        "thickness_min",
+        "thickness_max",
+        "roughness",
+        "roughness_min",
+        "roughness_max",
+    )
+
+    # Check for changes in matched layers
     for nl in new_layers:
         for ol in old_layers:
             if nl["name"] == ol["name"]:
-                for attr in ("sld_min", "sld_max", "thickness_min", "thickness_max"):
+                for attr in _LAYER_ATTRS:
                     ov = ol.get(attr)
                     nv = nl.get(attr)
-                    if ov is not None and nv is not None and abs(nv - ov) > 0.1:
-                        changes.append(f"{nl['name']} {attr}: {ov:.1f} → {nv:.1f}")
-                        break  # One note per layer is enough
+                    if ov is not None and nv is not None and abs(nv - ov) > 0.01:
+                        changes.append(f"{nl['name']} {attr}: {ov} → {nv}")
+                    elif ov is None and nv is not None:
+                        changes.append(f"{nl['name']} {attr}: (unset) → {nv}")
+                    elif ov is not None and nv is None:
+                        changes.append(f"{nl['name']} {attr}: {ov} → (removed)")
                 break
+
+    # Check ambient changes
+    _AMB_ATTRS = ("sld", "sld_min", "sld_max", "roughness", "roughness_max")
+    old_amb = old_model.get("ambient", {})
+    new_amb = new_model.get("ambient", {})
+    if old_amb.get("name") != new_amb.get("name"):
+        changes.append(
+            f"Ambient changed: {old_amb.get('name', '?')} → {new_amb.get('name', '?')}"
+        )
+    for attr in _AMB_ATTRS:
+        ov = old_amb.get(attr)
+        nv = new_amb.get(attr)
+        if ov is not None and nv is not None and abs(nv - ov) > 0.01:
+            changes.append(f"Ambient {attr}: {ov} → {nv}")
+        elif ov is None and nv is not None:
+            changes.append(f"Ambient {attr}: (unset) → {nv}")
+
+    # Check substrate changes
+    old_sub = old_model.get("substrate", {})
+    new_sub = new_model.get("substrate", {})
+    for attr in ("sld", "roughness", "roughness_max"):
+        ov = old_sub.get(attr)
+        nv = new_sub.get(attr)
+        if ov is not None and nv is not None and abs(nv - ov) > 0.01:
+            changes.append(f"Substrate {attr}: {ov} → {nv}")
+
+    # Check intensity changes
+    old_int = old_model.get("intensity", {})
+    new_int = new_model.get("intensity", {})
+    for attr in ("value", "min", "max"):
+        ov = old_int.get(attr)
+        nv = new_int.get(attr)
+        if ov is not None and nv is not None and abs(nv - ov) > 0.01:
+            changes.append(f"Intensity {attr}: {ov} → {nv}")
 
     if not changes:
         changes.append("Parameter values and bounds adjusted")

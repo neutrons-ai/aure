@@ -41,6 +41,17 @@ jobs:
       Neutrons enter from the silicon substrate side.
     hypothesis: The copper layer may have roughness > 10 Å
 
+  # Co-refinement: multiple data files sharing the same sample model
+  - name: copper_corefinement
+    data_file: data/REFL_218386.txt
+    data_files:
+      - data/REFL_218387.txt
+      - data/REFL_218388.txt
+    sample_description: >-
+      50 nm copper on 5 nm Ti on silicon.
+      The ambient medium is dTHF (SLD about 6).
+    max_refinements: 5
+
   - name: polystyrene_film
     data_file: data/ps_film.txt
     sample_description: 100 nm polystyrene on silicon

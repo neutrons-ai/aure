@@ -25,6 +25,7 @@ flowchart LR
 
     Evaluation -->|fit acceptable| E((Done))
     Evaluation -->|refine model| Modeling
+    Evaluation -->|bounds only| Fitting
 
     style S fill:#6c757d,color:#fff,stroke:none
     style E fill:#198754,color:#fff,stroke:none
@@ -37,20 +38,35 @@ flowchart LR
 
 1. **Intake** — Loads the reflectivity data file and parses the sample
    description with an LLM to extract structured layer/substrate/ambient
-   information (materials, thicknesses, SLDs via `periodictable`).
+   information (materials, thicknesses, SLDs via `periodictable`). A second
+   LLM call, guided by the `structural-hypothesis-ranking` skill, produces
+   a **ranked list of candidate structural changes** (e.g. "add native CuO
+   on top of Cu") that the refinement loop will consider if the initial
+   model does not fit well.
 2. **Analysis** — Extracts physics features from the data: critical edge,
    total thickness from Kiessig fringes, estimated roughness, and layer count.
-3. **Modeling** — The LLM generates a Refl1D model script informed by the
-   parsed sample and the extracted features.
+3. **Modeling** — The LLM generates or refines a Refl1D model, informed by
+   the parsed sample, the extracted features, the active
+   [Agent Skills](src/aure/skills/), and the hypothesis list.
 4. **Fitting** — Runs the generated model through Refl1D's optimizer.
-5. **Evaluation** — Assesses the fit quality (χ², residual structure, parameter
-   reasonableness) and decides whether the result is acceptable.
-6. **Refinement** — If the fit is not good enough, the LLM modifies the model
-   (adjusting bounds, adding/removing layers, changing constraints) and the
-   loop repeats, up to a configurable number of iterations.
+5. **Evaluation** — Assesses the fit quality (χ², BIC, residual structure,
+   parameter reasonableness) and decides whether to stop, re-fit with
+   widened bounds only (a shortcut that saves one LLM call), or loop back
+   to modeling for a real refinement. Automatic χ² and BIC *regression
+   guardrails* revert the model if a refinement made things worse and mark
+   the tried hypothesis as rejected.
+6. **Refinement** — When the evaluator decides a refinement is needed, it
+   tells the modeling node whether to do a parameter tweak or to realize
+   a specific structural hypothesis from the ranked list. The loop
+   repeats up to a configurable number of iterations.
 
 Checkpoints are saved after every stage so you can inspect intermediate results
 or resume a run from any point.
+
+> For a complete, narrative introduction to the design — including a primer
+> on reflectometry and LLMs, the role of Agent Skills, the ranked-hypothesis
+> refinement loop, and the division of labour between the LLM and
+> deterministic code — see [docs/approach.md](docs/approach.md).
 
 ## Installation
 
@@ -108,6 +124,61 @@ If `ALCF_ACCESS_TOKEN` is not set AuRE will try, in order:
 See the [ALCF docs](https://docs.alcf.anl.gov/services/inference-endpoints/#2-authenticate)
 for initial Globus authentication setup.
 
+## Co-refinement (multi-file fitting)
+
+When you have multiple reflectivity datasets measured on the same sample
+(e.g. different Q-range segments, or different contrasts with shared
+structural parameters), AuRE can fit them simultaneously. All structural
+layer parameters (thickness, SLD, roughness) are tied across files while
+each file gets its own intensity normalization.
+
+### CLI
+
+Pass extra files with `-d` / `--extra-data` (repeatable):
+
+```bash
+aure analyze low-Q.dat "Cu/Ti on Si" -d mid-Q.dat -d high-Q.dat -o ./output -v
+```
+
+### Manifest (batch)
+
+List the additional files under `data_files` alongside the primary `data_file`:
+
+```yaml
+jobs:
+  - name: copper_corefinement
+    data_file: data/REFL_218386.txt
+    data_files:
+      - data/REFL_218387.txt
+      - data/REFL_218388.txt
+    sample_description: 50 nm copper on 5 nm Ti on silicon
+```
+
+### Web UI
+
+In the setup page, click **Load Data** multiple times to add files.  Tick the
+checkbox next to each file to include it in the fit — multiple checked files
+trigger co-refinement automatically.
+
+### Python API
+
+```python
+from aure import run_analysis
+
+result = run_analysis(
+    data_file="data/REFL_218386.txt",
+    sample_description="Cu/Ti on Si in dTHF",
+    data_files=[
+        {"file": "data/REFL_218386.txt", "label": "REFL_218386"},
+        {"file": "data/REFL_218387.txt", "label": "REFL_218387"},
+        {"file": "data/REFL_218388.txt", "label": "REFL_218388"},
+    ],
+    output_dir="./output",
+)
+```
+
+The output directory is named after the lowest run number in the set.
+
 ## CLI reference
 
 After installation the `aure` command is available:
@@ -115,6 +186,20 @@ After installation the `aure` command is available:
 ```
 aure [OPTIONS] COMMAND [ARGS]...
 ```
+
+### `aure check-llm`
+
+Check LLM configuration and connectivity.
+
+```bash
+aure check-llm [--json] [--no-test] [--fix]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--json` | Output as JSON |
+| `--no-test` | Skip the live connection test |
+| `--fix` | Attempt to fix issues (e.g. download ALCF auth script) |
 
 ### `aure analyze`
 
@@ -129,6 +214,8 @@ aure analyze DATA_FILE SAMPLE_DESCRIPTION [OPTIONS]
 | `-o, --output-dir PATH` | Save checkpoints and model scripts to this directory |
 | `-m, --max-refinements N` | Maximum refinement iterations (default: 5) |
 | `-h, --hypothesis TEXT` | Optional hypothesis to test |
+| `-d, --extra-data PATH` | Additional data file for co-refinement (repeatable) |
+| `-c, --config PATH` | YAML config file with evaluation criteria and model constraints |
 | `-v, --verbose` | Stream workflow progress to stderr |
 | `--json` | Emit results as JSON |
 
@@ -138,8 +225,11 @@ aure analyze DATA_FILE SAMPLE_DESCRIPTION [OPTIONS]
 # Basic analysis
 aure analyze data.txt "100 nm polystyrene on silicon"
 
-# Save all outputs and increase refinement budget
+# Save outputs, increase refinement budget
 aure analyze data.txt "Cu/Ti bilayer on Si in dTHF" -o ./output -m 8 -v
+
+# Multi-file co-refinement
+aure analyze low-Q.dat "multilayer" -d mid-Q.dat -d high-Q.dat -o ./output
 ```
 
 ### `aure batch`
@@ -206,6 +296,41 @@ aure inspect-checkpoint CHECKPOINT_PATH [-s] [--json]
 
 `-s, --show-state` prints the full workflow state (can be large).
 
+### `aure evaluate`
+
+Evaluate a refl1d fit result using LLM analysis, without re-running the
+full workflow. Point it at a refl1d output directory containing a
+`problem.json` and optionally describe the sample so the LLM can judge
+physical plausibility.
+
+```bash
+aure evaluate REFL1D_DIR [OPTIONS]
+```
+
+| Option | Description |
+|--------|-------------|
+| `-c, --context TEXT` | Sample / model description to give the LLM context |
+| `-h, --hypothesis TEXT` | Optional hypothesis being tested |
+| `-v, --verbose` | Verbose logging |
+| `--json` | JSON output |
+
+If `REFL1D_DIR` is the parent `refl1d_output/` directory, the latest
+`fit_iter*` subdirectory is selected automatically.
+
+**Examples:**
+
+```bash
+# Evaluate a specific fit iteration
+aure evaluate output/refl1d_output/fit_iter0_dream
+
+# Provide sample context for better physical assessment
+aure evaluate output/refl1d_output/fit_iter1_dream \
+    -c "100 nm copper on 5 nm titanium on silicon, measured in D2O"
+
+# Machine-readable output
+aure evaluate output/refl1d_output/ --json
+```
+
 ### `aure plot-results`
 
 Plot R(Q) curves and SLD profiles from a completed run.
@@ -265,11 +390,10 @@ aure mcp-server --transport sse --port 8080  # HTTP/SSE
 
 ### `aure serve`
 
-Launch a local web viewer to explore the results of a completed (or
-in-progress) workflow run.
+Launch the AuRE web interface.
 
 ```bash
-aure serve OUTPUT_DIR [OPTIONS]
+aure serve [OUTPUT_DIR] [OPTIONS]
 ```
 
 | Option | Description |
@@ -278,8 +402,16 @@ aure serve OUTPUT_DIR [OPTIONS]
 | `--host HOST` | Interface to bind to (default: `127.0.0.1`; use `0.0.0.0` inside Docker) |
 | `--no-browser` | Don't open a browser automatically |
 
-The viewer has two tabs:
+When `OUTPUT_DIR` is given the app opens in **viewer mode** showing results
+from a completed run.  When omitted it starts in **interactive setup mode**
+where you can load data files, describe the sample, and launch an analysis
+from the browser.
 
+The viewer has three tabs:
+
+- **Setup** — load data files, enter sample description, and start a new
+  analysis.  When viewing results from a previous run the form is
+  pre-populated so you can rerun with the same or modified inputs.
 - **History** — step-by-step checkpoint timeline and an interactive χ²
   progression chart (Plotly.js, zoomable).
 - **Results** — log-log R(Q) plot with experimental data and model curves
@@ -309,8 +441,17 @@ persisted in the browser across sessions and prepended to the LLM-generated
 context description in the exported manifest.
 
 ```bash
-aure serve ./output
+aure serve               # interactive mode
+aure serve ./output      # viewer mode
 aure serve ./output --port 8080 --no-browser
+```
+
+### `aure interactive`
+
+Alias for `aure serve` in interactive setup mode (no output directory).
+
+```bash
+aure interactive [--port N] [--host HOST]
 ```
 
 ## Python API

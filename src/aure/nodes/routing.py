@@ -62,11 +62,13 @@ def route_after_fitting(state: ReflectivityState) -> Literal["evaluation", "erro
 
 def route_after_evaluation(
     state: ReflectivityState,
-) -> Literal["modeling", "complete", "error"]:
+) -> Literal["modeling", "fitting", "complete", "error"]:
     """
     Route after evaluation node.
 
     Options:
+    - fitting: Only change is an auto-expanded bound — re-fit without burning
+      an LLM round on refinement.
     - modeling: Fit quality is poor, loop back to regenerate model with LLM
     - complete: Fit is acceptable or max iterations reached
     - error: Evaluation failed
@@ -86,6 +88,8 @@ def route_after_evaluation(
     if fit_results:
         latest = fit_results[-1]
         if latest.get("issues"):
+            if state.get("bounds_only_refinement"):
+                return "fitting"
             return "modeling"
 
     return "complete"

@@ -85,6 +85,7 @@ class ModelDefinition(TypedDict, total=False):
     # ---- Fitting context ----
     data_file: str  # Absolute path to reflectivity data
     intensity: IntensityInfo
+    dq_is_fwhm: bool  # Whether dQ column is FWHM (True) or 1-sigma (False)
 
     # ---- Post-fit snapshots (populated after fitting) ----
     fitted_parameters: dict  # {param_name: value}
@@ -118,6 +119,32 @@ class ExtractedFeatures(TypedDict):
     normalization_ok: bool
 
 
+class DatasetInfo(TypedDict, total=False):
+    """Information about one data file in a multi-file co-refinement.
+
+    ``file`` and ``label`` are the only fields required at construction time
+    (e.g. from the CLI/web layer).  ``dq_is_fwhm`` and ``theta`` are
+    populated later during the intake node and are therefore optional here.
+    """
+
+    file: str  # Absolute path to the data file
+    label: str  # Short human-readable label (e.g. "low-Q", "file1")
+    dq_is_fwhm: bool  # Whether dQ column is FWHM (True) or 1-sigma (False)
+    theta: float  # Incident angle in degrees (half of TwoTheta from header)
+
+
+class PerFileFitResult(TypedDict, total=False):
+    """Per-file fit results in a multi-file co-refinement."""
+
+    file: str
+    label: str
+    chi_squared: float
+    Q_fit: List[float]
+    R_fit: List[float]
+    residuals: List[float]
+    residual_ratio: List[float]
+
+
 class FitResult(TypedDict):
     """Results from a refl1d fit."""
 
@@ -141,9 +168,55 @@ class FitResult(TypedDict):
     sld_z: Optional[List[float]]
     sld_rho: Optional[List[float]]
 
+    # Per-file results (multi-file co-refinement)
+    per_file_results: Optional[List[PerFileFitResult]]
+
     # Evaluation
     issues: List[str]
     suggestions: List[str]
+
+
+class StructuralHypothesis(TypedDict, total=False):
+    """A candidate structural change to the model, ranked at intake time.
+
+    Produced during intake by an LLM reasoning over the active skills, this
+    is a ranked list of structural changes (adding, removing, splitting, or
+    reshaping layers) that the workflow should consider when parameter-only
+    refinement stalls. Each hypothesis carries a rationale sourced from the
+    active skills so the evaluator and refiner can reason about it.
+
+    The list is updated in-place (fully replaced) by the modeling and
+    evaluation nodes as hypotheses are tried and confirmed or rejected.
+
+    Fields
+    ------
+    id : int
+        Stable identifier within this run (1-based).
+    title : str
+        One-line description, e.g. "Add native CuO on top of Cu".
+    rationale : str
+        Why this hypothesis is plausible — cite the active skill.
+    change : str
+        Concrete structural edit in neutral terms, e.g.
+        "insert a 10-30 Å CuO layer (SLD ~5.0) between Cu and D2O".
+    skill_source : str
+        Name of the skill that motivates this hypothesis.
+    status : str
+        One of: 'pending', 'tried', 'confirmed', 'rejected'.
+    tried_in_iteration : int | None
+        Iteration number when the hypothesis was realized.
+    notes : str
+        Free-form notes (e.g., outcome after trial).
+    """
+
+    id: int
+    title: str
+    rationale: str
+    change: str
+    skill_source: str
+    status: str
+    tried_in_iteration: Optional[int]
+    notes: str
 
 
 class LLMCallRecord(TypedDict):
@@ -174,7 +247,9 @@ class ReflectivityState(TypedDict):
     """
 
     # ========== Input Data ==========
-    data_file: str
+    data_file: str  # Primary data file (always set)
+    data_files: List[DatasetInfo]  # All data files for multi-file co-refinement
+    dq_is_fwhm: bool  # Whether dQ in primary data_file is FWHM (True) or 1-sigma
     Q: List[float]
     R: List[float]
     dR: List[float]
@@ -209,6 +284,12 @@ class ReflectivityState(TypedDict):
     interactive: bool
     pending_user_feedback: Optional[str]
 
+    # ========== Skills ==========
+    active_skills: List[str]  # Names of activated Agent Skills
+    structural_hypotheses: List[
+        StructuralHypothesis
+    ]  # Ranked candidate structural changes
+
     # ========== Workflow Control ==========
     current_node: str
     iteration: int
@@ -217,6 +298,9 @@ class ReflectivityState(TypedDict):
     error: Optional[str]
     output_dir: Optional[str]
     user_config: Optional[dict]  # User-supplied YAML config (criteria & constraints)
+    bounds_only_refinement: (
+        bool  # Set by evaluation when only bound-expansion is needed
+    )
 
 
 def create_initial_state(
@@ -225,6 +309,7 @@ def create_initial_state(
     hypothesis: Optional[str] = None,
     max_iterations: int = 5,
     user_config: Optional[dict] = None,
+    data_files: Optional[List[dict]] = None,
 ) -> ReflectivityState:
     """
     Create initial state for a new analysis workflow.
@@ -235,6 +320,7 @@ def create_initial_state(
         hypothesis: Optional hypothesis to test
         max_iterations: Maximum refinement iterations
         user_config: Optional user-supplied YAML configuration
+        data_files: Optional list of DatasetInfo dicts for multi-file co-refinement
 
     Returns:
         Initial workflow state
@@ -242,6 +328,8 @@ def create_initial_state(
     return ReflectivityState(
         # Input data (to be filled by intake node)
         data_file=data_file,
+        data_files=data_files or [],
+        dq_is_fwhm=True,  # Default; overridden by intake after header inspection
         Q=[],
         R=[],
         dR=[],
@@ -268,6 +356,9 @@ def create_initial_state(
         # Interactive session
         interactive=False,
         pending_user_feedback=None,
+        # Skills
+        active_skills=[],
+        structural_hypotheses=[],
         # Workflow control
         current_node="intake",
         iteration=0,
@@ -276,4 +367,5 @@ def create_initial_state(
         error=None,
         output_dir=None,
         user_config=user_config,
+        bounds_only_refinement=False,
     )

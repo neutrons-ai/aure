@@ -2,6 +2,28 @@
 {% block title %}Results{% endblock %}
 
 {% block content %}
+<!-- Data loading report -->
+<div class="row mb-3" id="intake-report-row">
+  <div class="col">
+    <div class="card" id="intake-report-card">
+      <div class="card-header fw-semibold d-flex align-items-center"
+           style="cursor:pointer" data-bs-toggle="collapse"
+           data-bs-target="#intake-report-body" aria-expanded="false"
+           aria-controls="intake-report-body">
+        <i class="bi bi-clipboard-data me-2"></i>
+        <span>Data loading report</span>
+        <span id="intake-report-badge" class="badge bg-warning ms-2 d-none"></span>
+        <i class="bi bi-chevron-down ms-auto"></i>
+      </div>
+      <div id="intake-report-body" class="collapse">
+        <div class="card-body" id="intake-report-content">
+          <p class="text-muted small mb-0">Loading…</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Plots row -->
 <div class="row mb-3 gx-3">
   <!-- R(Q) plot -->
@@ -212,29 +234,50 @@ let _sldData = null;            // cached SLD API response
 
 document.addEventListener("DOMContentLoaded", async () => {
   // Fetch data in parallel
-  const [reflData, sldData, paramData, chi2Data] = await Promise.all([
+  const [reflData, sldData, paramData, chi2Data, intakeData] = await Promise.all([
     fetch("/api/reflectivity").then((r) => r.json()),
     fetch("/api/sld").then((r) => r.json()),
     fetch("/api/parameters").then((r) => r.json()),
     fetch("/api/chi2").then((r) => r.json()),
+    fetch("/api/intake-report").then((r) => r.json()).catch(() => null),
   ]);
+
+  renderIntakeReport(intakeData);
 
   _reflData = reflData;
   _sldData = sldData;
   _selectedIteration = paramData.iteration;
 
-  // Populate iteration selector
+  // Populate iteration selector from unique iterations.  We dedupe by
+  // iteration number so that in multi-file co-refinement mode (where the
+  // ``models`` list contains one entry per (file, iteration) pair) the
+  // dropdown shows a single option per iteration — otherwise switching
+  // between per-file entries with the same iteration value is a no-op
+  // for the parameters table (parameters are tied across files).
   const iterSel = document.getElementById("iteration-select");
-  const models = reflData.models || [];
-  if (models.length > 1) {
+  let dropdownItems = reflData.iterations || [];
+  if (dropdownItems.length === 0 && (reflData.models || []).length > 0) {
+    // Fallback: derive unique iteration entries from models when the
+    // backend did not provide a pre-built iterations list.
+    const seen = new Set();
+    dropdownItems = [];
+    (reflData.models || []).forEach((m, i) => {
+      const it = m.iteration != null ? m.iteration : i;
+      if (!seen.has(it)) {
+        seen.add(it);
+        dropdownItems.push({ iteration: it, label: m.label });
+      }
+    });
+  }
+  if (dropdownItems.length > 1) {
     iterSel.classList.remove("d-none");
-    models.forEach((m, i) => {
+    dropdownItems.forEach((it) => {
       const opt = document.createElement("option");
-      opt.value = String(i);
-      let text = m.label;
-      if (i === reflData.best_iteration) text += " ★";
+      opt.value = String(it.iteration);
+      let text = it.label;
+      if (it.iteration === reflData.best_iteration) text += " ★";
       opt.textContent = text;
-      if (i === paramData.iteration) opt.selected = true;
+      if (it.iteration === paramData.iteration) opt.selected = true;
       iterSel.appendChild(opt);
     });
   }
@@ -258,6 +301,106 @@ document.addEventListener("DOMContentLoaded", async () => {
 });
 
 /* ------------------------------------------------------------------ */
+/*  Intake / data-loading report                                      */
+/* ------------------------------------------------------------------ */
+function renderIntakeReport(data) {
+  const body = document.getElementById("intake-report-content");
+  const row = document.getElementById("intake-report-row");
+  const badge = document.getElementById("intake-report-badge");
+  const card = document.getElementById("intake-report-card");
+  if (!body || !row) return;
+
+  if (!data || (!data.files || data.files.length === 0)
+      && (!data.warnings || data.warnings.length === 0)
+      && (!data.messages || data.messages.length === 0)) {
+    row.classList.add("d-none");
+    return;
+  }
+
+  const files = data.files || [];
+  const warnings = data.warnings || [];
+  const messages = data.messages || [];
+
+  // Header badge + auto-expand when we have warnings
+  if (warnings.length > 0) {
+    badge.textContent = `${warnings.length} warning${warnings.length > 1 ? "s" : ""}`;
+    badge.classList.remove("d-none");
+    card.classList.add("border-warning");
+    // Auto-open the panel so the user notices.
+    document.getElementById("intake-report-body").classList.add("show");
+  }
+
+  const parts = [];
+
+  if (files.length) {
+    parts.push(`
+      <div class="table-responsive mb-${warnings.length || messages.length ? "3" : "0"}">
+        <table class="table table-sm align-middle mb-0">
+          <thead class="table-light">
+            <tr>
+              <th>Label</th>
+              <th>File</th>
+              <th class="text-end">θ (deg)</th>
+              <th>dQ</th>
+              <th>Probe</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${files.map((f) => {
+              const fname = (f.path || "").split("/").pop();
+              const theta = f.theta == null ? "—"
+                : (f.theta > 0 ? f.theta.toFixed(4) : "0 (not detected)");
+              const dq = f.dq_is_fwhm == null ? "—"
+                : (f.dq_is_fwhm ? "FWHM" : "1-σ");
+              const probeBadge = f.probe_type === "NeutronProbe"
+                ? `<span class="badge bg-success">NeutronProbe</span>`
+                : `<span class="badge bg-secondary">QProbe</span>`;
+              return `<tr>
+                <td><code>${f.label || ""}</code></td>
+                <td class="text-muted small">${fname}</td>
+                <td class="text-end">${theta}</td>
+                <td>${dq}</td>
+                <td>${probeBadge}</td>
+              </tr>`;
+            }).join("")}
+          </tbody>
+        </table>
+      </div>
+    `);
+  }
+
+  if (warnings.length) {
+    parts.push(`
+      <div class="alert alert-warning mb-${messages.length ? "3" : "0"} py-2">
+        <strong><i class="bi bi-exclamation-triangle"></i> Warnings</strong>
+        <ul class="mb-0 small">
+          ${warnings.map((w) => `<li>${escapeHtml(w)}</li>`).join("")}
+        </ul>
+      </div>
+    `);
+  }
+
+  if (messages.length) {
+    parts.push(`
+      <details class="small text-muted">
+        <summary>Intake messages</summary>
+        <ul class="mb-0">
+          ${messages.map((m) => `<li><pre class="mb-0 small">${escapeHtml(m)}</pre></li>`).join("")}
+        </ul>
+      </details>
+    `);
+  }
+
+  body.innerHTML = parts.join("") || '<p class="text-muted small mb-0">No data-loading details available.</p>';
+}
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+/* ------------------------------------------------------------------ */
 /*  R(Q) plot                                                         */
 /* ------------------------------------------------------------------ */
 function renderRQ(data, selectedIteration) {
@@ -269,25 +412,45 @@ function renderRQ(data, selectedIteration) {
   }
 
   const traces = [];
+  const DATA_COLORS = ["#6c757d", "#0d6efd", "#198754", "#dc3545", "#fd7e14", "#6610f2", "#20c997", "#d63384"];
 
-  // Experimental data
-  traces.push({
-    x: data.Q,
-    y: data.R,
-    error_y:
-      data.dR && data.dR.length
-        ? { type: "data", array: data.dR, visible: true, thickness: 1 }
-        : undefined,
-    mode: "markers",
-    marker: { size: 3, color: "#6c757d" },
-    name: "Data",
-    type: "scatter",
-  });
+  // Experimental data – per-file traces for co-refinement, single trace otherwise
+  if (data.data_files && data.data_files.length > 1) {
+    data.data_files.forEach((df, i) => {
+      traces.push({
+        x: df.Q, y: df.R,
+        error_y: df.dR && df.dR.length
+          ? { type: "data", array: df.dR, visible: true, thickness: 1 }
+          : undefined,
+        mode: "markers",
+        marker: { size: 3, color: DATA_COLORS[i % DATA_COLORS.length], symbol: ["circle", "diamond", "square", "cross", "triangle-up"][i % 5] },
+        name: df.label || ("File " + (i + 1)),
+        type: "scatter",
+      });
+    });
+  } else {
+    traces.push({
+      x: data.Q,
+      y: data.R,
+      error_y:
+        data.dR && data.dR.length
+          ? { type: "data", array: data.dR, visible: true, thickness: 1 }
+          : undefined,
+      mode: "markers",
+      marker: { size: 3, color: "#6c757d" },
+      name: "Data",
+      type: "scatter",
+    });
+  }
 
-  // Model curves – selected iteration drawn thicker
+  // Model curves – all curves for the selected iteration drawn thicker
   const models = data.models || [];
+  const lastIteration = models.length ? models[models.length - 1].iteration : null;
   models.forEach((m, i) => {
-    const isSelected = (selectedIteration != null) ? i === selectedIteration : i === models.length - 1;
+    const mIter = m.iteration != null ? m.iteration : i;
+    const isSelected = (selectedIteration != null)
+      ? mIter === selectedIteration
+      : mIter === lastIteration;
     traces.push({
       x: m.Q,
       y: m.R,
@@ -325,6 +488,7 @@ function renderSLD(data, selectedIteration) {
   // matching iterations share the same colour in both charts.
   // Selected iteration drawn thicker.
   const traces = profiles.map((p, i) => {
+    // SLD profiles are 1:1 with fit iterations (index = iteration number)
     const isSelected = (selectedIteration != null) ? i === selectedIteration : i === profiles.length - 1;
     return {
       x: p.z,
@@ -572,7 +736,9 @@ function _removeUserTraces(chartId) {
   const el = document.getElementById(chartId);
   if (!el || !el.data) return;
   const indices = [];
-  el.data.forEach((t, i) => { if (t.name === "User") indices.push(i); });
+  el.data.forEach((t, i) => {
+    if (t.name === "User" || (t.name && t.name.startsWith("User – ")) || t._isUser) indices.push(i);
+  });
   if (indices.length) Plotly.deleteTraces(el, indices);
 }
 
@@ -630,20 +796,38 @@ function _updateChartsWithSimulation(data) {
     chi2Badge.classList.remove("d-none");
   }
 
-  // R(Q) chart — add/update "User" trace
+  // R(Q) chart — add/update "User" trace(s)
   const rqEl = document.getElementById("rq-chart");
-  if (rqEl && rqEl.data && data.Q_fit && data.Q_fit.length) {
-    const userTrace = {
-      x: data.Q_fit, y: data.R_fit,
-      mode: "lines",
-      line: { width: 2.5, color: "#000", dash: "dash" },
-      name: "User",
-    };
-    const idx = rqEl.data.findIndex(t => t.name === "User");
-    if (idx >= 0) {
-      Plotly.restyle(rqEl, { x: [userTrace.x], y: [userTrace.y] }, [idx]);
-    } else {
-      Plotly.addTraces(rqEl, userTrace);
+  if (rqEl && rqEl.data) {
+    if (data.per_file && data.per_file.length) {
+      // Multi-file: one dashed trace per file
+      _removeUserTraces("rq-chart");
+      data.per_file.forEach((pf, i) => {
+        if (pf.Q_fit && pf.Q_fit.length) {
+          Plotly.addTraces(rqEl, {
+            x: pf.Q_fit, y: pf.R_fit,
+            mode: "lines",
+            line: { width: 2.5, color: "#000", dash: "dash" },
+            name: "User – " + (pf.label || ("File " + (i + 1))),
+            _isUser: true,
+          });
+        }
+      });
+    } else if (data.Q_fit && data.Q_fit.length) {
+      // Single-file
+      const userTrace = {
+        x: data.Q_fit, y: data.R_fit,
+        mode: "lines",
+        line: { width: 2.5, color: "#000", dash: "dash" },
+        name: "User",
+        _isUser: true,
+      };
+      const idx = rqEl.data.findIndex(t => t.name === "User");
+      if (idx >= 0) {
+        Plotly.restyle(rqEl, { x: [userTrace.x], y: [userTrace.y] }, [idx]);
+      } else {
+        Plotly.addTraces(rqEl, userTrace);
+      }
     }
   }
 
@@ -655,6 +839,7 @@ function _updateChartsWithSimulation(data) {
       mode: "lines",
       line: { width: 2.5, color: "#000", dash: "dash" },
       name: "User",
+      _isUser: true,
     };
     const idx = sldEl.data.findIndex(t => t.name === "User");
     if (idx >= 0) {

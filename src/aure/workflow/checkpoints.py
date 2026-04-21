@@ -10,7 +10,6 @@ enabling:
 
 import json
 import logging
-import re
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any, List
@@ -38,9 +37,7 @@ class CheckpointManager:
         │   ├── 004_fitting.json
         │   ├── 005_evaluation.json
         │   └── 006_refinement_iter1.json
-        ├── models/
-        │   ├── model_initial.py
-        │   └── model_refined_iter1.py
+        ├── refl1d_output/          # refl1d fitting output (problem.json, etc.)
         └── final_state.json
     """
 
@@ -57,10 +54,10 @@ class CheckpointManager:
 
         # Create directory structure
         self.checkpoints_dir = self.output_dir / "checkpoints"
-        self.models_dir = self.output_dir / "models"
         self.refl1d_output_dir = self.output_dir / "refl1d_output"
 
         self._checkpoint_counter = 0
+        self._message_offset = 0
         self._initialized = False
 
     def initialize(
@@ -77,7 +74,6 @@ class CheckpointManager:
         # Create directories
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.checkpoints_dir.mkdir(exist_ok=True)
-        self.models_dir.mkdir(exist_ok=True)
         self.refl1d_output_dir.mkdir(exist_ok=True)
 
         # Save run info
@@ -89,6 +85,13 @@ class CheckpointManager:
             "hypothesis": initial_state.get("hypothesis"),
             "checkpoints": [],
         }
+        # Persist co-refinement file list (paths + labels only, no data arrays)
+        raw_df = initial_state.get("data_files") or []
+        if raw_df:
+            run_info["data_files"] = [
+                {"file": str(df.get("file", "")), "label": df.get("label", "")}
+                for df in raw_df
+            ]
         self._save_json(self.output_dir / "run_info.json", run_info)
 
         self._initialized = True
@@ -105,7 +108,6 @@ class CheckpointManager:
         # Create directories
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.checkpoints_dir.mkdir(exist_ok=True)
-        self.models_dir.mkdir(exist_ok=True)
         self.refl1d_output_dir.mkdir(exist_ok=True)
 
         # Load existing run_info or create new one
@@ -129,6 +131,8 @@ class CheckpointManager:
             self._save_json(run_info_path, run_info)
 
         self._initialized = True
+        # Skip messages already written in prior checkpoints
+        self._message_offset = len(state.get("messages") or [])
         logger.info(
             f"[CHECKPOINT] Initialized for resume from {start_node}: {self.output_dir}"
         )
@@ -177,15 +181,6 @@ class CheckpointManager:
         # Update run info
         self._update_run_info(filename, node_name, iteration)
 
-        # Save model if present
-        if state.get("current_model"):
-            self._save_model(
-                state["current_model"],
-                node_name,
-                iteration,
-                checkpoint_number=self._checkpoint_counter,
-            )
-
         # Write companion markdown log with readable messages
         self._save_checkpoint_log(checkpoint_path, state, node_name, iteration)
 
@@ -209,102 +204,11 @@ class CheckpointManager:
         self._save_json(final_path, final_data)
         logger.info(f"[CHECKPOINT] Saved final state: {final_path}")
 
-        # Write model_final.py with best-fit parameters baked in
-        try:
-            self._save_final_model(state)
-        except Exception as exc:
-            logger.warning("[CHECKPOINT] Could not write model_final.py: %s", exc)
-
         # Copy the best-fit problem.json to the top-level output directory
         try:
             self._copy_best_problem_json(state)
         except Exception as exc:
             logger.warning("[CHECKPOINT] Could not copy best problem.json: %s", exc)
-
-    # ------------------------------------------------------------------
-    # Final model with fitted parameters
-    # ------------------------------------------------------------------
-
-    def _save_final_model(self, state: Dict[str, Any]):
-        """Write ``models/model_final.py`` with fitted parameter values.
-
-        For JSON ``ModelDefinition`` dicts, uses ``export_model_script``.
-        For legacy script strings, patches values via regex and strips
-        ``.range()`` calls.
-        """
-        model = state.get("best_model") or state.get("current_model")
-        if not model:
-            return
-
-        fit_results = state.get("fit_results", [])
-        if not fit_results:
-            return
-
-        # Use the fit result that matches best_chi2 (not necessarily the last)
-        best_chi2_val = state.get("best_chi2")
-        best_fit = None
-        if best_chi2_val is not None:
-            for fr in fit_results:
-                if fr.get("chi_squared") == best_chi2_val:
-                    best_fit = fr
-                    break
-        if best_fit is None:
-            best_fit = min(
-                fit_results, key=lambda f: f.get("chi_squared", float("inf"))
-            )
-
-        params: dict = best_fit.get("parameters", {})
-        uncertainties: dict = best_fit.get("uncertainties") or {}
-        chi2 = best_fit.get("chi_squared")
-        method = best_fit.get("method", "unknown")
-
-        if not params:
-            return
-
-        out_path = self.models_dir / "model_final.py"
-
-        if isinstance(model, dict):
-            # New JSON path
-            from aure.nodes.model_builder import export_model_script
-
-            script = export_model_script(
-                model,
-                fitted_params=params,
-                fitted_uncertainties=uncertainties,
-                include_ranges=False,
-            )
-            # Also save the JSON definition with fitted values applied
-            json_path = self.models_dir / "model_final.json"
-            final_def = dict(model)
-            final_def["fitted_parameters"] = params
-            final_def["fitted_uncertainties"] = uncertainties
-            self._save_json(json_path, final_def)
-        else:
-            # Legacy script path
-            script = self._patch_model_parameters(str(model), params)
-            script = self._strip_range_calls(script)
-
-        # Prepend a header with fit metadata
-        header_lines = [
-            "# " + "=" * 68,
-            f"# model_final.py — best-fit result (chi2 = {chi2:.4f}, method = {method})",
-            "#",
-            "# Parameter values below are the optimised values from the fit.",
-            "# .range() constraints have been removed; each line shows the",
-            "# original range as a comment for reference.",
-        ]
-        if uncertainties:
-            header_lines.append("#")
-            header_lines.append("# Uncertainties (1-sigma):")
-            for pname, unc in uncertainties.items():
-                header_lines.append(f"#   {pname}: \u00b1{unc:.4f}")
-        header_lines.append("# " + "=" * 68)
-        header_lines.append("")
-
-        script = "\n".join(header_lines) + "\n" + script
-
-        out_path.write_text(script)
-        logger.info(f"[CHECKPOINT] Saved final model: {out_path}")
 
     def _copy_best_problem_json(self, state: Dict[str, Any]):
         """Copy ``problem.json`` from the best fit's refl1d output to the
@@ -349,130 +253,6 @@ class CheckpointManager:
         shutil.copy2(src, dst)
         logger.info(f"[CHECKPOINT] Copied best-fit problem.json → {dst}")
 
-    @staticmethod
-    def _patch_model_parameters(script: str, params: dict) -> str:
-        """Substitute fitted values into ``SLD(name=..., rho=...)`` and
-        sample stack ``material(thickness, interface)`` definitions.
-
-        Refl1d names parameters like ``<material> <attribute>``
-        (e.g. ``copper thickness``, ``SiO2 rho``).  We rebuild a lookup
-        keyed on ``(material_name, attribute)`` and patch matching lines.
-        """
-        # Build {(material, attr): value} lookup
-        lookup: Dict[tuple, float] = {}
-        for pname, value in params.items():
-            # Handle 'intensity <probe_name>' specially
-            if pname.startswith("intensity "):
-                lookup[("probe", "intensity")] = value
-                continue
-            parts = pname.rsplit(" ", 1)
-            if len(parts) == 2:
-                lookup[(parts[0], parts[1])] = value
-
-        lines = script.split("\n")
-        new_lines: list[str] = []
-
-        for line in lines:
-            new_line = line
-
-            # --- SLD(name="<mat>", rho=<val>) ---------------------------------
-            m = re.match(
-                r'^(\s*\w+\s*=\s*SLD\(\s*name\s*=\s*["\'])(\w+)(["\']\s*,\s*rho\s*=\s*)'
-                r"([\d.eE+-]+)(.*)",
-                line,
-            )
-            if m:
-                mat_name = m.group(2)
-                key = (mat_name, "rho")
-                if key in lookup:
-                    new_line = (
-                        f"{m.group(1)}{mat_name}{m.group(3)}{lookup[key]}{m.group(5)}"
-                    )
-
-            # --- sample stack: material(thickness, interface) -----------------
-            m = re.match(
-                r"^(\s*[|]?\s*)(\w+)\(\s*([\d.eE+-]+)\s*,\s*([\d.eE+-]+)\s*\)(.*)",
-                line,
-            )
-            if m:
-                var_name = m.group(2)
-                # Resolve variable name → material name via earlier assignment
-                mat_name = _resolve_material_name(script, var_name)
-                thick_key = (mat_name, "thickness")
-                iface_key = (mat_name, "interface")
-                thickness = lookup.get(thick_key, m.group(3))
-                interface = lookup.get(iface_key, m.group(4))
-                new_line = (
-                    f"{m.group(1)}{var_name}({thickness}, {interface}){m.group(5)}"
-                )
-
-            new_lines.append(new_line)
-
-        return "\n".join(new_lines)
-
-    @staticmethod
-    def _strip_range_calls(script: str) -> str:
-        """Replace ``sample[i].attr.range(lo, hi)`` lines with comments."""
-
-        def _replace(m: re.Match) -> str:
-            indent = m.group(1)
-            target = m.group(2)
-            args = m.group(3)
-            comment = m.group(4) or ""
-            return f"{indent}# {target}.range({args}){comment}"
-
-        return re.sub(
-            r"^(\s*)(sample\[\d+\]\.[\w.]+|probe\.[\w.]+)\.range\(([^)]+)\)(.*)",
-            _replace,
-            script,
-            flags=re.MULTILINE,
-        )
-
-    def _save_model(
-        self,
-        model: object,
-        node_name: str,
-        iteration: int,
-        checkpoint_number: int | None = None,
-    ):
-        """Save model to models directory.
-
-        For new JSON ``ModelDefinition`` dicts, saves both a ``.json`` and a
-        ``.py`` (via ``export_model_script``).  For legacy script strings,
-        saves only the ``.py`` file.
-
-        File names mirror the checkpoint numbering so that checkpoint
-        ``003_modeling.json`` produces ``003_model_modeling.json``.
-        """
-        prefix = f"{checkpoint_number:03d}_" if checkpoint_number else ""
-
-        if node_name == "modeling" and iteration == 0:
-            base = f"{prefix}model_initial"
-        elif node_name == "refinement":
-            base = f"{prefix}model_refinement_iter{iteration}"
-        elif iteration > 0:
-            base = f"{prefix}model_{node_name}_iter{iteration}"
-        else:
-            base = f"{prefix}model_{node_name}"
-
-        if isinstance(model, dict):
-            # JSON path — save definition as JSON
-            json_path = self.models_dir / f"{base}.json"
-            self._save_json(json_path, model)
-            # Also export a readable .py for inspection
-            try:
-                from aure.nodes.model_builder import export_model_script
-
-                script = export_model_script(model)
-                py_path = self.models_dir / f"{base}.py"
-                py_path.write_text(script)
-            except Exception as exc:
-                logger.debug("Could not export model script for %s: %s", base, exc)
-        else:
-            # Legacy script string
-            model_path = self.models_dir / f"{base}.py"
-            model_path.write_text(str(model))
-
     def _save_checkpoint_log(
         self,
         checkpoint_path: Path,
@@ -482,11 +262,18 @@ class CheckpointManager:
     ):
         """Write a companion ``.md`` file with human-readable messages.
 
+        Only messages added since the previous checkpoint are written.
         The file lives next to the checkpoint JSON and shares its name,
         e.g. ``003_modeling.md``.
         """
         messages = state.get("messages") or []
         if not messages:
+            return
+
+        new_messages = messages[self._message_offset :]
+        self._message_offset = len(messages)
+
+        if not new_messages:
             return
 
         md_path = checkpoint_path.with_suffix(".md")
@@ -495,7 +282,20 @@ class CheckpointManager:
             f"_Saved at {datetime.now().isoformat()}_",
             "",
         ]
-        for msg in messages:
+
+        active_skills = state.get("active_skills")
+        if active_skills:
+            lines.append(f"**Active skills:** {', '.join(active_skills)}")
+            lines.append("")
+
+        # χ² progression summary for evaluation/fitting checkpoints
+        if node_name in ("evaluation", "fitting"):
+            chi2_line = self._format_chi2_progression(state)
+            if chi2_line:
+                lines.append(chi2_line)
+                lines.append("")
+
+        for msg in new_messages:
             role = msg.get("role", "unknown")
             content = msg.get("content", "")
             if isinstance(content, list):
@@ -506,6 +306,22 @@ class CheckpointManager:
             lines.append("")
 
         md_path.write_text("\n".join(lines), encoding="utf-8")
+
+    @staticmethod
+    def _format_chi2_progression(state: Dict[str, Any]) -> str:
+        """Return a one-line χ² progression summary from fit_results."""
+        fit_results = state.get("fit_results") or []
+        if not fit_results:
+            return ""
+        values = []
+        for i, fr in enumerate(fit_results, 1):
+            chi2 = fr.get("chi_squared")
+            iteration = fr.get("iteration", i)
+            if chi2 is not None:
+                values.append(f"iter {iteration}: {chi2:.2f}")
+        if not values:
+            return ""
+        return "**χ² progression:** " + " → ".join(values)
 
     def _update_run_info(self, checkpoint_file: str, node_name: str, iteration: int):
         """Update run_info.json with new checkpoint."""
@@ -643,16 +459,6 @@ class CheckpointManager:
                 return str(Path(output_dir) / "checkpoints" / cp["file"])
 
         return None
-
-
-def _resolve_material_name(script: str, var_name: str) -> str:
-    """Find the ``name=`` argument in the SLD assignment for *var_name*."""
-    m = re.search(
-        rf'^\s*{re.escape(var_name)}\s*=\s*SLD\(\s*name\s*=\s*["\']([\w]+)["\']',
-        script,
-        re.MULTILINE,
-    )
-    return m.group(1) if m else var_name
 
 
 def get_restart_state(checkpoint_path: str) -> Dict[str, Any]:
