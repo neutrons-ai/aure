@@ -344,12 +344,17 @@ def build_multi_problem(definition: dict, data_files: list[dict]):
     return problem, experiments, sorted_data_files
 
 
-def save_problem_json(definition: dict, path) -> str:
+def save_problem_json(
+    definition: dict,
+    path,
+    data_files: list[dict] | None = None,
+) -> str:
     """Serialize a ``ModelDefinition`` to a bumps-compatible ``problem.json``.
 
-    Builds a ``FitProblem`` via :func:`build_problem` and writes a JSON
-    representation using ``bumps.serialize.save_file``.  The resulting file
-    can be loaded directly by refl1d / bumps (e.g. ``refl1d problem.json``)
+    Builds a ``FitProblem`` via :func:`build_problem` (single experiment)
+    or :func:`build_multi_problem` (multi-file co-refinement) and writes a
+    JSON representation using ``bumps.serialize.save_file``. The resulting
+    file can be loaded directly by refl1d / bumps (e.g. ``refl1d problem.json``)
     or submitted to a remote fit service.
 
     Parameters
@@ -358,6 +363,11 @@ def save_problem_json(definition: dict, path) -> str:
         A ``ModelDefinition`` dict.
     path
         Output file path (str or Path).
+    data_files
+        Optional list of ``DatasetInfo`` dicts for multi-file co-refinement.
+        When provided with more than one entry, a multi-experiment
+        ``FitProblem`` is built so all datasets share structural parameters
+        while each probe gets its own intensity normalisation.
 
     Returns
     -------
@@ -366,7 +376,11 @@ def save_problem_json(definition: dict, path) -> str:
     """
     from bumps.serialize import save_file
 
-    problem = build_problem(definition)
+    if data_files and len(data_files) > 1:
+        problem, _experiments, _sorted = build_multi_problem(definition, data_files)
+    else:
+        problem = build_problem(definition)
+
     out = os.path.abspath(str(path))
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     save_file(out, problem)

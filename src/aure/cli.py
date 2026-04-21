@@ -930,9 +930,22 @@ def prepare(
                 "Cannot serialize a legacy script-string model to problem.json. "
                 "Re-run with an LLM that produces JSON ModelDefinitions."
             )
-        save_problem_json(model, problem_path)
+        loaded_data_files = result.get("data_files") or []
+        save_problem_json(
+            model,
+            problem_path,
+            data_files=loaded_data_files if len(loaded_data_files) > 1 else None,
+        )
+        sidecar = dict(model)
+        if loaded_data_files:
+            # Strip the Q/R/dR arrays intake attaches; keep only metadata
+            # needed to rebuild the co-refinement.
+            sidecar["data_files"] = [
+                {k: v for k, v in ds.items() if k not in {"Q", "R", "dR"}}
+                for ds in loaded_data_files
+            ]
         definition_path.parent.mkdir(parents=True, exist_ok=True)
-        definition_path.write_text(json.dumps(model, indent=2), encoding="utf-8")
+        definition_path.write_text(json.dumps(sidecar, indent=2), encoding="utf-8")
     except Exception as e:
         if output_json:
             click.echo(json.dumps({"error": f"Failed to write problem.json: {e}"}))
@@ -1162,9 +1175,22 @@ def batch(manifest: str, job: tuple, dry_run: bool):
                 resolved_model_name = merged.get("model_name", name)
                 problem_path = Path(output_dir) / f"{resolved_model_name}.json"
                 definition_path = Path(output_dir) / f"{resolved_model_name}_definition.json"
-                save_problem_json(model, problem_path)
+                loaded_data_files = result.get("data_files") or []
+                save_problem_json(
+                    model,
+                    problem_path,
+                    data_files=loaded_data_files if len(loaded_data_files) > 1 else None,
+                )
+                sidecar = dict(model)
+                if loaded_data_files:
+                    sidecar["data_files"] = [
+                        {k: v for k, v in ds.items() if k not in {"Q", "R", "dR"}}
+                        for ds in loaded_data_files
+                    ]
                 definition_path.parent.mkdir(parents=True, exist_ok=True)
-                definition_path.write_text(json.dumps(model, indent=2), encoding="utf-8")
+                definition_path.write_text(
+                    json.dumps(sidecar, indent=2), encoding="utf-8"
+                )
 
                 results_summary.append(
                     {
