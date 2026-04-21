@@ -25,6 +25,7 @@ flowchart LR
 
     Evaluation -->|fit acceptable| E((Done))
     Evaluation -->|refine model| Modeling
+    Evaluation -->|bounds only| Fitting
 
     style S fill:#6c757d,color:#fff,stroke:none
     style E fill:#198754,color:#fff,stroke:none
@@ -37,20 +38,35 @@ flowchart LR
 
 1. **Intake** — Loads the reflectivity data file and parses the sample
    description with an LLM to extract structured layer/substrate/ambient
-   information (materials, thicknesses, SLDs via `periodictable`).
+   information (materials, thicknesses, SLDs via `periodictable`). A second
+   LLM call, guided by the `structural-hypothesis-ranking` skill, produces
+   a **ranked list of candidate structural changes** (e.g. "add native CuO
+   on top of Cu") that the refinement loop will consider if the initial
+   model does not fit well.
 2. **Analysis** — Extracts physics features from the data: critical edge,
    total thickness from Kiessig fringes, estimated roughness, and layer count.
-3. **Modeling** — The LLM generates a Refl1D model script informed by the
-   parsed sample and the extracted features.
+3. **Modeling** — The LLM generates or refines a Refl1D model, informed by
+   the parsed sample, the extracted features, the active
+   [Agent Skills](src/aure/skills/), and the hypothesis list.
 4. **Fitting** — Runs the generated model through Refl1D's optimizer.
-5. **Evaluation** — Assesses the fit quality (χ², residual structure, parameter
-   reasonableness) and decides whether the result is acceptable.
-6. **Refinement** — If the fit is not good enough, the LLM modifies the model
-   (adjusting bounds, adding/removing layers, changing constraints) and the
-   loop repeats, up to a configurable number of iterations.
+5. **Evaluation** — Assesses the fit quality (χ², BIC, residual structure,
+   parameter reasonableness) and decides whether to stop, re-fit with
+   widened bounds only (a shortcut that saves one LLM call), or loop back
+   to modeling for a real refinement. Automatic χ² and BIC *regression
+   guardrails* revert the model if a refinement made things worse and mark
+   the tried hypothesis as rejected.
+6. **Refinement** — When the evaluator decides a refinement is needed, it
+   tells the modeling node whether to do a parameter tweak or to realize
+   a specific structural hypothesis from the ranked list. The loop
+   repeats up to a configurable number of iterations.
 
 Checkpoints are saved after every stage so you can inspect intermediate results
 or resume a run from any point.
+
+> For a complete, narrative introduction to the design — including a primer
+> on reflectometry and LLMs, the role of Agent Skills, the ranked-hypothesis
+> refinement loop, and the division of labour between the LLM and
+> deterministic code — see [docs/approach.md](docs/approach.md).
 
 ## Installation
 
