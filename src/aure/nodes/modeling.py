@@ -110,6 +110,15 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
         if fitted:
             _apply_fitted_values_to_definition(model_for_llm, fitted)
 
+        # Pull structural-hypothesis signals from evaluation output
+        hypotheses_in = state.get("structural_hypotheses", []) or []
+        # analysis = latest_fit  # issues/suggestions already live here
+        # The evaluation node stores next_action/proposed_hypothesis_id on
+        # its analysis dict, which is merged back into the fit result via
+        # latest_fit["issues"] etc. Those two fields live alongside.
+        next_action = latest_fit.get("next_action")
+        proposed_hid = latest_fit.get("proposed_hypothesis_id")
+
         prompt = format_model_refinement_prompt_json(
             current_model=model_for_llm,
             sample_description=state.get("sample_description", ""),
@@ -118,6 +127,9 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
             user_constraints=user_constraints,
             user_feedback=user_feedback,
             skill_context=skill_context,
+            structural_hypotheses=hypotheses_in,
+            next_action=next_action,
+            proposed_hypothesis_id=proposed_hid,
         )
         # Clear feedback after consumption
         if user_feedback:
@@ -183,6 +195,26 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
                 "definition": new_model,
             }
         ]
+
+        # Extract updated structural-hypothesis list from the LLM response
+        # (optional top-level field). Fall back to the existing state value.
+        hypotheses_out = new_model.pop("structural_hypotheses", None)
+        if (
+            hypotheses_out is None
+            and proposed_hid is not None
+            and next_action == "structural_change"
+        ):
+            # LLM didn't return an updated list but we expected it to realize a
+            # hypothesis — mark that hypothesis as `tried` ourselves so the
+            # next evaluation turn can reason about it.
+            hypotheses_out = [dict(h) for h in hypotheses_in]
+            for h in hypotheses_out:
+                if h.get("id") == proposed_hid and h.get("status") == "pending":
+                    h["status"] = "tried"
+                    h["tried_in_iteration"] = iteration
+                    break
+        if hypotheses_out is not None:
+            updates["structural_hypotheses"] = hypotheses_out
 
         # Format explanation message
         changes = _summarize_definition_changes(current_model, new_model)
@@ -1055,9 +1087,15 @@ def _summarize_definition_changes(old_model: dict, new_model: dict) -> list[str]
 
     # All numeric attributes that can change on a layer
     _LAYER_ATTRS = (
-        "sld", "sld_min", "sld_max",
-        "thickness", "thickness_min", "thickness_max",
-        "roughness", "roughness_min", "roughness_max",
+        "sld",
+        "sld_min",
+        "sld_max",
+        "thickness",
+        "thickness_min",
+        "thickness_max",
+        "roughness",
+        "roughness_min",
+        "roughness_max",
     )
 
     # Check for changes in matched layers

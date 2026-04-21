@@ -176,6 +176,49 @@ class FitResult(TypedDict):
     suggestions: List[str]
 
 
+class StructuralHypothesis(TypedDict, total=False):
+    """A candidate structural change to the model, ranked at intake time.
+
+    Produced during intake by an LLM reasoning over the active skills, this
+    is a ranked list of structural changes (adding, removing, splitting, or
+    reshaping layers) that the workflow should consider when parameter-only
+    refinement stalls. Each hypothesis carries a rationale sourced from the
+    active skills so the evaluator and refiner can reason about it.
+
+    The list is updated in-place (fully replaced) by the modeling and
+    evaluation nodes as hypotheses are tried and confirmed or rejected.
+
+    Fields
+    ------
+    id : int
+        Stable identifier within this run (1-based).
+    title : str
+        One-line description, e.g. "Add native CuO on top of Cu".
+    rationale : str
+        Why this hypothesis is plausible — cite the active skill.
+    change : str
+        Concrete structural edit in neutral terms, e.g.
+        "insert a 10-30 Å CuO layer (SLD ~5.0) between Cu and D2O".
+    skill_source : str
+        Name of the skill that motivates this hypothesis.
+    status : str
+        One of: 'pending', 'tried', 'confirmed', 'rejected'.
+    tried_in_iteration : int | None
+        Iteration number when the hypothesis was realized.
+    notes : str
+        Free-form notes (e.g., outcome after trial).
+    """
+
+    id: int
+    title: str
+    rationale: str
+    change: str
+    skill_source: str
+    status: str
+    tried_in_iteration: Optional[int]
+    notes: str
+
+
 class LLMCallRecord(TypedDict):
     """Record of a single LLM invocation during the workflow."""
 
@@ -243,6 +286,9 @@ class ReflectivityState(TypedDict):
 
     # ========== Skills ==========
     active_skills: List[str]  # Names of activated Agent Skills
+    structural_hypotheses: List[
+        StructuralHypothesis
+    ]  # Ranked candidate structural changes
 
     # ========== Workflow Control ==========
     current_node: str
@@ -252,6 +298,9 @@ class ReflectivityState(TypedDict):
     error: Optional[str]
     output_dir: Optional[str]
     user_config: Optional[dict]  # User-supplied YAML config (criteria & constraints)
+    bounds_only_refinement: (
+        bool  # Set by evaluation when only bound-expansion is needed
+    )
 
 
 def create_initial_state(
@@ -309,6 +358,7 @@ def create_initial_state(
         pending_user_feedback=None,
         # Skills
         active_skills=[],
+        structural_hypotheses=[],
         # Workflow control
         current_node="intake",
         iteration=0,
@@ -317,4 +367,5 @@ def create_initial_state(
         error=None,
         output_dir=None,
         user_config=user_config,
+        bounds_only_refinement=False,
     )

@@ -332,6 +332,15 @@ def api_parameters():
     return jsonify(rd.get_fit_parameters(iteration=iteration))
 
 
+@bp.route("/api/intake-report")
+def api_intake_report():
+    """Return a summary of what the intake stage concluded about the data."""
+    rd = _run_data()
+    if not rd:
+        return jsonify({"files": [], "warnings": [], "messages": []})
+    return jsonify(rd.get_intake_report())
+
+
 @bp.route("/api/simulate", methods=["POST"])
 def api_simulate():
     """Compute reflectivity/SLD for user-adjusted parameters.
@@ -576,7 +585,9 @@ def api_start_analysis():
                     f"data_files[{idx}]: each entry must have 'file' and 'label' keys"
                 )
             elif not Path(df["file"]).is_file():
-                df_errors.append(f"data_files[{idx}]: file does not exist: {df['file']}")
+                df_errors.append(
+                    f"data_files[{idx}]: file does not exist: {df['file']}"
+                )
         if df_errors:
             return jsonify({"errors": df_errors}), 400
 

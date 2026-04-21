@@ -18,8 +18,9 @@ from .loader import SkillRegistry
 
 logger = logging.getLogger(__name__)
 
-# Always-on skill
+# Always-on skills (baseline + meta-skills)
 _BASELINE_SKILL = "neutron-reflectometry"
+_ALWAYS_ON = ("neutron-reflectometry", "structural-hypothesis-ranking")
 
 # ---------------------------------------------------------------------------
 # LLM skill-selection prompt
@@ -54,8 +55,8 @@ def _build_catalog(registry: SkillRegistry) -> str:
     """Build a compact skill catalog string from the registry."""
     lines = []
     for meta in registry.all_metadata():
-        # Skip the baseline skill — it's always on
-        if meta.name == _BASELINE_SKILL:
+        # Skip always-on skills — they're always active
+        if meta.name in _ALWAYS_ON:
             continue
         desc = meta.description.replace("\n", " ").strip()
         lines.append(f"- **{meta.name}**: {desc}")
@@ -119,8 +120,8 @@ def select_skills(
         except Exception as e:
             logger.warning("LLM skill selection failed: %s", e)
 
-    result = [_BASELINE_SKILL]
-    logger.info("LLM unavailable, using baseline skill only: %s", result)
+    result = sorted(n for n in _ALWAYS_ON if registry.get_metadata(n))
+    logger.info("LLM unavailable, using always-on skills only: %s", result)
     return result
 
 
@@ -155,9 +156,9 @@ def _select_skills_llm(
     if not isinstance(names, list):
         raise ValueError(f"Expected list, got {type(names).__name__}")
 
-    # Validate against registry and always include baseline
+    # Validate against registry and always include always-on skills that exist
     available = set(registry.skill_names)
-    activated = {_BASELINE_SKILL} | {n for n in names if n in available}
+    activated = (set(_ALWAYS_ON) & available) | {n for n in names if n in available}
 
     return sorted(activated)
 

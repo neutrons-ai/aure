@@ -18,7 +18,7 @@ from ..state import ReflectivityState, Message, LLMCallRecord
 from ..tools.data_tools import load_reflectivity_data, validate_reflectivity_data
 from ..llm import llm_available, get_llm, invoke_with_timeout
 from ..skills import SkillRegistry, select_skills, load_skill_context
-from .prompts import format_sample_parse_prompt
+from .prompts import format_sample_parse_prompt, format_structural_hypothesis_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -163,7 +163,9 @@ def parse_file_header(file_path: str) -> dict:
     """
     header = _read_file_header(file_path)
     if not header:
-        logger.debug("[INTAKE] Could not read header from %s; using defaults", file_path)
+        logger.debug(
+            "[INTAKE] Could not read header from %s; using defaults", file_path
+        )
         return dict(_DEFAULT_HEADER_METADATA)
 
     if not llm_available():
@@ -257,7 +259,9 @@ def parse_sample_with_llm(
         )
 
     llm = get_llm(temperature=0)
-    prompt = format_sample_parse_prompt(description, hypothesis, skill_context=skill_context)
+    prompt = format_sample_parse_prompt(
+        description, hypothesis, skill_context=skill_context
+    )
 
     from langchain_core.messages import HumanMessage
 
@@ -291,6 +295,99 @@ def _fix_llm_json(text: str) -> str:
     # Remove trailing commas before } or ]
     text = re.sub(r",\s*([}\]])", r"\1", text)
     return text
+
+
+# ============================================================================
+# Structural hypothesis generation
+# ============================================================================
+
+# Keys we expect on each hypothesis object; used to filter/validate
+_HYPOTHESIS_TEXT_FIELDS = ("title", "rationale", "change", "skill_source")
+
+
+def generate_structural_hypotheses_with_llm(
+    sample_description: str,
+    parsed_sample: Dict[str, Any],
+    skill_context: str,
+) -> list[Dict[str, Any]]:
+    """Ask the LLM for a ranked list of candidate structural changes.
+
+    Uses the ``structural-hypothesis-ranking`` skill plus all other active
+    skill bodies to enumerate plausible modifications to the baseline model
+    (e.g. adding a native oxide, splitting a layer, etc.). Each entry is
+    stamped with a sequential ``id`` and ``status: "pending"``.
+
+    Returns an empty list if the LLM is unavailable or returns nothing
+    parseable. Never raises.
+    """
+    if not llm_available():
+        return []
+
+    from langchain_core.messages import HumanMessage
+
+    prompt = format_structural_hypothesis_prompt(
+        sample_description=sample_description,
+        parsed_sample=parsed_sample,
+        skill_context=skill_context,
+    )
+    llm = get_llm(temperature=0)
+    try:
+        response = invoke_with_timeout(llm, [HumanMessage(content=prompt)])
+    except Exception as e:
+        logger.warning("[INTAKE] Structural hypothesis LLM call failed: %s", e)
+        return []
+
+    content = response.content.strip()
+    # Strip markdown fences
+    content = re.sub(r"^```(?:json)?\s*\n?", "", content)
+    content = re.sub(r"\n?```\s*$", "", content)
+    content = content.strip()
+
+    match = re.search(r"\[[\s\S]*\]", content)
+    if not match:
+        logger.debug("[INTAKE] No JSON array in hypothesis response")
+        return []
+
+    try:
+        raw = json.loads(_fix_llm_json(match.group()))
+    except json.JSONDecodeError as e:
+        logger.warning("[INTAKE] Hypothesis JSON parse error: %s", e)
+        return []
+
+    if not isinstance(raw, list):
+        return []
+
+    hypotheses: list[Dict[str, Any]] = []
+    for i, item in enumerate(raw, start=1):
+        if not isinstance(item, dict):
+            continue
+        h = {
+            "id": i,
+            "title": str(item.get("title", "")).strip(),
+            "rationale": str(item.get("rationale", "")).strip(),
+            "change": str(item.get("change", "")).strip(),
+            "skill_source": str(item.get("skill_source", "")).strip(),
+            "status": "pending",
+            "tried_in_iteration": None,
+            "notes": "",
+        }
+        if h["title"]:
+            hypotheses.append(h)
+
+    logger.info("[INTAKE] Generated %d structural hypotheses", len(hypotheses))
+    return hypotheses
+
+
+def _format_hypotheses_summary(hypotheses: list[Dict[str, Any]]) -> str:
+    """Format the hypothesis list for display in the checkpoint transcript."""
+    lines = ["**Ranked structural hypotheses (consulted if parameter tuning stalls):**"]
+    for h in hypotheses:
+        lines.append(f"{h['id']}. **{h['title']}** — {h['change']}")
+        if h.get("rationale"):
+            lines.append(
+                f"   _Rationale ({h.get('skill_source', '?')}):_ {h['rationale']}"
+            )
+    return "\n".join(lines)
 
 
 def intake_node(state: ReflectivityState) -> Dict[str, Any]:
@@ -329,8 +426,6 @@ def intake_node(state: ReflectivityState) -> Dict[str, Any]:
             ]
 
         # Build data_files list for multi-file co-refinement
-        import os
-        from pathlib import Path
 
         existing_data_files = state.get("data_files", [])
         if existing_data_files:
@@ -346,7 +441,11 @@ def intake_node(state: ReflectivityState) -> Dict[str, Any]:
                     enriched = dict(ds)
                     enriched["Q"] = extra_data["Q"].tolist()
                     enriched["R"] = extra_data["R"].tolist()
-                    enriched["dR"] = extra_data.get("dR", [0.0] * len(extra_data["Q"])).tolist() if extra_data.get("dR") is not None else [0.0] * len(extra_data["Q"])
+                    enriched["dR"] = (
+                        extra_data.get("dR", [0.0] * len(extra_data["Q"])).tolist()
+                        if extra_data.get("dR") is not None
+                        else [0.0] * len(extra_data["Q"])
+                    )
                     # Parse header metadata (dQ convention, theta, etc.)
                     meta = parse_file_header(ds["file"])
                     if "theta" not in enriched:
@@ -435,6 +534,52 @@ def intake_node(state: ReflectivityState) -> Dict[str, Any]:
                     timestamp=None,
                 )
             )
+
+            # ========== 4. Generate Ranked Structural Hypotheses ==========
+            # Ask the LLM to enumerate candidate structural changes, drawing
+            # on the active skills. Consumed by evaluation/modeling when
+            # parameter-only refinement stalls.
+            try:
+                skill_context_full = load_skill_context(active_skills, registry)
+                hypotheses = generate_structural_hypotheses_with_llm(
+                    sample_description=state["sample_description"],
+                    parsed_sample=parsed,
+                    skill_context=skill_context_full,
+                )
+                updates["structural_hypotheses"] = hypotheses
+                updates["llm_calls"].append(
+                    LLMCallRecord(
+                        node="intake",
+                        timestamp=datetime.now(timezone.utc).isoformat(),
+                        success=True,
+                        used_fallback=False,
+                        fallback_reason=None,
+                        error=None,
+                    )
+                )
+                if hypotheses:
+                    updates["messages"].append(
+                        Message(
+                            role="assistant",
+                            content=_format_hypotheses_summary(hypotheses),
+                            timestamp=None,
+                        )
+                    )
+            except Exception as e:
+                logger.warning(
+                    "[INTAKE] Could not generate structural hypotheses: %s", e
+                )
+                updates["structural_hypotheses"] = []
+                updates["llm_calls"].append(
+                    LLMCallRecord(
+                        node="intake",
+                        timestamp=datetime.now(timezone.utc).isoformat(),
+                        success=False,
+                        used_fallback=True,
+                        fallback_reason="Structural hypothesis generation failed; proceeding without list",
+                        error=str(e)[:200],
+                    )
+                )
 
         except Exception as e:
             # Non-fatal - we can still proceed with feature extraction

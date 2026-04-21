@@ -380,12 +380,45 @@ def _extract_multi_bumps_results(
     # Aggregate chi-squared
     chi_squared = problem.chisq()
 
-    # Extract parameters (shared across experiments)
-    parameters = {}
-    uncertainties = {}
-    param_bounds = {}
+    # Extract parameters.  Structural params are shared (single Parameter
+    # object across experiments) but per-probe params (intensity,
+    # sample_broadening, theta_offset) exist once per experiment and often
+    # carry the same ``.name`` — which would collide in a dict.  Build a
+    # map of id(par) -> file-label so we can disambiguate such names.
+    per_probe_attrs = ("intensity", "sample_broadening", "theta_offset")
+    probe_param_labels: dict[int, str] = {}
+    for exp, ds in zip(experiments, data_files):
+        probe = getattr(exp, "probe", None)
+        if probe is None:
+            continue
+        for attr in per_probe_attrs:
+            par = getattr(probe, attr, None)
+            if par is not None:
+                probe_param_labels[id(par)] = ds.get("label", "")
+
+    parameters: dict = {}
+    uncertainties: dict = {}
+    param_bounds: dict = {}
     for i, par in enumerate(problem._parameters):
         name = str(par.name)
+        # Disambiguate per-probe parameter names by appending the file label
+        # when the base name would collide with an already-seen entry.
+        if name in parameters and id(par) in probe_param_labels:
+            label = probe_param_labels[id(par)]
+            if label:
+                name = f"{name} {label}"
+        elif id(par) in probe_param_labels:
+            # Even on first sight, if this is a per-probe param and the
+            # same base name will appear again for another probe, pre-empt
+            # the collision by suffixing now.
+            label = probe_param_labels[id(par)]
+            same_name_probes = sum(
+                1
+                for p in problem._parameters
+                if str(p.name) == name and id(p) in probe_param_labels
+            )
+            if label and same_name_probes > 1:
+                name = f"{name} {label}"
         parameters[name] = par.value
         if hasattr(fit_result, "dx") and fit_result.dx is not None:
             try:

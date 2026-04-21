@@ -300,6 +300,14 @@ def build_multi_problem(definition: dict, data_files: list[dict]):
     broadening = definition.get("sample_broadening", {})
     offset = definition.get("theta_offset", {})
 
+    # Shared sample_broadening / theta_offset parameters.  These describe
+    # the *sample*, not the instrument, so they must be tied across all
+    # probes in a co-refinement.  We configure the range on the first
+    # probe that exposes the attribute and then alias the same bumps
+    # Parameter onto subsequent probes.
+    shared_broadening = None
+    shared_offset = None
+
     experiments = []
     for probe in sorted_probes:
         # Each probe gets its own independent intensity parameter
@@ -311,13 +319,24 @@ def build_multi_problem(definition: dict, data_files: list[dict]):
             probe.intensity.range(int_min, int_max)
 
         # sample_broadening / theta_offset only exist on NeutronProbe
-        # (angle-based), not on QProbe (Q-based from load4).
+        # (angle-based), not on QProbe (Q-based from load4).  Tie them
+        # across probes so the fit uses a single shared parameter.
         if broadening.get("enabled") and hasattr(probe, "sample_broadening"):
-            probe.sample_broadening.range(
-                broadening.get("min", 0.0), broadening.get("max", 0.5)
-            )
+            if shared_broadening is None:
+                probe.sample_broadening.range(
+                    broadening.get("min", 0.0), broadening.get("max", 0.5)
+                )
+                shared_broadening = probe.sample_broadening
+            else:
+                probe.sample_broadening = shared_broadening
         if offset.get("enabled") and hasattr(probe, "theta_offset"):
-            probe.theta_offset.range(offset.get("min", -0.02), offset.get("max", 0.02))
+            if shared_offset is None:
+                probe.theta_offset.range(
+                    offset.get("min", -0.02), offset.get("max", 0.02)
+                )
+                shared_offset = probe.theta_offset
+            else:
+                probe.theta_offset = shared_offset
 
         experiments.append(Experiment(probe=probe, sample=sample))
 

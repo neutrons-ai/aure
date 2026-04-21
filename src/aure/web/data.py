@@ -449,6 +449,106 @@ class RunData:
             "parameters": rows,
         }
 
+    # ------------------------------------------------------------------
+    # Intake / data-loading report
+    # ------------------------------------------------------------------
+
+    def get_intake_report(self) -> dict:
+        """Summarise what the intake stage concluded about the input data.
+
+        Returns a dict with per-file findings (theta, dQ convention,
+        probe type that will be built) and high-level warnings — e.g.
+        when some files would be loaded as ``QProbe`` and therefore
+        cannot participate in shared ``sample_broadening`` /
+        ``theta_offset`` parameters during co-refinement.
+
+        Shape::
+
+            {
+                "primary_file": {"path": str, "dq_is_fwhm": bool},
+                "files": [
+                    {"label": str, "path": str, "theta": float,
+                     "dq_is_fwhm": bool, "probe_type": "NeutronProbe"|"QProbe"},
+                    ...
+                ],
+                "warnings": [str, ...],
+                "messages": [str, ...],   # intake-stage messages from state
+            }
+        """
+        state = self.get_final_state()
+
+        def _probe_type(theta: float | None) -> str:
+            return "NeutronProbe" if (theta is not None and theta > 0) else "QProbe"
+
+        data_files = state.get("data_files") or []
+        files_report: list[dict] = []
+        for ds in data_files:
+            theta = ds.get("theta")
+            files_report.append(
+                {
+                    "label": ds.get("label", ""),
+                    "path": ds.get("file", ""),
+                    "theta": theta,
+                    "dq_is_fwhm": ds.get("dq_is_fwhm"),
+                    "probe_type": _probe_type(theta),
+                }
+            )
+
+        warnings: list[str] = []
+        if len(files_report) > 1:
+            qprobes = [f for f in files_report if f["probe_type"] == "QProbe"]
+            nprobes = [f for f in files_report if f["probe_type"] == "NeutronProbe"]
+            if qprobes and nprobes:
+                q_labels = ", ".join(f["label"] for f in qprobes)
+                warnings.append(
+                    "Mixed probe types in co-refinement: "
+                    f"{q_labels} lack an incident angle and will be loaded "
+                    "as QProbe. sample_broadening and theta_offset "
+                    "cannot be applied to those files."
+                )
+            elif qprobes and not nprobes:
+                warnings.append(
+                    "All files loaded as QProbe (no incident angle "
+                    "detected). sample_broadening and theta_offset are "
+                    "unavailable — the files will be fit independently "
+                    "aside from structural parameters."
+                )
+
+        # Intake-stage messages (anything written during the intake node).
+        # We cannot filter perfectly without a node tag, but intake
+        # messages are always the first ones and tend to carry the
+        # "data validation" / "multi-file co-refinement" prefixes.
+        messages: list[str] = []
+        for m in state.get("messages", []) or []:
+            if not isinstance(m, dict):
+                continue
+            content = m.get("content", "")
+            if not content:
+                continue
+            if any(
+                tag in content
+                for tag in (
+                    "Data validation",
+                    "Multi-file co-refinement",
+                    "Understood sample structure",
+                    "could not load",
+                    "Could not parse sample",
+                )
+            ):
+                messages.append(content)
+
+        primary = {
+            "path": state.get("data_file", ""),
+            "dq_is_fwhm": state.get("dq_is_fwhm"),
+        }
+
+        return {
+            "primary_file": primary,
+            "files": files_report,
+            "warnings": warnings,
+            "messages": messages,
+        }
+
     def _read_bounds_from_model_definition(
         self,
         model: object | None = None,

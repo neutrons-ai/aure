@@ -186,6 +186,8 @@ def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
             n_layers=n_layers,
             skill_context=skill_context,
             per_file_results=latest_fit.get("per_file_results"),
+            fit_history=fit_results,
+            structural_hypotheses=state.get("structural_hypotheses", []),
         )
         used_fallback = analysis.pop("_used_fallback", False)
         updates["llm_calls"].append(
@@ -238,6 +240,8 @@ def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
 
     latest_fit["issues"] = analysis["issues"]
     latest_fit["suggestions"] = analysis["suggestions"]
+    latest_fit["next_action"] = analysis.get("next_action", "parameter_tweak")
+    latest_fit["proposed_hypothesis_id"] = analysis.get("proposed_hypothesis_id")
 
     if analysis["issues"]:
         logger.info(f"[EVALUATION] Issues found: {analysis['issues']}")
@@ -262,12 +266,14 @@ def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
         # the LLM from "refining" an already-degraded model.
         best_chi2 = state.get("best_chi2")
         best_model = state.get("best_model")
+        chi2_reverted = False
         if best_chi2 is not None and best_model and chi2 > best_chi2 * 1.05:
             logger.warning(
                 f"[EVALUATION] χ² regressed ({chi2:.3f} > best {best_chi2:.3f}) "
                 f"— reverting to best model before refinement"
             )
             updates["current_model"] = best_model
+            chi2_reverted = True
             analysis["issues"].insert(
                 0,
                 f"Previous refinement made the fit worse (χ² went from "
@@ -281,18 +287,20 @@ def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
         # Revert to the best BIC model (the simpler one).
         best_bic_val = state.get("best_bic")
         best_bic_mdl = state.get("best_bic_model")
+        bic_reverted = False
         if (
             bic is not None
             and best_bic_val is not None
             and best_bic_mdl
             and bic > best_bic_val
-            and updates.get("current_model") is None  # not already reverted above
+            and not chi2_reverted
         ):
             logger.warning(
                 f"[EVALUATION] BIC regressed ({bic:.1f} > best {best_bic_val:.1f}) "
                 f"\u2014 added complexity not justified, reverting to simpler model"
             )
             updates["current_model"] = best_bic_mdl
+            bic_reverted = True
             analysis["issues"].insert(
                 0,
                 f"Added layer(s) lowered χ² but increased BIC "
@@ -301,18 +309,98 @@ def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
                 f"the simpler model and trying a different approach.",
             )
 
+        # ========== Hypothesis status updates ==========
+        # Mark the previously tried hypothesis (if any) as confirmed or
+        # rejected based on how this iteration's result turned out. The
+        # full updated list is then passed into modeling for the next turn.
+        hypotheses = list(state.get("structural_hypotheses", []) or [])
+        if hypotheses:
+            hypotheses = _update_hypothesis_outcomes(
+                hypotheses=hypotheses,
+                current_iteration=iteration,
+                chi2=chi2,
+                best_chi2=best_chi2,
+                bic_reverted=bic_reverted,
+            )
+            updates["structural_hypotheses"] = hypotheses
+
+        # ========== Bounds-only refinement shortcut ==========
+        # If the ONLY thing that changed this iteration is an auto-bound
+        # expansion (no LLM-suggested refinements), skip the modeling node
+        # and go straight back to fitting with the expanded model. This
+        # avoids spending an entire LLM round on "widen bounds, re-fit".
+        llm_issues_excl_bounds = [
+            i
+            for i in analysis.get("issues", [])
+            if not ("bound" in i.lower() and "auto-expanded" in i.lower())
+        ]
+        llm_suggestions_excl_bounds = [
+            s for s in analysis.get("suggestions", []) if "bound" not in s.lower()
+        ]
+        only_bounds = (
+            bool(boundary_hits)
+            and not llm_issues_excl_bounds
+            and not llm_suggestions_excl_bounds
+        )
+        if only_bounds and not chi2_reverted and not bic_reverted:
+            updates["bounds_only_refinement"] = True
+            logger.info(
+                "[EVALUATION] Only bound-expansion needed — routing directly to fitting"
+            )
+        else:
+            updates["bounds_only_refinement"] = False
+
         logger.info("[EVALUATION] ✗ Fit not acceptable - proceeding to refinement")
         updates["messages"] = [
             Message(
                 role="assistant",
-                content=_format_evaluation(
-                    latest_fit, analysis, iteration=iteration
-                ),
+                content=_format_evaluation(latest_fit, analysis, iteration=iteration),
                 timestamp=None,
             )
         ]
 
     return updates
+
+
+def _update_hypothesis_outcomes(
+    hypotheses: list,
+    current_iteration: int,
+    chi2: float,
+    best_chi2: float | None,
+    bic_reverted: bool,
+) -> list:
+    """Update the status of a hypothesis that was tried in the previous turn.
+
+    This is bookkeeping, not decision-making: the LLM at modeling time marked
+    a hypothesis as ``tried`` for a specific iteration; now that the fit has
+    been scored we record the outcome. The LLM itself remains in charge of
+    choosing *which* hypothesis to try next.
+
+    * If a hypothesis was marked ``tried`` in the previous iteration and the
+      BIC guardrail just reverted the model, that hypothesis is marked
+      ``rejected``.
+    * If χ² improved relative to the best-so-far, the hypothesis is marked
+      ``confirmed``.
+    * Otherwise the status is left as ``tried`` so the LLM can decide.
+    """
+    prev_iter = current_iteration - 1
+    updated = [dict(h) for h in hypotheses]
+    for h in updated:
+        if h.get("status") != "tried":
+            continue
+        if h.get("tried_in_iteration") != prev_iter:
+            continue
+        if bic_reverted:
+            h["status"] = "rejected"
+            h["notes"] = (
+                (h.get("notes", "") + " ") if h.get("notes") else ""
+            ) + "BIC guardrail reverted the structural change."
+        elif best_chi2 is not None and chi2 <= best_chi2 * 1.01:
+            h["status"] = "confirmed"
+            h["notes"] = (
+                (h.get("notes", "") + " ") if h.get("notes") else ""
+            ) + f"χ²={chi2:.2f} at iter {current_iteration}."
+    return updated
 
 
 def analyze_fit_quality_with_llm(
@@ -330,6 +418,8 @@ def analyze_fit_quality_with_llm(
     n_layers: int = 0,
     skill_context: str = "",
     per_file_results: Optional[list] = None,
+    fit_history: Optional[list] = None,
+    structural_hypotheses: Optional[list] = None,
 ) -> Dict[str, Any]:
     """
     Use LLM to analyze fit quality in context.
@@ -357,6 +447,8 @@ def analyze_fit_quality_with_llm(
         n_layers=n_layers,
         skill_context=skill_context,
         per_file_results=per_file_results,
+        fit_history=fit_history,
+        structural_hypotheses=structural_hypotheses,
     )
 
     response = llm.invoke([HumanMessage(content=prompt)])
@@ -375,6 +467,8 @@ def analyze_fit_quality_with_llm(
                 "physical_concerns": result.get("physical_concerns", []),
                 "hypothesis_addressed": result.get("hypothesis_addressed", ""),
                 "needs_user_guidance": result.get("needs_user_guidance", False),
+                "next_action": result.get("next_action", "parameter_tweak"),
+                "proposed_hypothesis_id": result.get("proposed_hypothesis_id"),
                 "chi_squared": fit_result.get("chi_squared", float("inf")),
                 "_used_fallback": False,
             }
@@ -465,7 +559,11 @@ def _format_evaluation(
     fit_result: FitResult, analysis: Dict, *, iteration: int = 0
 ) -> str:
     """Format evaluation with issues and suggestions."""
-    header = f"## Fit Evaluation (iteration {iteration})" if iteration else "## Fit Evaluation"
+    header = (
+        f"## Fit Evaluation (iteration {iteration})"
+        if iteration
+        else "## Fit Evaluation"
+    )
     lines = [header]
     lines.append("")
     lines.append(f"**χ² = {fit_result['chi_squared']:.2f}**")

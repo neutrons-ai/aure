@@ -92,6 +92,7 @@ def create_workflow(include_fitting: bool = True) -> StateGraph:
             routing.route_after_evaluation,
             {
                 "modeling": "modeling",
+                "fitting": "fitting",
                 "complete": END,
                 "error": END,
             },

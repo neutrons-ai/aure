@@ -1,6 +1,5 @@
 """Tests for the Agent Skills infrastructure."""
 
-import json
 import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -30,7 +29,8 @@ class TestSkillRegistry:
         assert "polymer-films" in names
         assert "metal-oxide-interfaces" in names
         assert "solvent-contrast-matching" in names
-        assert len(names) == 5
+        assert "structural-hypothesis-ranking" in names
+        assert len(names) == 6
 
     def test_metadata_parsed_correctly(self):
         registry = SkillRegistry()
@@ -43,7 +43,7 @@ class TestSkillRegistry:
     def test_all_metadata_returns_list(self):
         registry = SkillRegistry()
         all_meta = registry.all_metadata()
-        assert len(all_meta) == 5
+        assert len(all_meta) == 6
         assert all(isinstance(m, SkillMetadata) for m in all_meta)
 
     def test_load_body(self):
@@ -72,7 +72,9 @@ class TestSkillRegistry:
     def test_descriptions_nonempty(self):
         registry = SkillRegistry()
         for meta in registry.all_metadata():
-            assert len(meta.description) > 10, f"Skill '{meta.name}' has too short a description"
+            assert len(meta.description) > 10, (
+                f"Skill '{meta.name}' has too short a description"
+            )
 
     def test_empty_directory(self, tmp_path):
         """Registry handles empty skills directory gracefully."""
@@ -132,9 +134,11 @@ class TestLLMSkillSelection:
         mock_response = MagicMock()
         mock_response.content = '["metal-oxide-interfaces", "sei-layer-analysis"]'
 
-        with patch("aure.llm.llm_available", return_value=True), \
-             patch("aure.llm.get_llm") as mock_get, \
-             patch("aure.llm.invoke_with_timeout", return_value=mock_response):
+        with (
+            patch("aure.llm.llm_available", return_value=True),
+            patch("aure.llm.get_llm") as mock_get,
+            patch("aure.llm.invoke_with_timeout", return_value=mock_response),
+        ):
             mock_get.return_value = MagicMock()
             result = select_skills(
                 "copper electrode with SEI",
@@ -149,9 +153,11 @@ class TestLLMSkillSelection:
         mock_response = MagicMock()
         mock_response.content = '["metal-oxide-interfaces", "nonexistent-skill"]'
 
-        with patch("aure.llm.llm_available", return_value=True), \
-             patch("aure.llm.get_llm") as mock_get, \
-             patch("aure.llm.invoke_with_timeout", return_value=mock_response):
+        with (
+            patch("aure.llm.llm_available", return_value=True),
+            patch("aure.llm.get_llm") as mock_get,
+            patch("aure.llm.invoke_with_timeout", return_value=mock_response),
+        ):
             mock_get.return_value = MagicMock()
             result = select_skills(
                 "copper sample",
@@ -165,25 +171,29 @@ class TestLLMSkillSelection:
         mock_response = MagicMock()
         mock_response.content = "[]"
 
-        with patch("aure.llm.llm_available", return_value=True), \
-             patch("aure.llm.get_llm") as mock_get, \
-             patch("aure.llm.invoke_with_timeout", return_value=mock_response):
+        with (
+            patch("aure.llm.llm_available", return_value=True),
+            patch("aure.llm.get_llm") as mock_get,
+            patch("aure.llm.invoke_with_timeout", return_value=mock_response),
+        ):
             mock_get.return_value = MagicMock()
             result = select_skills(
                 "simple silicon wafer",
                 registry=SkillRegistry(),
             )
-        assert result == ["neutron-reflectometry"]
+        assert set(result) == {"neutron-reflectometry", "structural-hypothesis-ranking"}
 
     def test_llm_failure_returns_baseline_only(self):
         """When LLM call raises, return baseline skill only."""
-        with patch("aure.llm.llm_available", return_value=True), \
-             patch("aure.llm.get_llm", side_effect=RuntimeError("no LLM")):
+        with (
+            patch("aure.llm.llm_available", return_value=True),
+            patch("aure.llm.get_llm", side_effect=RuntimeError("no LLM")),
+        ):
             result = select_skills(
                 "copper with native oxide layer",
                 registry=SkillRegistry(),
             )
-        assert result == ["neutron-reflectometry"]
+        assert set(result) == {"neutron-reflectometry", "structural-hypothesis-ranking"}
 
     def test_llm_unavailable_returns_baseline_only(self):
         """When no LLM is configured, return baseline skill only."""
@@ -192,16 +202,18 @@ class TestLLMSkillSelection:
                 "polystyrene thin film",
                 registry=SkillRegistry(),
             )
-        assert result == ["neutron-reflectometry"]
+        assert set(result) == {"neutron-reflectometry", "structural-hypothesis-ranking"}
 
     def test_llm_response_with_markdown_fences(self):
         """LLM wrapping response in ```json fences."""
         mock_response = MagicMock()
         mock_response.content = '```json\n["polymer-films"]\n```'
 
-        with patch("aure.llm.llm_available", return_value=True), \
-             patch("aure.llm.get_llm") as mock_get, \
-             patch("aure.llm.invoke_with_timeout", return_value=mock_response):
+        with (
+            patch("aure.llm.llm_available", return_value=True),
+            patch("aure.llm.get_llm") as mock_get,
+            patch("aure.llm.invoke_with_timeout", return_value=mock_response),
+        ):
             mock_get.return_value = MagicMock()
             result = select_skills(
                 "polystyrene sample",

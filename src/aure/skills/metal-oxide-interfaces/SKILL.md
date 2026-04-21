@@ -48,7 +48,10 @@ a thin native oxide layer typically forms.
 - **Thickness bounds**: 5–200 Å (for initial oxide layers)
 - **SLD bounds**: use ±2.0 around nominal oxide SLD
 - Oxide roughness is typically 3–15 Å
-- Prefer keeping the model simple (fewer layers) over adding speculative oxide layers
+- When a metal in contact with a reactive ambient has no oxide in the model,
+  adding one is normally the top-ranked structural hypothesis. Do NOT discard
+  it on the grounds of model simplicity — let BIC decide after it has been
+  tried once.
 
 ## Adhesion Layers
 
@@ -78,13 +81,22 @@ Thin adhesion layers (Ti, Cr) are prone to parameter trade-offs during fitting:
 
 ### Metal Surface Oxide
 
-If the outermost metal layer shows high χ² and there is no oxide in the model:
-- First try adjusting the metal's SLD and roughness bounds before adding an oxide.
-- Only add a surface oxide layer if χ² remains > 10 after parameter adjustments
-  AND residual fringes suggest a thin (10–50 Å) unmodeled layer.
-- When adding an oxide, use the table above for initial SLD and thickness values.
-- Do NOT add an oxide layer to a metal that is covered by another layer or solvent
-  unless the sample description indicates oxide formation is expected.
+If an outermost metal layer is in contact with air, D₂O/H₂O, or another
+reactive ambient and there is no oxide in the model, a native oxide is the
+**single most likely structural gap** — add it as a high-ranked hypothesis
+in the `structural-hypothesis-ranking` list at intake. For Cu in aqueous
+ambient: CuO, 10–50 Å, SLD 4.5–5.5. For Ti in aqueous ambient: TiO₂,
+10–50 Å, SLD 2.0–3.2. Roughness typically 3–15 Å.
+
+During refinement, if parameter-only tweaks have not reached the
+acceptance threshold and this hypothesis is `pending`, try it before
+further bound fiddling. Do not gate oxide addition on arbitrary χ²
+thresholds such as "only if χ² > 10" — a structural gap produces
+systematic residuals even at moderate χ², and the BIC guardrail will
+automatically revert the change if the added complexity is not justified.
+
+Do NOT add an oxide layer to a metal that is buried under another layer
+or a solvent unless the sample description explicitly asks for it.
 
 ### Multi-Layer Metal Stacks (e.g., Cu on Ti on Si)
 

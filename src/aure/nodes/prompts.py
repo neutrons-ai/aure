@@ -113,6 +113,97 @@ def format_sample_parse_prompt(
 
 
 # ============================================================================
+# STRUCTURAL HYPOTHESIS RANKING
+# ============================================================================
+
+STRUCTURAL_HYPOTHESIS_PROMPT = """You are producing a ranked list of candidate
+structural changes for a neutron reflectivity analysis. The analysis will
+start by fitting the baseline model below; this list is consulted only when
+parameter-only refinement fails to reach the χ² acceptance threshold.
+
+## Domain Knowledge (active skills)
+{skill_context}
+
+## Sample Description
+{sample_description}
+
+## Baseline Parsed Model
+- Substrate: {substrate}
+- Layers (substrate → ambient): {layers}
+- Ambient: {ambient}
+- Back-reflection geometry: {back_reflection}
+
+## Task
+
+Follow the `structural-hypothesis-ranking` skill. Enumerate plausible
+structural changes to this baseline model, ranked by expected value.
+
+For each hypothesis, produce:
+- `title`: one short line
+- `rationale`: one sentence citing an active skill by name
+- `change`: concrete structural edit in neutral terms (insertion point,
+  thickness range Å, SLD range 10⁻⁶ Å⁻², roughness range Å)
+- `skill_source`: name of the skill motivating the hypothesis
+
+Return 2–6 hypotheses in rank order. If no structural change is plausible
+(e.g. the user has specified a complete model and all relevant skills are
+satisfied), return an empty list.
+
+Apply the ranking criteria and the "avoid unless justified" list from the
+`structural-hypothesis-ranking` skill. Do NOT include changes to the
+back-reflection geometry, the stacking order, the data file, or fitting
+method.
+
+Respond with ONLY a JSON array of objects:
+
+```json
+[
+  {{
+    "title": "Add native CuO on top of Cu",
+    "rationale": "metal-oxide-interfaces: an outermost Cu layer exposed to D2O develops a 10-50 A native oxide unless otherwise stated",
+    "change": "insert a CuO layer of 10-50 A (SLD 4.5-5.5) between Cu and D2O, roughness 3-15 A",
+    "skill_source": "metal-oxide-interfaces"
+  }}
+]
+```
+
+Output ONLY the JSON array, no markdown fences, no other text.
+"""
+
+
+def format_structural_hypothesis_prompt(
+    sample_description: str,
+    parsed_sample: dict,
+    skill_context: str,
+) -> str:
+    """Format the prompt that asks the LLM to produce ranked structural
+    hypotheses from the parsed sample and active skill bodies.
+
+    The prompt is intentionally decoupled from the initial sample parse so
+    that the LLM sees the concrete baseline model (not a free-form
+    description) when reasoning about what might be missing.
+    """
+    sub = parsed_sample.get("substrate", {}) or {}
+    amb = parsed_sample.get("ambient", {}) or {}
+    layers = parsed_sample.get("layers", []) or []
+    layer_str = (
+        ", ".join(
+            f"{l.get('name', '?')} (~{l.get('thickness', '?')} Å, SLD {l.get('sld', '?')})"
+            for l in layers
+        )
+        or "(none)"
+    )
+    return STRUCTURAL_HYPOTHESIS_PROMPT.format(
+        skill_context=skill_context or "(no additional domain knowledge)",
+        sample_description=sample_description or "(not provided)",
+        substrate=f"{sub.get('name', '?')} (SLD {sub.get('sld', '?')})",
+        layers=layer_str,
+        ambient=f"{amb.get('name', '?')} (SLD {amb.get('sld', '?')})",
+        back_reflection=parsed_sample.get("back_reflection", False),
+    )
+
+
+# ============================================================================
 # FIT EVALUATION
 # ============================================================================
 
@@ -132,6 +223,9 @@ FIT_EVALUATION_PROMPT = """You are evaluating the results of a neutron reflectiv
 - Method: {method}
 - Converged: {converged}
 
+## χ² / BIC Trajectory (iterations in order)
+{trajectory}
+
 ## Per-File Fit Quality (multi-file co-refinement)
 {per_file_chi2}
 
@@ -150,12 +244,22 @@ FIT_EVALUATION_PROMPT = """You are evaluating the results of a neutron reflectiv
 ## Model Complexity
 {complexity_assessment}
 
+## Ranked Structural Hypotheses
+{structural_hypotheses}
+
 ## Task
 Analyze the fit quality and determine:
 1. Is this fit acceptable for the user's goals?
 2. Are the fitted parameters physically reasonable?
 3. Are there any issues or concerns?
 4. What specific improvements could be made?
+
+Use the trajectory and the hypothesis list to choose between a parameter
+change and a structural change — follow the `structural-hypothesis-ranking`
+skill. If parameter tweaks have stopped making meaningful progress and
+there is a `pending` hypothesis, your suggestion should be to realize that
+hypothesis (cite it by title). If a hypothesis was just `rejected` by the
+BIC guardrail, do not re-propose it.
 
 Respond in JSON format:
 {{
@@ -165,7 +269,9 @@ Respond in JSON format:
     "suggestions": ["<list of actionable suggestions for improvement>"],
     "physical_concerns": ["<any physically unreasonable parameter values>"],
     "hypothesis_addressed": "<how well does this fit address the user's hypothesis, if any>",
-    "needs_user_guidance": <true/false - should we ask the user before proceeding?>
+    "needs_user_guidance": <true/false - should we ask the user before proceeding?>,
+    "next_action": "<one of: 'parameter_tweak', 'structural_change', 'accept'>",
+    "proposed_hypothesis_id": <id of the hypothesis to try next, or null if next_action != 'structural_change'>
 }}
 
 **Acceptance threshold: χ² ≤ {chi2_max}.**
@@ -284,6 +390,50 @@ def _format_per_file_chi2(per_file_results: list | None) -> str:
     return "\n".join(lines)
 
 
+def _format_trajectory(
+    fit_history: list | None, chi2_current: float, bic_current: float | None
+) -> str:
+    """Format the χ² and BIC trajectory across past iterations.
+
+    ``fit_history`` is the state's ``fit_results`` list (one entry per past
+    fit). The *current* fit's χ²/BIC are appended as the last row.
+    """
+    lines = []
+    for i, fr in enumerate(fit_history or []):
+        chi2 = fr.get("chi_squared", float("inf"))
+        bic = fr.get("bic")
+        bic_str = f"BIC={bic:.1f}" if bic is not None else "BIC=?"
+        lines.append(f"  - iter {i}: χ²={chi2:.3f}, {bic_str}")
+    # Append current fit as a distinct line if it is not already the last
+    # history entry (it usually is).
+    if lines:
+        return "\n".join(lines)
+    bic_str = f"BIC={bic_current:.1f}" if bic_current is not None else "BIC=?"
+    return f"  - iter 0: χ²={chi2_current:.3f}, {bic_str}"
+
+
+def _format_structural_hypotheses(hypotheses: list | None) -> str:
+    """Format the structural hypothesis list for LLM prompts."""
+    if not hypotheses:
+        return "  (no structural hypotheses enumerated at intake)"
+    lines = []
+    for h in hypotheses:
+        status = h.get("status", "pending")
+        iter_ = h.get("tried_in_iteration")
+        iter_str = f", tried iter {iter_}" if iter_ is not None else ""
+        lines.append(
+            f"  - #{h.get('id', '?')} [{status}{iter_str}] **{h.get('title', '?')}** "
+            f"(source: {h.get('skill_source', '?')})"
+        )
+        if h.get("change"):
+            lines.append(f"      change: {h['change']}")
+        if h.get("rationale"):
+            lines.append(f"      rationale: {h['rationale']}")
+        if h.get("notes"):
+            lines.append(f"      notes: {h['notes']}")
+    return "\n".join(lines)
+
+
 def format_fit_evaluation_prompt(
     sample_description: str,
     hypothesis: str | None,
@@ -302,6 +452,8 @@ def format_fit_evaluation_prompt(
     n_layers: int = 0,
     skill_context: str = "",
     per_file_results: list | None = None,
+    fit_history: list | None = None,
+    structural_hypotheses: list | None = None,
 ) -> str:
     """
     Format the fit evaluation prompt.
@@ -370,6 +522,8 @@ def format_fit_evaluation_prompt(
         ),
         skill_context=skill_context or "(no additional domain knowledge)",
         per_file_chi2=_format_per_file_chi2(per_file_results),
+        trajectory=_format_trajectory(fit_history, chi_squared, bic),
+        structural_hypotheses=_format_structural_hypotheses(structural_hypotheses),
     )
 
 
@@ -567,6 +721,13 @@ MODEL_REFINEMENT_JSON_PROMPT = """You are refining a neutron reflectivity model 
 ## Residual Fringe Analysis
 {residual_analysis}
 
+## Ranked Structural Hypotheses
+{structural_hypotheses}
+
+## Evaluator's Chosen Next Action
+- `next_action`: {next_action}
+- `proposed_hypothesis_id`: {proposed_hypothesis_id}
+
 ## Task
 Generate an IMPROVED model definition that addresses the issues above.
 You must output a COMPLETE, valid JSON object matching this schema:
@@ -632,13 +793,25 @@ Rules:
 7. Apply all domain-specific rules from the Domain Knowledge section above.
 8. sample_broadening and theta_offset only work with angle-based probes (multi-segment data with theta info). Only set "enabled": true when angle info is available and the fit quality warrants it. These give each segment independent resolution/alignment corrections.
 9. When sample_broadening or theta_offset are already enabled and hitting bounds, widen their ranges.
+10. If the evaluator's `next_action` is `structural_change`, realize the
+    specified hypothesis (`proposed_hypothesis_id`) exactly as described in
+    its `change` field — insert/remove the layer at the correct position
+    with the suggested bounds. Also return an updated `structural_hypotheses`
+    list: mark that hypothesis with `status: "tried"` and stamp
+    `tried_in_iteration` with the current iteration. Preserve all other
+    hypotheses and their statuses verbatim.
+11. If `next_action` is `parameter_tweak`, keep the layer stack unchanged
+    and adjust only bounds/starting values. Return the `structural_hypotheses`
+    list unchanged.
 
 {user_constraints}
 
 IMPORTANT: If user feedback is provided below, it takes absolute priority over
 any of the rules above.
 
-Output ONLY the JSON object, no markdown fences, no explanation.
+Output ONLY the JSON object, no markdown fences, no explanation. The object
+may include an optional top-level `structural_hypotheses` array (the updated
+hypothesis list); if present, it must be the complete list.
 """
 
 
@@ -650,6 +823,9 @@ def format_model_refinement_prompt_json(
     user_constraints: str = "",
     user_feedback: str | None = None,
     skill_context: str = "",
+    structural_hypotheses: list | None = None,
+    next_action: str | None = None,
+    proposed_hypothesis_id: int | None = None,
 ) -> str:
     """Format the JSON-based model refinement prompt for the LLM.
 
@@ -751,6 +927,11 @@ def format_model_refinement_prompt_json(
                 fit_result.get("residual_analysis")
             ),
             skill_context=skill_context or "(no additional domain knowledge)",
+            structural_hypotheses=_format_structural_hypotheses(structural_hypotheses),
+            next_action=next_action or "parameter_tweak",
+            proposed_hypothesis_id=(
+                proposed_hypothesis_id if proposed_hypothesis_id is not None else "null"
+            ),
         )
         + feedback_section
     )

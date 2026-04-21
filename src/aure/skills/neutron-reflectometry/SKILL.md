@@ -39,10 +39,10 @@ def create_probe(data_file, theta):
         radiation="neutron",
         resolution="uniform",
     )
-    return probe 
+    return probe
 ```
 
-During data intake, AuRE needs to recognize when multiple files represent different segments of the same measurement (usually identified by the first run number, which is sometimes called sequence_id) and set up the co-refinement with shared structural parameters but independent normalization, angle offset parameters (if needed - not by default), 
+During data intake, AuRE needs to recognize when multiple files represent different segments of the same measurement (usually identified by the first run number, which is sometimes called sequence_id) and set up the co-refinement with shared structural parameters but independent normalization, angle offset parameters (if needed - not by default),
 and sample broadening (if needed - not by default).
 
 The following is an example meta data header for a combined REF_L data file:
@@ -59,13 +59,13 @@ The following is an example meta data header for a combined REF_L data file:
 # Theta offset: 0.0
 # Stitching type: None
 # DataRun   NormRun   TwoTheta(deg)  LambdaMin(A)   LambdaMax(A) Qmin(1/A)    Qmax(1/A)    SF_A         SF_B          SF
-# 226613    226559    0.739463       2.74975        9.4987       0.0085       0.0294       4.0          0            1.0         
-# 226614    226560    2.39957        2.74978        9.49867      0.0277       0.0956       25.0         0            1.0         
-# 226615    226561    7.00027        2.74977        9.49868      0.0807       0.2790       196.0        0            1.0         
-# Q [1/Angstrom]        R                     dR                    dQ [FWHM] 
+# 226613    226559    0.739463       2.74975        9.4987       0.0085       0.0294       4.0          0            1.0
+# 226614    226560    2.39957        2.74978        9.49867      0.0277       0.0956       25.0         0            1.0
+# 226615    226561    7.00027        2.74977        9.49868      0.0807       0.2790       196.0        0            1.0
+# Q [1/Angstrom]        R                     dR                    dQ [FWHM]
 ```
 
-The experiment and data run information is at the top of the header. The table at the bottom lists the runs (segements) included in the data file. For each run/segment, TwoTheta represents 2 times the incident angle. 
+The experiment and data run information is at the top of the header. The table at the bottom lists the runs (segements) included in the data file. For each run/segment, TwoTheta represents 2 times the incident angle.
 
 For data files representing an individal run/segment, the table in the header will only have one row, and the TwoTheta value will correspond to that single segment. In this case, we can directly apply any necessary angle offset to the entire model when fitting that file.
 
@@ -108,11 +108,14 @@ For data files representing an individal run/segment, the table in the header wi
 - Lower BIC is better.
 - Each layer adds 3 free parameters (thickness, SLD, roughness).
 - Adding a layer must produce a substantial χ² improvement to lower BIC.
-- Do NOT suggest adding layers unless the BIC would clearly improve.
-- Do NOT split existing layers into sublayers (e.g., CuO + Cu₂O) unless χ² > 10
-  with clear evidence in residuals of unmodeled contrast steps.
-- If a previous attempt to add a layer was reverted due to BIC regression,
-  do NOT re-add the same layer — try a different approach.
+- The workflow auto-reverts a structural change that worsens BIC, so you do
+  not need to predict BIC impact perfectly. Propose the top-ranked
+  hypothesis from the `structural_hypotheses` list; if BIC regresses, the
+  guardrail will revert and mark that hypothesis `rejected`.
+- Do NOT re-propose a hypothesis that was just rejected for BIC regression —
+  pick the next `pending` hypothesis instead.
+- Do NOT split existing layers into sublayers (e.g., CuO + Cu₂O) unless
+  χ² > 10 with clear evidence in residuals of unmodeled contrast steps.
 
 ## Roughness Constraints
 
@@ -159,25 +162,42 @@ you MUST add it.
 
 ## Refinement Strategy — General
 
-When χ² is above the acceptance threshold, follow this priority order:
+When χ² is above the acceptance threshold, decide between a *parameter*
+change and a *structural* change. Consult the live `structural_hypotheses`
+list (ranked at intake by the `structural-hypothesis-ranking` skill) and the
+χ²/BIC trajectory of the fit history.
 
-1. **Constrain unphysical parameters first.** If a fitted value is far from its
-   nominal/expected value (e.g., Ti thickness 5× nominal), tighten that parameter's
-   bounds to a physically realistic range before trying other changes.
-2. **Widen bounds on parameters hitting limits.** If a parameter is pinned at its
-   bound, widen that bound — but only in the physically plausible direction.
-3. **Adjust starting values.** Set starting values to the best-fit values from the
-   previous iteration where they are physically reasonable.
-4. **Check the ambient SLD.** If the fitted ambient SLD deviates significantly from
-   the expected value for the stated solvent, flag this and constrain it. This is a
-   common source of high χ² that does not require structural model changes.
-5. **Enable sample_broadening for multi-segment data when indicated** (see below).
-6. **Structural changes are a last resort.** Only add or remove layers when:
-   - χ² remains > 10 after parameter adjustments, AND
-   - residual fringes clearly indicate an unmodeled layer, AND
-   - BIC analysis supports the added complexity.
-7. **Never make multiple structural changes at once.** Add or remove one layer at
-   a time so the effect can be evaluated.
+Parameter changes, in order of preference:
+
+1. **Constrain unphysical parameters.** If a fitted value is far from its
+   nominal/expected value (e.g. Ti thickness 5× nominal), tighten that
+   parameter's bounds to a physically realistic range.
+2. **Widen bounds on parameters hitting limits.** If a parameter is pinned
+   at its bound, widen it in the physically plausible direction only.
+3. **Adjust starting values** to the best-fit values from the previous
+   iteration where physically reasonable.
+4. **Check the ambient SLD.** If the fitted ambient SLD deviates from the
+   expected solvent value, flag and constrain it.
+5. **Enable `sample_broadening`** for multi-segment data when indicated
+   (see the multi-segment section below).
+
+Structural changes:
+
+6. When χ² has stopped improving meaningfully under parameter tweaks
+   (see the `structural-hypothesis-ranking` skill for what "meaningfully"
+   means), propose the top `pending` hypothesis from the ranked list. Do
+   not invent new structural changes on the spot; use the ranked list.
+7. The BIC guardrail will automatically revert a structural change that
+   worsens the complexity-adjusted score. If that happens, mark the
+   hypothesis `rejected` and move to the next one — do not retry the same
+   hypothesis with different parameters.
+8. **Never make multiple structural changes at once.** Add or remove one
+   layer at a time so the effect can be evaluated.
+
+Do **not** gate structural changes on an arbitrary χ² threshold such as
+"> 10". The ranking at intake already expresses which structural changes
+are high-prior for this sample; the workflow's job is to walk that list in
+order rather than to prevent changes until things are catastrophic.
 
 ## Refinement Strategy — Multi-Segment Co-refinement
 
@@ -232,10 +252,16 @@ correction; values larger than ±0.1° suggest a more serious calibration issue.
 
 When per-segment χ² values are uneven (one segment much worse than others):
 
-1. **First:** Check intensity normalization — widen intensity bounds if a segment
-   is hitting its limit.
-2. **Second:** Enable `sample_broadening` — this is the most common cause of
+1. **First:** Check intensity normalization — widen intensity bounds if a
+   segment is hitting its limit.
+2. **Second:** Enable `sample_broadening` — this is a common cause of
    uneven segment fits, especially when the low-Q segment is worst.
-3. **Third:** Enable `theta_offset` — only if overlap regions show misalignment.
-4. **Last:** Consider structural changes — only if broadening and offset do not
-   resolve the issue and residual fringes indicate a missing layer.
+3. **Third:** Enable `theta_offset` — only if overlap regions show
+   misalignment.
+4. **In parallel**, consult the `structural_hypotheses` list. An uneven
+   low-Q fit combined with a pending "add surface layer" hypothesis is a
+   classic signature of a missing top layer (e.g. a native oxide): do not
+   delay the structural change until broadening and offset have been
+   exhausted if the hypothesis list already contains a high-prior
+   candidate. `sample_broadening` is a *resolution* correction; it cannot
+   compensate for a missing layer.
