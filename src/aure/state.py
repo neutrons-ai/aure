@@ -87,6 +87,16 @@ class ModelDefinition(TypedDict, total=False):
     intensity: IntensityInfo
     dq_is_fwhm: bool  # Whether dQ column is FWHM (True) or 1-sigma (False)
 
+    # ---- Multi-state co-refinement ----
+    # When ``states`` is present and non-empty it is the source of truth for
+    # data files and per-measurement settings. ``data_file`` / ``intensity``
+    # / ``back_reflection`` above remain as the legacy single-state shape and
+    # are synthesised from ``states[0]`` when needed (and vice versa via
+    # :func:`iter_states`).
+    states: List["StateDefinition"]
+    shared_parameters: List[str]  # Whitelist of "Layer.attr" tied across states
+    unshared_parameters: List[str]  # Blacklist; mutually exclusive with above
+
     # ---- Post-fit snapshots (populated after fitting) ----
     fitted_parameters: dict  # {param_name: value}
     fitted_uncertainties: dict  # {param_name: uncertainty}
@@ -138,11 +148,43 @@ class PerFileFitResult(TypedDict, total=False):
 
     file: str
     label: str
+    state: str  # State name (multi-state co-refinement); absent or "" for single-state
     chi_squared: float
     Q_fit: List[float]
     R_fit: List[float]
     residuals: List[float]
     residual_ratio: List[float]
+
+
+class StateDefinition(TypedDict, total=False):
+    """One physical state of the sample in a multi-state co-refinement.
+
+    A *state* groups one or more data files that share a single refl1d
+    ``Sample`` — i.e. every layer parameter is tied across the state's
+    files. Across states, only the attributes named in
+    ``ModelDefinition.shared_parameters`` (or implied by the default
+    tied set) are tied; all others vary independently per state.
+
+    Within one state, all data files must be the same kind: either a
+    single combined file (``REFL_{set}_combined_data_auto.txt``) or N
+    partial files sharing one ``set_id``. Mixing combined and partial
+    files within one state is rejected.
+
+    Per-state nuisance parameters (``theta_offset``, ``sample_broadening``)
+    are only meaningful for partials states. ``ambient``, ``intensity``,
+    and ``back_reflection`` are always per-state (they describe the
+    measurement, not the sample structure) but inherit the model-level
+    defaults when omitted.
+    """
+
+    name: str  # Unique within the model definition
+    data_files: List[DatasetInfo]  # Combined OR partials of one set_id
+    extra_description: str  # Appended to sample_description when prompting the LLM
+    back_reflection: bool  # Per-state stack orientation
+    theta_offset: dict  # {init, min, max} — partials only
+    sample_broadening: dict  # {init, min, max} — partials only
+    ambient: AmbientInfo  # Per-state override of the model-level ambient
+    intensity: IntensityInfo  # Per-state override of the model-level intensity
 
 
 class FitResult(TypedDict):
@@ -249,6 +291,7 @@ class ReflectivityState(TypedDict):
     # ========== Input Data ==========
     data_file: str  # Primary data file (always set)
     data_files: List[DatasetInfo]  # All data files for multi-file co-refinement
+    states: List[StateDefinition]  # Per-state grouping (empty for single-state)
     dq_is_fwhm: bool  # Whether dQ in primary data_file is FWHM (True) or 1-sigma
     Q: List[float]
     R: List[float]
@@ -310,6 +353,7 @@ def create_initial_state(
     max_iterations: int = 5,
     user_config: Optional[dict] = None,
     data_files: Optional[List[dict]] = None,
+    states: Optional[List[dict]] = None,
 ) -> ReflectivityState:
     """
     Create initial state for a new analysis workflow.
@@ -321,14 +365,21 @@ def create_initial_state(
         max_iterations: Maximum refinement iterations
         user_config: Optional user-supplied YAML configuration
         data_files: Optional list of DatasetInfo dicts for multi-file co-refinement
+        states: Optional list of StateDefinition dicts for multi-state
+            co-refinement.  When provided, ``data_files`` is auto-populated
+            as the flattened concatenation of every state's ``data_files``.
 
     Returns:
         Initial workflow state
     """
+    resolved_states: List[dict] = list(states or [])
+    if resolved_states and not data_files:
+        data_files = flatten_data_files(resolved_states)
     return ReflectivityState(
         # Input data (to be filled by intake node)
         data_file=data_file,
         data_files=data_files or [],
+        states=resolved_states,
         dq_is_fwhm=True,  # Default; overridden by intake after header inspection
         Q=[],
         R=[],
@@ -369,3 +420,75 @@ def create_initial_state(
         user_config=user_config,
         bounds_only_refinement=False,
     )
+
+
+# ============================================================================
+# State helpers (multi-state co-refinement)
+# ============================================================================
+
+
+_DEFAULT_STATE_NAME = "state0"
+
+
+def iter_states(definition: dict) -> List[dict]:
+    """Return the list of states for a model definition.
+
+    Synthesises a single-state view from the legacy single-file shape when
+    ``definition["states"]`` is absent or empty, so existing callers
+    continue to work unchanged.
+
+    Parameters
+    ----------
+    definition
+        A :class:`ModelDefinition`-shaped dict, or a
+        :class:`ReflectivityState`-shaped dict (only the relevant keys are
+        read in either case).
+
+    Returns
+    -------
+    list of dict
+        A list of :class:`StateDefinition`-shaped dicts. The list always
+        has at least one entry; when ``definition`` carries explicit
+        ``states``, the list is returned verbatim (not copied).
+    """
+    states = definition.get("states") or []
+    if states:
+        return list(states)
+
+    # Synthesise a 1-state view from the legacy fields.
+    data_files = list(definition.get("data_files") or [])
+    if not data_files:
+        primary = definition.get("data_file")
+        if primary:
+            data_files = [{"file": primary, "label": "primary"}]
+
+    synthetic: dict = {
+        "name": _DEFAULT_STATE_NAME,
+        "data_files": data_files,
+    }
+    if "intensity" in definition:
+        synthetic["intensity"] = definition["intensity"]
+    if "ambient" in definition:
+        synthetic["ambient"] = definition["ambient"]
+    if "back_reflection" in definition:
+        synthetic["back_reflection"] = definition["back_reflection"]
+    return [synthetic]
+
+
+def flatten_data_files(states: List[dict]) -> List[dict]:
+    """Flatten the per-state ``data_files`` lists into one ordered list.
+
+    Order is state-by-state, then file-by-file within each state. This
+    is the layout used by the multi-file fitting path and by web/plotting
+    helpers that group by ``label``.
+    """
+    flat: List[dict] = []
+    for state in states:
+        for ds in state.get("data_files", []) or []:
+            flat.append(ds)
+    return flat
+
+
+def is_multi_state(definition: dict) -> bool:
+    """Return True if *definition* has more than one explicit state."""
+    return len(definition.get("states") or []) > 1

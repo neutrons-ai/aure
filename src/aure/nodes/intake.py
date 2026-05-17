@@ -390,6 +390,50 @@ def _format_hypotheses_summary(hypotheses: list[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+# ----------------------------------------------------------------------
+# Multi-state helpers (Ticket 05)
+# ----------------------------------------------------------------------
+
+# Filename heuristics for REF_L instrument set_id detection.
+_SET_ID_COMBINED_RE = re.compile(r"REFL_(\d+)_combined_data_auto\.txt$", re.IGNORECASE)
+_SET_ID_PARTIAL_RE = re.compile(r"REFL_(\d+)_\d+_\d+_partial\.txt$", re.IGNORECASE)
+
+
+def _extract_set_id(file_path: str) -> str | None:
+    """Return the REF_L set_id encoded in *file_path* or None if absent."""
+    import os
+
+    name = os.path.basename(file_path)
+    for pattern in (_SET_ID_COMBINED_RE, _SET_ID_PARTIAL_RE):
+        m = pattern.search(name)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _enrich_dataset(ds: dict) -> dict:
+    """Load Q/R/dR + parse header metadata for a single ``DatasetInfo``.
+
+    Returns a new dict; raises on load failure so the caller can decide
+    whether to abort or downgrade to a warning.
+    """
+    enriched = dict(ds)
+    data = load_reflectivity_data(ds["file"])
+    validate_reflectivity_data(data["Q"], data["R"], data.get("dR"))
+    enriched["Q"] = data["Q"].tolist()
+    enriched["R"] = data["R"].tolist()
+    if data.get("dR") is not None:
+        enriched["dR"] = data["dR"].tolist()
+    else:
+        enriched["dR"] = [0.0] * len(data["Q"])
+
+    meta = parse_file_header(ds["file"])
+    enriched.setdefault("theta", meta["theta"])
+    enriched.setdefault("dq_is_fwhm", meta["dq_is_fwhm"])
+    enriched.setdefault("num_segments", meta.get("num_segments", 0))
+    return enriched
+
+
 def intake_node(state: ReflectivityState) -> Dict[str, Any]:
     """
     Load data and parse sample description.
@@ -428,30 +472,107 @@ def intake_node(state: ReflectivityState) -> Dict[str, Any]:
         # Build data_files list for multi-file co-refinement
 
         existing_data_files = state.get("data_files", [])
-        if existing_data_files:
+        states_in = state.get("states", []) or []
+        is_multi = len(states_in) > 1
+
+        if is_multi:
+            # ===== Multi-state path (Ticket 05) =====
+            # Each state's data_files is enriched in place with header
+            # metadata + Q/R/dR for plotting. The flat ``data_files``
+            # list is rebuilt to match for compatibility with downstream
+            # nodes that still iterate it.
+            enriched_states: list[dict] = []
+            flat_files: list[dict] = []
+            kind_errors: list[str] = []
+            for st in states_in:
+                st_files = st.get("data_files") or []
+                enriched_files: list[dict] = []
+                set_ids: set[str] = set()
+                for ds in st_files:
+                    try:
+                        enriched_ds = _enrich_dataset(ds)
+                    except Exception as exc:
+                        updates["messages"].append(
+                            Message(
+                                role="system",
+                                content=(
+                                    f"Warning: could not load "
+                                    f"{ds.get('label', ds.get('file'))}: {exc}"
+                                ),
+                                timestamp=None,
+                            )
+                        )
+                        continue
+                    sid = _extract_set_id(ds["file"])
+                    if sid:
+                        set_ids.add(sid)
+                    enriched_files.append(enriched_ds)
+                    flat_files.append(enriched_ds)
+                if len(set_ids) > 1:
+                    kind_errors.append(
+                        f"State {st.get('name')!r}: partial files mix set_ids "
+                        f"{sorted(set_ids)} — each state must contain files "
+                        f"from a single REF_L set."
+                    )
+                new_state = dict(st)
+                new_state["data_files"] = enriched_files
+                enriched_states.append(new_state)
+
+            if kind_errors:
+                updates["error"] = "; ".join(kind_errors)
+                updates["messages"].append(
+                    Message(
+                        role="system",
+                        content=updates["error"],
+                        timestamp=None,
+                    )
+                )
+                return updates
+
+            updates["states"] = enriched_states
+            updates["data_files"] = flat_files
+            n_files = len(flat_files)
+            labels = ", ".join(s["name"] for s in enriched_states)
+            updates["messages"].append(
+                Message(
+                    role="system",
+                    content=(
+                        f"Multi-state co-refinement: {len(enriched_states)} "
+                        f"states ({labels}), {n_files} files total"
+                    ),
+                    timestamp=None,
+                )
+            )
+        elif existing_data_files:
+            # ===== Legacy flat multi-file path =====
+            # Detect ambiguous flat multi-combined: if header inspection
+            # finds more than one distinct set_id, recommend the new
+            # ``states:`` config schema instead of silently treating the
+            # files as one shared sample.
+            distinct_set_ids: set[str] = set()
+            for ds in existing_data_files:
+                sid = _extract_set_id(ds["file"])
+                if sid:
+                    distinct_set_ids.add(sid)
+            if len(distinct_set_ids) > 1:
+                msg = (
+                    "Ambiguous multi-file invocation: the supplied files "
+                    f"come from {len(distinct_set_ids)} different REF_L sets "
+                    f"({sorted(distinct_set_ids)}). Re-run with a config "
+                    "file that defines a `states:` block, one state per "
+                    "physical sample. See aure_config.example.yaml."
+                )
+                updates["error"] = msg
+                updates["messages"].append(
+                    Message(role="system", content=msg, timestamp=None)
+                )
+                return updates
+
             # Multi-file mode: validate all additional files
             validated_files = []
             for ds in existing_data_files:
                 try:
-                    extra_data = load_reflectivity_data(ds["file"])
-                    validate_reflectivity_data(
-                        extra_data["Q"], extra_data["R"], extra_data.get("dR")
-                    )
-                    # Store experimental Q/R/dR for plotting
-                    enriched = dict(ds)
-                    enriched["Q"] = extra_data["Q"].tolist()
-                    enriched["R"] = extra_data["R"].tolist()
-                    enriched["dR"] = (
-                        extra_data.get("dR", [0.0] * len(extra_data["Q"])).tolist()
-                        if extra_data.get("dR") is not None
-                        else [0.0] * len(extra_data["Q"])
-                    )
-                    # Parse header metadata (dQ convention, theta, etc.)
-                    meta = parse_file_header(ds["file"])
-                    if "theta" not in enriched:
-                        enriched["theta"] = meta["theta"]
-                    if "dq_is_fwhm" not in enriched:
-                        enriched["dq_is_fwhm"] = meta["dq_is_fwhm"]
+                    enriched = _enrich_dataset(ds)
                     validated_files.append(enriched)
                 except Exception as e:
                     updates["messages"].append(
@@ -514,6 +635,13 @@ def intake_node(state: ReflectivityState) -> Dict[str, Any]:
                 parsed_sample=parsed,
                 registry=registry,
             )
+            # Activate the multi-state co-refinement skill when applicable.
+            if len(state.get("states") or []) > 1 and (
+                "multi-state-corefinement" not in active_skills
+            ):
+                active_skills = sorted(
+                    set(active_skills) | {"multi-state-corefinement"}
+                )
             updates["active_skills"] = active_skills
             updates["llm_calls"].append(
                 LLMCallRecord(

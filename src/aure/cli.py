@@ -502,18 +502,65 @@ def analyze(
 
     from .workflow import run_analysis
 
-    # Load user config (evaluation criteria / model constraints)
-    user_config = load_user_config(config_file)
+    # Load user config (evaluation criteria / model constraints / states)
+    try:
+        user_config = load_user_config(config_file)
+    except Exception as e:
+        click.echo(click.style(f"  Config error: {e}", fg="red"))
+        sys.exit(2)
 
-    # Build data_files list for multi-file co-refinement
-    all_files = [data_file] + list(extra_data)
+    from .config import states_from_config
+
+    config_states = states_from_config(user_config)
+
+    # ------------------------------------------------------------------
+    # Multi-state path: states defined in the config drive the workflow.
+    # CLI ``--extra-data`` is incompatible with config-driven states.
+    # The positional DATA_FILE may be left at its default but must not
+    # conflict with what the config declares.
+    # ------------------------------------------------------------------
     data_files = None
-    if len(all_files) > 1:
-        from pathlib import Path as _Path
+    states = None
+    if config_states:
+        if extra_data:
+            click.echo(
+                click.style(
+                    "  Cannot combine --extra-data with `states:` in the config. "
+                    "Move all data files into the config's states block.",
+                    fg="red",
+                )
+            )
+            sys.exit(2)
+        states = config_states
+        # Override the positional DATA_FILE with the first state's first file
+        # so downstream paths that still read state["data_file"] keep working.
+        from .state import flatten_data_files as _flatten
 
-        data_files = [
-            {"file": str(_Path(f).resolve()), "label": _Path(f).stem} for f in all_files
-        ]
+        flat = _flatten(config_states)
+        data_files = flat
+        if flat:
+            from pathlib import Path as _Path
+
+            first = flat[0]["file"]
+            if _Path(data_file).resolve() != _Path(first).resolve():
+                click.echo(
+                    click.style(
+                        f"  Note: positional DATA_FILE ignored; using state files "
+                        f"declared in {config_file}.",
+                        fg="yellow",
+                    )
+                )
+            data_file = first
+    else:
+        # Build data_files list for the legacy multi-file co-refinement path.
+        all_files = [data_file] + list(extra_data)
+        if len(all_files) > 1:
+            from pathlib import Path as _Path
+
+            data_files = [
+                {"file": str(_Path(f).resolve()), "label": _Path(f).stem}
+                for f in all_files
+            ]
 
     if not output_json:
         click.echo(click.style("═" * 60, fg="blue"))
@@ -528,7 +575,15 @@ def analyze(
         click.echo()
 
         click.echo(f"  Data file: {data_file}")
-        if extra_data:
+        if states:
+            for st in states:
+                names = ", ".join(ds["label"] for ds in st.get("data_files", []))
+                click.echo(f"  State {st['name']}: {names}")
+            click.echo(
+                f"  Multi-state co-refinement: {len(states)} states, "
+                f"{sum(len(s.get('data_files', [])) for s in states)} files"
+            )
+        elif extra_data:
             for ef in extra_data:
                 click.echo(f"  Extra data: {ef}")
             click.echo(f"  Co-refinement: {len(all_files)} files (shared structure)")
@@ -575,6 +630,7 @@ def analyze(
             checkpoint_callback=checkpoint_callback if not output_json else None,
             user_config=user_config,
             data_files=data_files,
+            states=states,
         )
     except Exception as e:
         if output_json:
@@ -923,7 +979,9 @@ def prepare(
 
     # Write problem.json (bumps-serialised) and _definition.json (raw ModelDefinition)
     problem_path = Path(resolved_output_dir) / f"{resolved_model_name}.json"
-    definition_path = Path(resolved_output_dir) / f"{resolved_model_name}_definition.json"
+    definition_path = (
+        Path(resolved_output_dir) / f"{resolved_model_name}_definition.json"
+    )
     try:
         if isinstance(model, str):
             raise RuntimeError(
@@ -1083,6 +1141,14 @@ def batch(manifest: str, job: tuple, dry_run: bool):
                     df if isinstance(df, str) else df["file"], manifest_dir
                 )
                 click.echo(f"             + {extra}")
+        # Show multi-state co-refinement
+        if merged.get("states"):
+            for st in merged["states"]:
+                files = st.get("data_files") or []
+                names = ", ".join(
+                    Path(df if isinstance(df, str) else df["file"]).name for df in files
+                )
+                click.echo(f"      state  : {st.get('name', '?')} ({names})")
         click.echo(f"      sample : {merged['sample_description'][:72]}")
         click.echo(f"      output : {output_dir}")
         if merged.get("hypothesis"):
@@ -1127,6 +1193,57 @@ def batch(manifest: str, job: tuple, dry_run: bool):
             ]
             data_files = [{"file": str(f), "label": Path(f).stem} for f in all_files]
 
+        # Multi-state co-refinement (Ticket 10): a job may declare a `states:`
+        # block that mirrors the user-config YAML. When present it overrides
+        # `data_files` and supplies cross-state parameter ties.
+        states = None
+        job_user_config: dict = {}
+        raw_states = merged.get("states")
+        if raw_states:
+            if data_files:
+                raise click.BadParameter(
+                    f"Job '{name}': cannot combine `states:` with `data_files:`. "
+                    "Move all files into the states block."
+                )
+            # Resolve every state's file paths against the manifest directory
+            resolved_states: list[dict] = []
+            for st in raw_states:
+                st_copy = dict(st)
+                st_copy["data_files"] = [
+                    {
+                        **(df if isinstance(df, dict) else {"file": df}),
+                        "file": str(
+                            _resolve_path(
+                                df if isinstance(df, str) else df["file"],
+                                manifest_dir,
+                            )
+                        ),
+                    }
+                    for df in (st.get("data_files") or [])
+                ]
+                resolved_states.append(st_copy)
+            user_cfg_for_states: dict = {"states": resolved_states}
+            if "shared_parameters" in merged:
+                user_cfg_for_states["shared_parameters"] = merged["shared_parameters"]
+            if "unshared_parameters" in merged:
+                user_cfg_for_states["unshared_parameters"] = merged[
+                    "unshared_parameters"
+                ]
+            from .config import states_from_config
+
+            states = states_from_config(user_cfg_for_states)
+            # Override data_file with the first state's first file so the
+            # workflow's positional arg is always real.
+            from .state import flatten_data_files as _flatten_batch
+
+            flat = _flatten_batch(states)
+            if flat:
+                data_file = flat[0]["file"]
+            if "shared_parameters" in merged:
+                job_user_config["shared_parameters"] = merged["shared_parameters"]
+            if "unshared_parameters" in merged:
+                job_user_config["unshared_parameters"] = merged["unshared_parameters"]
+
         click.echo(click.style(f"  [{idx}/{len(jobs)}] {name}", fg="cyan", bold=True))
 
         # Apply per-job env overrides (restored after each job)
@@ -1163,6 +1280,8 @@ def batch(manifest: str, job: tuple, dry_run: bool):
                     output_dir=output_dir,
                     checkpoint_callback=checkpoint_cb if not output_json else None,
                     data_files=data_files,
+                    states=states,
+                    user_config=job_user_config or None,
                 )
                 model = result.get("current_model")
                 if not model:
@@ -1174,12 +1293,16 @@ def batch(manifest: str, job: tuple, dry_run: bool):
 
                 resolved_model_name = merged.get("model_name", name)
                 problem_path = Path(output_dir) / f"{resolved_model_name}.json"
-                definition_path = Path(output_dir) / f"{resolved_model_name}_definition.json"
+                definition_path = (
+                    Path(output_dir) / f"{resolved_model_name}_definition.json"
+                )
                 loaded_data_files = result.get("data_files") or []
                 save_problem_json(
                     model,
                     problem_path,
-                    data_files=loaded_data_files if len(loaded_data_files) > 1 else None,
+                    data_files=loaded_data_files
+                    if len(loaded_data_files) > 1
+                    else None,
                 )
                 sidecar = dict(model)
                 if loaded_data_files:
@@ -1232,6 +1355,8 @@ def batch(manifest: str, job: tuple, dry_run: bool):
                     output_dir=output_dir,
                     checkpoint_callback=checkpoint_cb if not output_json else None,
                     data_files=data_files,
+                    states=states,
+                    user_config=job_user_config or None,
                 )
                 chi2 = None
                 if result.get("fit_results"):

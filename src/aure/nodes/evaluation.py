@@ -140,7 +140,48 @@ def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
     chi2_max = _get_chi2_max()
     residual_ratio = latest_fit.get("residual_ratio", [])
     Q = state.get("Q", [])
-    if residual_ratio and Q and chi2 > chi2_max:
+    per_file_results = latest_fit.get("per_file_results") or []
+    states_in_fit = sorted(
+        {pf.get("state") for pf in per_file_results if pf.get("state")}
+    )
+    if states_in_fit and chi2 > chi2_max:
+        # Multi-state path: analyse each state's per-file ratios independently.
+        try:
+            from ..tools.feature_tools import analyze_residual_fringes
+        except Exception as e:
+            logger.debug(f"[EVALUATION] Residual fringe import failed: {e}")
+            analyze_residual_fringes = None  # type: ignore[assignment]
+
+        per_state_analysis: dict = {}
+        if analyze_residual_fringes is not None:
+            for st_name in states_in_fit:
+                Qs: list = []
+                Rs: list = []
+                for pf in per_file_results:
+                    if pf.get("state") != st_name:
+                        continue
+                    Qs.extend(pf.get("Q_fit") or [])
+                    Rs.extend(pf.get("residual_ratio") or [])
+                if not (Qs and Rs and len(Qs) == len(Rs)):
+                    continue
+                try:
+                    ra = analyze_residual_fringes(np.array(Qs), np.array(Rs))
+                    per_state_analysis[st_name] = ra
+                    if ra.get("has_residual_fringes"):
+                        for t in ra.get("unmodeled_thicknesses", []):
+                            logger.info(
+                                f"[EVALUATION] [{st_name}] residual fringes "
+                                f"suggest unmodeled layer ~{t['thickness']:.0f} Å "
+                                f"({t['confidence']} confidence)"
+                            )
+                except Exception as e:
+                    logger.debug(
+                        f"[EVALUATION] Per-state fringe analysis failed for "
+                        f"{st_name}: {e}"
+                    )
+        if per_state_analysis:
+            latest_fit["per_state_residual_analysis"] = per_state_analysis
+    elif residual_ratio and Q and chi2 > chi2_max:
         try:
             from ..tools.feature_tools import analyze_residual_fringes
 

@@ -30,7 +30,8 @@ class TestSkillRegistry:
         assert "metal-oxide-interfaces" in names
         assert "solvent-contrast-matching" in names
         assert "structural-hypothesis-ranking" in names
-        assert len(names) == 6
+        assert "multi-state-corefinement" in names
+        assert len(names) == 7
 
     def test_metadata_parsed_correctly(self):
         registry = SkillRegistry()
@@ -43,7 +44,7 @@ class TestSkillRegistry:
     def test_all_metadata_returns_list(self):
         registry = SkillRegistry()
         all_meta = registry.all_metadata()
-        assert len(all_meta) == 6
+        assert len(all_meta) == 7
         assert all(isinstance(m, SkillMetadata) for m in all_meta)
 
     def test_load_body(self):

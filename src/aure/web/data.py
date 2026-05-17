@@ -198,6 +198,17 @@ class RunData:
         data_files = state.get("data_files", [])
         has_multi = len(data_files) > 1 and any(ds.get("Q") for ds in data_files)
 
+        # Build a {dataset label -> state name} map for multi-state runs.
+        # Each StateDefinition carries its own data_files list, and PerFileFitResult
+        # entries from Ticket 07 carry an explicit ``state`` field.
+        state_for_label: Dict[str, str] = {}
+        states_list = state.get("states") or []
+        for st in states_list:
+            st_name = st.get("name", "")
+            for ds in st.get("data_files") or []:
+                if ds.get("label"):
+                    state_for_label[ds["label"]] = st_name
+
         models: List[dict] = []
         for fr in state.get("fit_results", []):
             iteration = fr.get("iteration", len(models))
@@ -211,16 +222,20 @@ class RunData:
                     pf_chi2 = pf.get("chi_squared")
                     if pf_chi2 is not None:
                         label += f" (χ²={pf_chi2:.2f})"
-                    models.append(
-                        {
-                            "label": label,
-                            "Q": pf.get("Q_fit", []),
-                            "R": pf.get("R_fit", []),
-                            "chi2": pf_chi2,
-                            "file_label": pf.get("label", ""),
-                            "iteration": iteration,
-                        }
+                    pf_state = pf.get("state") or state_for_label.get(
+                        pf.get("label", "")
                     )
+                    entry: Dict[str, Any] = {
+                        "label": label,
+                        "Q": pf.get("Q_fit", []),
+                        "R": pf.get("R_fit", []),
+                        "chi2": pf_chi2,
+                        "file_label": pf.get("label", ""),
+                        "iteration": iteration,
+                    }
+                    if pf_state:
+                        entry["state"] = pf_state
+                    models.append(entry)
             else:
                 label = f"Iteration {iteration}"
                 if chi2 is not None:
@@ -284,6 +299,11 @@ class RunData:
                     "Q": ds.get("Q", []),
                     "R": ds.get("R", []),
                     "dR": ds.get("dR", []),
+                    **(
+                        {"state": state_for_label[ds.get("label", "")]}
+                        if ds.get("label") in state_for_label
+                        else {}
+                    ),
                 }
                 for ds in data_files
             ]
@@ -347,6 +367,33 @@ class RunData:
 
             fitted_params = fr.get("parameters", {})
             model = self._get_model_for_iteration(iteration)
+
+            # Multi-state: emit one profile per state per iteration.
+            if (
+                isinstance(model, dict)
+                and isinstance(model.get("states"), list)
+                and len(model["states"]) >= 2
+            ):
+                try:
+                    state_results = _compute_states_sld(model, fitted_params)
+                except Exception as exc:
+                    logger.debug(
+                        "Could not compute multi-state SLD for iter %d: %s",
+                        iteration,
+                        exc,
+                    )
+                    state_results = []
+                for sr in state_results:
+                    profiles.append(
+                        {
+                            "label": f"{label} – {sr['state']}",
+                            "z": sr["z"],
+                            "sld": sr["sld"],
+                            "state": sr["state"],
+                            "iteration": iteration,
+                        }
+                    )
+                continue
 
             try:
                 result = _compute_sld_from_model(
@@ -663,6 +710,22 @@ class RunData:
         if model is None:
             return {"error": "No model available"}
 
+        # Multi-state co-refinement: structure carries `states`, take precedence
+        # over the legacy multi-file path.
+        if (
+            isinstance(model, dict)
+            and isinstance(model.get("states"), list)
+            and len(model["states"]) >= 2
+        ):
+            try:
+                return _compute_states_simulation(
+                    model,
+                    parameters,
+                    bounds=bounds,
+                )
+            except Exception as exc:
+                return {"error": str(exc)}
+
         # Check for multi-file co-refinement
         state = self.get_final_state()
         data_files = state.get("data_files", [])
@@ -872,3 +935,88 @@ def _compute_multi_file_simulation(
         result["chi_squared"] = None
 
     return result
+
+
+def _compute_states_simulation(
+    model: dict,
+    parameters: Dict[str, float],
+    *,
+    bounds: Optional[Dict[str, list]] = None,
+) -> dict:
+    """Simulate per-state R(Q) and SLD profiles for a multi-state model.
+
+    Builds the joint ``FitProblem`` via :func:`build_states_problem`,
+    applies user parameters, then extracts one R(Q) curve per state file
+    and one SLD profile per state.
+    """
+    from aure.nodes.model_builder import (
+        apply_bounds,
+        apply_parameters,
+        build_states_problem,
+    )
+
+    definition = dict(model)
+    problem, experiments_by_state, sorted_files_by_state = build_states_problem(
+        definition
+    )
+
+    if bounds:
+        apply_bounds(problem, bounds)
+    if parameters:
+        apply_parameters(problem, parameters)
+
+    per_file: List[Dict[str, Any]] = []
+    sld_profiles: List[Dict[str, Any]] = []
+
+    for state_name, experiments in experiments_by_state.items():
+        files = sorted_files_by_state.get(state_name, [])
+
+        # SLD profile: one per state, taken from the first experiment
+        if experiments:
+            try:
+                z_arr, sld_arr, _ = experiments[0].smooth_profile(dz=1.0)
+                sld_profiles.append(
+                    {
+                        "state": state_name,
+                        "z": np.array(z_arr).tolist(),
+                        "sld": np.array(sld_arr).tolist(),
+                    }
+                )
+            except Exception:
+                sld_profiles.append({"state": state_name, "z": [], "sld": []})
+
+        for exp, ds in zip(experiments, files):
+            pf: Dict[str, Any] = {
+                "label": ds.get("label", ""),
+                "state": state_name,
+            }
+            try:
+                exp.update()
+                Q_arr, R_arr = exp.reflectivity()
+                pf["Q_fit"] = np.array(Q_arr).tolist()
+                pf["R_fit"] = np.array(R_arr).tolist()
+            except Exception:
+                pf["Q_fit"] = []
+                pf["R_fit"] = []
+            per_file.append(pf)
+
+    try:
+        chi2 = float(problem.chisq())
+        chi_squared = chi2 if math.isfinite(chi2) else None
+    except Exception:
+        chi_squared = None
+
+    return {
+        "per_file": per_file,
+        "sld_profiles": sld_profiles,
+        "chi_squared": chi_squared,
+    }
+
+
+def _compute_states_sld(
+    model: dict,
+    parameters: Dict[str, float],
+) -> List[Dict[str, Any]]:
+    """Return ``[{state, z, sld}]`` for each state in a multi-state model."""
+    sim = _compute_states_simulation(model, parameters)
+    return sim.get("sld_profiles") or []

@@ -344,6 +344,363 @@ def build_multi_problem(definition: dict, data_files: list[dict]):
     return problem, experiments, sorted_data_files
 
 
+# ======================================================================
+# Multi-state co-refinement (cross-state parameter aliasing)
+# ======================================================================
+
+
+# Default tied attributes when neither shared_parameters nor
+# unshared_parameters is supplied. Each entry is a dotted suffix that is
+# matched against the per-layer attribute path.
+_DEFAULT_TIED_LAYER_ATTRS = ("thickness", "material.rho", "interface")
+_DEFAULT_TIED_SUBSTRATE_ATTRS = ("interface",)
+
+# refl1d's auto-generated parameter names use these short attr labels.
+_ATTR_DISPLAY = {
+    "thickness": "thickness",
+    "material.rho": "rho",
+    "interface": "interface",
+}
+
+
+def parameter_key(
+    state_name: str, layer_name: str, attr_path: str, *, tied: bool
+) -> str:
+    """Canonical parameter name for a (state, layer, attr) triple.
+
+    Tied parameters keep refl1d's default ``"<layer> <attr>"`` spelling
+    so they appear once in the problem. Untied parameters are prefixed
+    with the state name to ensure uniqueness across states.
+    """
+    display = _ATTR_DISPLAY.get(attr_path, attr_path.replace(".", " "))
+    if tied:
+        return f"{layer_name} {display}"
+    return f"{state_name} {layer_name} {display}"
+
+
+def _layer_index(
+    definition: dict, layer_name: str, *, back_reflection: bool
+) -> int | None:
+    """Return the refl1d sample index for *layer_name*.
+
+    Mirrors the indexing used in :func:`_build_sample`. Returns None
+    when the name does not match any layer / substrate / ambient.
+    """
+    layers = definition.get("layers", []) or []
+    n = len(layers)
+    sub_name = (definition.get("substrate") or {}).get("name", "")
+    amb_name = (definition.get("ambient") or {}).get("name", "")
+
+    if layer_name == sub_name or layer_name.lower() == "substrate":
+        return n if back_reflection else 0
+    if layer_name == amb_name or layer_name.lower() == "ambient":
+        return 0 if back_reflection else n + 1
+
+    for i, layer in enumerate(layers):
+        if layer["name"] == layer_name:
+            return (n - i) if back_reflection else (i + 1)
+    return None
+
+
+def _resolve_tied_set(definition: dict) -> list[tuple[str, str]]:
+    """Resolve the (layer_name, attr_path) pairs to alias across states.
+
+    Reads ``shared_parameters`` (whitelist) or ``unshared_parameters``
+    (blacklist) from *definition*. Either may be a list of strings of
+    the form ``"<layer>.<attr_path>"`` (e.g. ``"Cu.thickness"``,
+    ``"substrate.interface"``).
+    """
+    shared = definition.get("shared_parameters") or []
+    unshared = definition.get("unshared_parameters") or []
+    if shared and unshared:
+        raise ValueError(
+            "shared_parameters and unshared_parameters are mutually exclusive"
+        )
+
+    layers = definition.get("layers", []) or []
+    sub_name = (definition.get("substrate") or {}).get("name", "substrate")
+
+    # Build the default tied set.
+    default: list[tuple[str, str]] = []
+    for layer in layers:
+        for attr in _DEFAULT_TIED_LAYER_ATTRS:
+            default.append((layer["name"], attr))
+    for attr in _DEFAULT_TIED_SUBSTRATE_ATTRS:
+        default.append((sub_name, attr))
+
+    def _split(spec: str) -> tuple[str, str]:
+        if "." not in spec:
+            raise ValueError(
+                f"Parameter spec {spec!r} must be of the form '<layer>.<attr>'"
+            )
+        layer_name, attr = spec.split(".", 1)
+        return layer_name, attr
+
+    valid_layers = {layer["name"] for layer in layers}
+    valid_layers.add(sub_name)
+    valid_layers.add("substrate")
+    amb_name = (definition.get("ambient") or {}).get("name")
+    if amb_name:
+        valid_layers.add(amb_name)
+    valid_layers.add("ambient")
+
+    if shared:
+        out: list[tuple[str, str]] = []
+        for spec in shared:
+            layer_name, attr = _split(spec)
+            if layer_name not in valid_layers:
+                raise ValueError(
+                    f"shared_parameters references unknown layer {layer_name!r}; "
+                    f"known: {sorted(valid_layers)}"
+                )
+            out.append((layer_name, attr))
+        return out
+
+    if unshared:
+        block: set[tuple[str, str]] = set()
+        for spec in unshared:
+            layer_name, attr = _split(spec)
+            if layer_name not in valid_layers:
+                raise ValueError(
+                    f"unshared_parameters references unknown layer {layer_name!r}; "
+                    f"known: {sorted(valid_layers)}"
+                )
+            block.add((layer_name, attr))
+        return [pair for pair in default if pair not in block]
+
+    return default
+
+
+def _get_layer_param(layer_obj, attr_path: str):
+    """Resolve dotted *attr_path* (e.g. ``material.rho``) on a layer."""
+    obj = layer_obj
+    for part in attr_path.split("."):
+        obj = getattr(obj, part)
+    return obj
+
+
+def _set_layer_param(layer_obj, attr_path: str, value) -> None:
+    """Assign *value* to the dotted *attr_path* on a layer."""
+    parts = attr_path.split(".")
+    target = layer_obj
+    for part in parts[:-1]:
+        target = getattr(target, part)
+    setattr(target, parts[-1], value)
+
+
+def _state_overrides(definition: dict, state: dict) -> dict:
+    """Return a per-state copy of *definition* with state-local overrides applied.
+
+    Currently supports overrides for ``ambient``, ``back_reflection``,
+    and ``intensity``. The structure (substrate / layers) is shared
+    across states.
+    """
+    import copy
+
+    eff = copy.deepcopy(definition)
+    if state.get("ambient"):
+        eff["ambient"] = state["ambient"]
+    if "back_reflection" in state:
+        eff["back_reflection"] = bool(state["back_reflection"])
+    if state.get("intensity"):
+        eff["intensity"] = state["intensity"]
+    return eff
+
+
+def build_states_problem(definition: dict):
+    """Build a multi-state co-refinement ``FitProblem``.
+
+    Each state in ``definition['states']`` becomes its own refl1d
+    ``Sample`` and a set of ``Experiment`` objects (one per data file).
+    Structural parameters listed in the resolved tied set are aliased
+    across states by replacing the corresponding ``bumps.Parameter``
+    objects with the ones from state 0.
+
+    Returns
+    -------
+    problem : bumps.fitproblem.FitProblem
+    experiments_by_state : dict[str, list]
+        Mapping from state name to its list of refl1d ``Experiment``
+        objects (sorted by increasing Q).
+    sorted_data_files_by_state : dict[str, list]
+        The per-state ``data_files`` lists reordered to match the
+        experiments.
+    """
+    import warnings
+
+    warnings.filterwarnings("ignore", category=UserWarning, module="refl1d")
+    from refl1d.names import Experiment
+    from bumps.fitproblem import FitProblem
+
+    states = definition.get("states") or []
+    if not states:
+        raise ValueError(
+            "build_states_problem requires definition['states'] to be non-empty"
+        )
+
+    tied_set = _resolve_tied_set(definition)
+
+    samples: list = []
+    effective_defs: list[dict] = []
+    experiments_by_state: dict[str, list] = {}
+    sorted_files_by_state: dict[str, list] = {}
+    all_experiments: list = []
+    default_fwhm = definition.get("dq_is_fwhm", True)
+
+    for state_idx, state in enumerate(states):
+        eff = _state_overrides(definition, state)
+        effective_defs.append(eff)
+        sample = _build_sample(eff)
+        samples.append(sample)
+
+        # Cross-state parameter aliasing.
+        if state_idx > 0:
+            ref_def = effective_defs[0]
+            ref_sample = samples[0]
+            ref_back = ref_def.get("back_reflection", False)
+            cur_back = eff.get("back_reflection", False)
+            for layer_name, attr_path in tied_set:
+                ref_idx = _layer_index(ref_def, layer_name, back_reflection=ref_back)
+                cur_idx = _layer_index(eff, layer_name, back_reflection=cur_back)
+                if ref_idx is None or cur_idx is None:
+                    # Already validated in _resolve_tied_set; skip silently.
+                    continue
+                ref_param = _get_layer_param(ref_sample[ref_idx], attr_path)
+                _set_layer_param(sample[cur_idx], attr_path, ref_param)
+
+        # Build probes for this state.
+        data_files = state.get("data_files") or []
+        if not data_files:
+            raise ValueError(f"State {state.get('name')!r} has no data_files")
+
+        intensity = eff.get("intensity", {}) or {}
+        probes = []
+        for ds in data_files:
+            fwhm = ds.get("dq_is_fwhm", default_fwhm)
+            theta = ds.get("theta", 0.0)
+            if theta and theta > 0:
+                probes.append(load_probe_from_angle(ds["file"], theta, dq_is_fwhm=fwhm))
+            else:
+                probes.append(load_probe(ds["file"], dq_is_fwhm=fwhm))
+
+        order = sorted(
+            range(len(probes)),
+            key=lambda k: float(probes[k].Q.min()) if len(probes[k].Q) else 0.0,
+        )
+        sorted_files = [data_files[k] for k in order]
+        sorted_probes = [probes[k] for k in order]
+
+        # Per-state shared theta_offset / sample_broadening (partials).
+        broadening = state.get("sample_broadening") or definition.get(
+            "sample_broadening", {}
+        )
+        offset = state.get("theta_offset") or definition.get("theta_offset", {})
+        shared_broadening = None
+        shared_offset = None
+
+        state_experiments: list = []
+        for probe in sorted_probes:
+            if not intensity.get("fixed", False):
+                int_val = intensity.get("value", intensity.get("init", 1.0))
+                int_min = intensity.get("min", 0.7)
+                int_max = intensity.get("max", 1.1)
+                probe.intensity.value = int_val
+                probe.intensity.range(int_min, int_max)
+
+            if broadening and hasattr(probe, "sample_broadening"):
+                if shared_broadening is None:
+                    init = broadening.get("init", broadening.get("value", 0.0))
+                    probe.sample_broadening.value = init
+                    probe.sample_broadening.range(
+                        broadening.get("min", 0.0), broadening.get("max", 0.5)
+                    )
+                    shared_broadening = probe.sample_broadening
+                else:
+                    probe.sample_broadening = shared_broadening
+            if offset and hasattr(probe, "theta_offset"):
+                if shared_offset is None:
+                    init = offset.get("init", offset.get("value", 0.0))
+                    probe.theta_offset.value = init
+                    probe.theta_offset.range(
+                        offset.get("min", -0.02), offset.get("max", 0.02)
+                    )
+                    shared_offset = probe.theta_offset
+                else:
+                    probe.theta_offset = shared_offset
+
+            exp = Experiment(probe=probe, sample=sample)
+            state_experiments.append(exp)
+
+        name = state.get("name", f"state{state_idx}")
+        experiments_by_state[name] = state_experiments
+        sorted_files_by_state[name] = sorted_files
+        all_experiments.extend(state_experiments)
+
+    # ------------------------------------------------------------------
+    # Rename untied parameters with a state prefix so every name in the
+    # FitProblem is unique. Tied parameters keep their refl1d-default
+    # "<layer> <attr>" spelling because the same Parameter object is
+    # shared across states.
+    # ------------------------------------------------------------------
+    tied_lookup = set(tied_set)
+    layers = definition.get("layers", []) or []
+    sub_name = (definition.get("substrate") or {}).get("name", "substrate")
+
+    for state_idx, state in enumerate(states):
+        eff = effective_defs[state_idx]
+        sample = samples[state_idx]
+        st_name = state.get("name", f"state{state_idx}")
+        back = eff.get("back_reflection", False)
+
+        # Layer & substrate & ambient attributes.
+        targets: list[tuple[str, str]] = []
+        for layer in layers:
+            for attr in _DEFAULT_TIED_LAYER_ATTRS:
+                targets.append((layer["name"], attr))
+        for attr in _DEFAULT_TIED_SUBSTRATE_ATTRS:
+            targets.append((sub_name, attr))
+        # Ambient SLD: always untied by default but rename for uniqueness.
+        amb_name = (eff.get("ambient") or {}).get("name")
+        if amb_name:
+            targets.append((amb_name, "material.rho"))
+
+        for layer_name, attr_path in targets:
+            if (layer_name, attr_path) in tied_lookup:
+                continue  # shared with state 0 — keep default name
+            idx = _layer_index(eff, layer_name, back_reflection=back)
+            if idx is None:
+                continue
+            try:
+                param = _get_layer_param(sample[idx], attr_path)
+            except AttributeError:
+                continue
+            param.name = parameter_key(st_name, layer_name, attr_path, tied=False)
+
+        # Per-probe intensity & per-state nuisance parameters.
+        state_files = sorted_files_by_state[st_name]
+        state_exps = experiments_by_state[st_name]
+        multi_in_state = len(state_exps) > 1
+        seen_nuisance: set[int] = set()
+        for ds, exp in zip(state_files, state_exps):
+            if hasattr(exp.probe, "intensity"):
+                label = ds.get("label") or ""
+                if multi_in_state and label:
+                    exp.probe.intensity.name = f"{st_name} {label} intensity"
+                else:
+                    exp.probe.intensity.name = f"{st_name} intensity"
+            for nuisance_attr in ("theta_offset", "sample_broadening"):
+                if not hasattr(exp.probe, nuisance_attr):
+                    continue
+                par = getattr(exp.probe, nuisance_attr)
+                if id(par) in seen_nuisance:
+                    continue
+                seen_nuisance.add(id(par))
+                par.name = f"{st_name} {nuisance_attr}"
+
+    problem = FitProblem(all_experiments)
+    return problem, experiments_by_state, sorted_files_by_state
+
+
 def save_problem_json(
     definition: dict,
     path,
@@ -376,7 +733,10 @@ def save_problem_json(
     """
     from bumps.serialize import save_file
 
-    if data_files and len(data_files) > 1:
+    states = definition.get("states") or []
+    if len(states) > 1:
+        problem, _exps, _sorted = build_states_problem(definition)
+    elif data_files and len(data_files) > 1:
         problem, _experiments, _sorted = build_multi_problem(definition, data_files)
     else:
         problem = build_problem(definition)
@@ -390,8 +750,10 @@ def save_problem_json(
 def apply_parameters(problem, params: Dict[str, float]) -> None:
     """Apply fitted parameter values to a ``FitProblem`` by name.
 
-    Uses the same name-matching logic as the old ``_apply_fitted_parameters``
-    but built to work with problems constructed from ``build_problem``.
+    Accepts either the canonical name from :func:`parameter_key` or, for
+    untied multi-state parameters, the legacy ``"<layer> <attr>"``
+    spelling — in which case the value is broadcast to every parameter
+    whose name ends with that suffix.
     """
     model_params = getattr(problem, "_parameters", None)
     if model_params is None:
@@ -403,8 +765,22 @@ def apply_parameters(problem, params: Dict[str, float]) -> None:
     for par in model_params:
         by_name[str(par.name)].append(par)
 
-    for name, value in params.items():
+    def _resolve(name: str) -> list:
         group = by_name.get(name)
+        if group:
+            return group
+        # Fallback: legacy short name like "Cu thickness" matches every
+        # state-prefixed name "<state> Cu thickness".
+        suffix = " " + name
+        return [
+            par
+            for key, plist in by_name.items()
+            if key.endswith(suffix)
+            for par in plist
+        ]
+
+    for name, value in params.items():
+        group = _resolve(name)
         if not group:
             continue
         if len(group) == 1:
@@ -487,8 +863,52 @@ def extract_definition(
     if include_fitted:
         defn["fitted_parameters"] = fitted
 
-    # Update layer values from fitted parameters
-    for i, layer in enumerate(defn.get("layers", [])):
+    states = defn.get("states") or []
+    if len(states) > 1:
+        # Multi-state: populate each state's layers view from the
+        # per-state parameter names, falling back to the tied baseline.
+        try:
+            tied_set = set(_resolve_tied_set(defn))
+        except ValueError:
+            tied_set = set()
+
+        attr_to_field = {
+            "thickness": "thickness",
+            "material.rho": "sld",
+            "interface": "roughness",
+        }
+
+        for state in states:
+            st_name = state.get("name", "")
+            new_layers: list[dict] = []
+            for layer in defn.get("layers", []):
+                layer_name = layer["name"]
+                merged = dict(layer)
+                for attr_path, field in attr_to_field.items():
+                    tied = (layer_name, attr_path) in tied_set or not tied_set
+                    key = parameter_key(st_name, layer_name, attr_path, tied=tied)
+                    if key in fitted:
+                        merged[field] = fitted[key]
+                    else:
+                        # Try the alternate spelling.
+                        alt = parameter_key(
+                            st_name, layer_name, attr_path, tied=not tied
+                        )
+                        if alt in fitted:
+                            merged[field] = fitted[alt]
+                new_layers.append(merged)
+            state["layers"] = new_layers
+        # Also update the top-level layers from the tied baseline.
+        for layer in defn.get("layers", []):
+            layer_name = layer["name"]
+            for attr_path, field in attr_to_field.items():
+                key = parameter_key("", layer_name, attr_path, tied=True)
+                if key in fitted:
+                    layer[field] = fitted[key]
+        return defn
+
+    # Single-state legacy path
+    for layer in defn.get("layers", []):
         layer_name = layer["name"]
         if f"{layer_name} thickness" in fitted:
             layer["thickness"] = fitted[f"{layer_name} thickness"]

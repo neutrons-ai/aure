@@ -29,6 +29,67 @@ from .prompts import format_model_refinement_prompt
 logger = logging.getLogger(__name__)
 
 
+def _attach_state_metadata(
+    model_def: dict,
+    state: "ReflectivityState",
+    *,
+    user_config_wins: bool = True,
+) -> None:
+    """Attach multi-state co-refinement metadata to *model_def* in place.
+
+    Pulls the `states` list from the workflow state (populated by intake)
+    and attaches it to *model_def['states']*. The tie spec
+    (`shared_parameters` / `unshared_parameters`) is taken from the user
+    config and validated against the structural layer names. Raises
+    ``ValueError`` when validation fails.
+
+    No-op when the workflow is single-state (``state['states']`` empty
+    or has fewer than two entries).
+    """
+    states_in = state.get("states") or []
+    if len(states_in) < 2:
+        return
+
+    import copy as _copy
+
+    model_def["states"] = _copy.deepcopy(states_in)
+
+    user_config = state.get("user_config") or {}
+    cfg_shared = user_config.get("shared_parameters") or []
+    cfg_unshared = user_config.get("unshared_parameters") or []
+    if cfg_shared and cfg_unshared:
+        raise ValueError(
+            "shared_parameters and unshared_parameters are mutually exclusive"
+        )
+
+    # Config wins: any user-supplied tie set is copied verbatim, even if the
+    # LLM proposed a different one.
+    if user_config_wins and cfg_shared:
+        model_def["shared_parameters"] = list(cfg_shared)
+        model_def["unshared_parameters"] = []
+        logger.info(
+            "[MODELING] Using user-config shared_parameters (%d entries); "
+            "LLM proposal (if any) ignored",
+            len(cfg_shared),
+        )
+    elif user_config_wins and cfg_unshared:
+        model_def["shared_parameters"] = []
+        model_def["unshared_parameters"] = list(cfg_unshared)
+        logger.info(
+            "[MODELING] Using user-config unshared_parameters (%d entries); "
+            "LLM proposal (if any) ignored",
+            len(cfg_unshared),
+        )
+    else:
+        model_def.setdefault("shared_parameters", [])
+        model_def.setdefault("unshared_parameters", [])
+
+    # Surface validation errors early.
+    from .model_builder import _resolve_tied_set
+
+    _resolve_tied_set(model_def)
+
+
 def modeling_node(state: ReflectivityState) -> Dict[str, Any]:
     """
     Build or refine a refl1d model.
@@ -174,6 +235,55 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
                 new_model["theta_offset"] = current_model.get(
                     "theta_offset", {"enabled": False, "min": -0.02, "max": 0.02}
                 )
+            # Multi-state co-refinement: carry over states + tie spec from
+            # the previous model when the LLM omitted them. If the user
+            # supplied ties in the config they win, regardless of the LLM.
+            prev_states = current_model.get("states") or []
+            if prev_states:
+                if "states" not in new_model or not new_model.get("states"):
+                    new_model["states"] = prev_states
+
+                user_config = state.get("user_config") or {}
+                cfg_shared = user_config.get("shared_parameters") or []
+                cfg_unshared = user_config.get("unshared_parameters") or []
+                if cfg_shared:
+                    new_model["shared_parameters"] = list(cfg_shared)
+                    new_model["unshared_parameters"] = []
+                elif cfg_unshared:
+                    new_model["unshared_parameters"] = list(cfg_unshared)
+                    new_model["shared_parameters"] = []
+                else:
+                    # No config override: if LLM omitted ties, carry over the
+                    # previous spec verbatim. Otherwise validate; on invalid
+                    # layer references fall back to previous (logged).
+                    llm_provided_ties = (
+                        "shared_parameters" in new_model
+                        or "unshared_parameters" in new_model
+                    )
+                    if not llm_provided_ties:
+                        new_model["shared_parameters"] = list(
+                            current_model.get("shared_parameters") or []
+                        )
+                        new_model["unshared_parameters"] = list(
+                            current_model.get("unshared_parameters") or []
+                        )
+                    else:
+                        from .model_builder import _resolve_tied_set
+
+                        try:
+                            _resolve_tied_set(new_model)
+                        except ValueError as exc:
+                            logger.warning(
+                                "[MODELING] LLM-proposed tie spec invalid (%s); "
+                                "carrying previous shared_parameters",
+                                exc,
+                            )
+                            new_model["shared_parameters"] = list(
+                                current_model.get("shared_parameters") or []
+                            )
+                            new_model["unshared_parameters"] = list(
+                                current_model.get("unshared_parameters") or []
+                            )
             updates["llm_calls"].append(
                 LLMCallRecord(
                     node="modeling",
@@ -426,6 +536,13 @@ def _build_initial_model(state: ReflectivityState) -> Dict[str, Any]:
                 "definition": model_def,
             }
         ]
+
+        # Multi-state co-refinement: attach states + tie spec (config wins).
+        try:
+            _attach_state_metadata(model_def, state)
+        except ValueError as exc:
+            updates["error"] = f"Multi-state model setup failed: {exc}"
+            return updates
 
         # Generate explanation
         explanation = _explain_model(layers, substrate, ambient, features)

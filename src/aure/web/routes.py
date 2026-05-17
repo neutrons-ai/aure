@@ -562,8 +562,9 @@ def api_start_analysis():
     output_root = (body.get("output_dir") or "").strip()
 
     # ---- Validation ------------------------------------------------
+    states_body_present = body.get("states") is not None
     errors = []
-    if not data_file or not Path(data_file).is_file():
+    if not states_body_present and (not data_file or not Path(data_file).is_file()):
         errors.append("data_file: file does not exist")
     if not sample_description:
         errors.append("sample_description is required")
@@ -574,7 +575,76 @@ def api_start_analysis():
 
     # Determine run sub-directory
     data_files = body.get("data_files")  # list of {file, label} or None
-    if data_files is not None:
+    states_body = body.get("states")  # list of state dicts (multi-state) or None
+    user_config_extra = body.get("user_config") or {}
+    shared_parameters = body.get("shared_parameters")
+    unshared_parameters = body.get("unshared_parameters")
+
+    states = None
+    if states_body is not None:
+        if not isinstance(states_body, list):
+            return jsonify({"errors": ["states must be a list"]}), 400
+        if data_files is not None:
+            return jsonify(
+                {"errors": ["cannot combine `states` with `data_files`"]}
+            ), 400
+        if shared_parameters is not None and unshared_parameters is not None:
+            return jsonify(
+                {
+                    "errors": [
+                        "shared_parameters and unshared_parameters are mutually exclusive"
+                    ]
+                }
+            ), 400
+        # Validate every file exists
+        st_errors = []
+        for sidx, st in enumerate(states_body):
+            if not isinstance(st, dict) or "name" not in st or "data_files" not in st:
+                st_errors.append(
+                    f"states[{sidx}]: each entry must have 'name' and 'data_files'"
+                )
+                continue
+            for fidx, df in enumerate(st.get("data_files") or []):
+                fpath = df.get("file") if isinstance(df, dict) else None
+                if not fpath or not Path(fpath).is_file():
+                    st_errors.append(
+                        f"states[{sidx}].data_files[{fidx}]: file does not exist: {fpath}"
+                    )
+        if st_errors:
+            return jsonify({"errors": st_errors}), 400
+
+        # Normalise via states_from_config (mirrors the CLI YAML path).
+        from ..config import states_from_config, ConfigError
+
+        cfg_for_states = {"states": states_body}
+        if shared_parameters is not None:
+            cfg_for_states["shared_parameters"] = shared_parameters
+        if unshared_parameters is not None:
+            cfg_for_states["unshared_parameters"] = unshared_parameters
+        try:
+            states = states_from_config(cfg_for_states)
+        except ConfigError as exc:
+            return jsonify({"errors": [f"states: {exc}"]}), 400
+
+        # Override the positional data_file with the first state's first file
+        from ..state import flatten_data_files as _flatten
+
+        flat = _flatten(states)
+        if flat:
+            data_file = flat[0].get("file") or data_file
+        # Carry shared/unshared parameters into user_config so the modeling
+        # node sees the user's tie set.
+        if shared_parameters is not None:
+            user_config_extra = {
+                **user_config_extra,
+                "shared_parameters": shared_parameters,
+            }
+        if unshared_parameters is not None:
+            user_config_extra = {
+                **user_config_extra,
+                "unshared_parameters": unshared_parameters,
+            }
+    elif data_files is not None:
         # Validate data_files structure and file existence
         if not isinstance(data_files, list):
             return jsonify({"errors": ["data_files must be a list"]}), 400
@@ -591,7 +661,17 @@ def api_start_analysis():
         if df_errors:
             return jsonify({"errors": df_errors}), 400
 
-    if data_files and len(data_files) > 1:
+    if states:
+        # Multi-state: derive run sub-dir from the lowest run number among files
+        from ..state import flatten_data_files as _flatten_for_name
+
+        flat = _flatten_for_name(states)
+        run_names = [_extract_run_name(df.get("file", "")) for df in flat]
+        numeric = [int(r) for r in run_names if r.isdigit()]
+        run_name = (
+            str(min(numeric)) if numeric else (run_names[0] if run_names else "run")
+        )
+    elif data_files and len(data_files) > 1:
         # For co-refinement: use the lowest run number across all files
         run_names = [_extract_run_name(df["file"]) for df in data_files]
         numeric = [int(r) for r in run_names if r.isdigit()]
@@ -698,6 +778,8 @@ def api_start_analysis():
                 interactive=interactive,
                 pause_callback=pause_callback,
                 data_files=data_files,
+                states=states,
+                user_config=user_config_extra or None,
             )
             with lock:
                 run_state["status"] = "complete"
