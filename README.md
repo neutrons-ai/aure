@@ -211,6 +211,26 @@ under `output/refl1d_output/fit_iter{i}_{method}/state_<name>/profile.dat`.
 See the `multi-state-corefinement` skill for guidance on choosing the tie
 set for common experiments.
 
+#### Web UI
+
+The setup tab gains multi-state affordances when more than one data file is
+loaded:
+
+- **Group files into states** toggle adds a state-name column next to each
+  fit file. Same-state files plot in matching colours.
+- **Cross-state ties panel** picks between Auto (skill defaults), Shared
+  (whitelist) and Unshared (blacklist) modes. Quick-fill presets cover
+  Structural / Substrate / All-but-ambient layouts; the free-form textarea
+  accepts one dotted-name per line.
+- **Preview structure** runs intake → analysis → modeling without fitting
+  and renders a two-column checklist of layers and tieable parameters that
+  tick straight into the textarea.
+- **Per-state overrides accordion** lets you adjust ambient SLD,
+  intensity / theta_offset / sample_broadening triplets, back-reflection,
+  and per-state extra descriptions without leaving the page.
+- The dotted-name suggestions datalist merges skill presets with parameter
+  names harvested from past runs in the same output root.
+
 ### Python API
 
 ```python

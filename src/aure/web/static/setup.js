@@ -24,7 +24,39 @@ const STORAGE_KEY = "aure_setup";
 const LAST_DATA_DIR_KEY = "aure_last_data_dir";
 const REFLECTIVITY_EXTS = ".txt,.refl,.ort,.dat,.csv,.tsv";
 
-let plottedFiles = []; // [{ path, Q, R, dR, visible, isFit }]
+let plottedFiles = []; // [{ path, Q, R, dR, visible, isFit, state }]
+let groupIntoStates = false;
+
+function _collectStateNames() {
+  // Distinct, non-empty state names currently assigned to plotted files.
+  var seen = Object.create(null);
+  var out = [];
+  plottedFiles.forEach(function (f) {
+    var s = (f.state || "").trim();
+    if (s && !seen[s]) { seen[s] = true; out.push(s); }
+  });
+  return out;
+}
+
+function _colorForState(name) {
+  // Deterministic palette index based on state-name order.
+  var names = _collectStateNames();
+  var i = names.indexOf(name);
+  if (i < 0) return COLORS[0];
+  return COLORS[i % COLORS.length];
+}
+
+function _refreshStateDatalist() {
+  var dl = document.getElementById("state-name-suggestions");
+  if (!dl) return;
+  var names = _collectStateNames();
+  dl.innerHTML = "";
+  names.forEach(function (n) {
+    var opt = document.createElement("option");
+    opt.value = n;
+    dl.appendChild(opt);
+  });
+}
 
 function _extractRunNumber(path) {
   // Extract a run number from a filename: look for 6-digit number first,
@@ -100,6 +132,7 @@ function _restorePlottedFiles(savedFiles) {
           dR: payload.dR || [],
           visible: true,
           isFit: entry.isFit,
+          state: entry.state || null,
         });
       })
       .catch(function () {
@@ -119,8 +152,12 @@ function _saveFormValues() {
     interactive: document.getElementById("interactive-mode").checked,
     max_iterations: parseInt(document.getElementById("max-iterations").value, 10) || 5,
     plotted_files: plottedFiles.map(function (f) {
-      return { path: f.path, isFit: f.isFit };
+      return { path: f.path, isFit: f.isFit, state: f.state || null };
     }),
+    group_into_states: groupIntoStates,
+    ties_mode: tiesMode,
+    ties_text: tiesText,
+    state_overrides: stateOverrides,
   };
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(vals)); } catch (_) {}
 }
@@ -134,18 +171,65 @@ function _restoreFormValues() {
     if (!vals && typeof _prevRun !== "undefined" && _prevRun) {
       // Convert server data_files [{file, label}] to plotted_files [{path, isFit}]
       var pf = [];
+      var prevStates = _prevRun.states || [];
+      var pathToState = {};
+      if (prevStates.length) {
+        prevStates.forEach(function (st) {
+          (st.data_files || []).forEach(function (df) {
+            if (df && df.file) pathToState[df.file] = st.name;
+          });
+        });
+      }
       if (_prevRun.data_files && _prevRun.data_files.length) {
         pf = _prevRun.data_files.map(function (df) {
-          return { path: df.file, isFit: true };
+          return {
+            path: df.file,
+            isFit: true,
+            state: pathToState[df.file] || null,
+          };
         });
       } else if (_prevRun.data_file) {
-        pf = [{ path: _prevRun.data_file, isFit: true }];
+        pf = [{
+          path: _prevRun.data_file,
+          isFit: true,
+          state: pathToState[_prevRun.data_file] || null,
+        }];
       }
+      var prefTiesMode = "auto";
+      var prefTiesText = "";
+      if (_prevRun.shared_parameters && _prevRun.shared_parameters.length) {
+        prefTiesMode = "shared";
+        prefTiesText = _prevRun.shared_parameters.join("\n");
+      } else if (_prevRun.unshared_parameters && _prevRun.unshared_parameters.length) {
+        prefTiesMode = "unshared";
+        prefTiesText = _prevRun.unshared_parameters.join("\n");
+      }
+      var prefOverrides = {};
+      prevStates.forEach(function (st) {
+        var ov = {};
+        if (st.ambient && typeof st.ambient.rho === "number") ov.ambient = st.ambient.rho;
+        ["intensity", "theta_offset", "sample_broadening"].forEach(function (k) {
+          if (st[k] && typeof st[k] === "object") {
+            ov[k] = {};
+            ["init", "min", "max"].forEach(function (sub) {
+              if (typeof st[k][sub] === "number") ov[k][sub] = st[k][sub];
+            });
+            if (!Object.keys(ov[k]).length) delete ov[k];
+          }
+        });
+        if (st.back_reflection === true) ov.back_reflection = true;
+        if (st.extra_description) ov.extra_description = st.extra_description;
+        if (Object.keys(ov).length) prefOverrides[st.name] = ov;
+      });
       vals = {
         sample_desc: _prevRun.sample_description || "",
         hypothesis: _prevRun.hypothesis || "",
         output_dir: _prevRun.output_dir || "",
         plotted_files: pf,
+        group_into_states: prevStates.length >= 2,
+        ties_mode: prefTiesMode,
+        ties_text: prefTiesText,
+        state_overrides: prefOverrides,
       };
     }
 
@@ -156,6 +240,20 @@ function _restoreFormValues() {
     if (vals.output_dir)  document.getElementById("output-dir").value = vals.output_dir;
     if (vals.interactive)  document.getElementById("interactive-mode").checked = vals.interactive;
     if (vals.max_iterations) document.getElementById("max-iterations").value = vals.max_iterations;
+    if (vals.group_into_states) {
+      groupIntoStates = true;
+      var gtoggle = document.getElementById("group-into-states");
+      if (gtoggle) gtoggle.checked = true;
+    }
+    if (vals.ties_mode && ["auto", "shared", "unshared"].indexOf(vals.ties_mode) >= 0) {
+      tiesMode = vals.ties_mode;
+    }
+    if (typeof vals.ties_text === "string") {
+      tiesText = vals.ties_text;
+    }
+    if (vals.state_overrides && typeof vals.state_overrides === "object") {
+      stateOverrides = vals.state_overrides;
+    }
     // Restore file list (single source of truth for data files)
     if (vals.plotted_files && vals.plotted_files.length) {
       _restorePlottedFiles(vals.plotted_files);
@@ -165,6 +263,16 @@ function _restoreFormValues() {
 
 document.addEventListener("DOMContentLoaded", function () {
   _restoreFormValues();
+  var gtoggle = document.getElementById("group-into-states");
+  if (gtoggle) {
+    gtoggle.addEventListener("change", function () {
+      groupIntoStates = gtoggle.checked;
+      _renderPlottedFilesList();
+      _renderSetupReflectivityPlot();
+      _saveFormValues();
+    });
+  }
+  _wireTiesPanel();
   // Only render empty state if no restore is in progress
   if (!_restoringFiles && !plottedFiles.length) {
     _renderPlottedFilesList();
@@ -315,6 +423,7 @@ function _addDataFile(path) {
         dR: payload.dR || [],
         visible: true,
         isFit: true,
+        state: null,
       });
       _sortPlottedFilesByRunNumber();
       _syncDataFileInput();
@@ -348,6 +457,10 @@ function _basename(path) {
 function _renderPlottedFilesList() {
   const list = document.getElementById("setup-plotted-files");
   if (!list) return;
+
+  _refreshStateDatalist();
+  _renderTiesPanel();
+  _renderOverridesPanel();
 
   if (!plottedFiles.length) {
     list.innerHTML = '<div class="list-group-item text-muted small">No files loaded yet.</div>';
@@ -391,6 +504,53 @@ function _renderPlottedFilesList() {
     pathLabel.className = "text-muted";
     pathLabel.textContent = entry.path;
     labels.appendChild(pathLabel);
+
+    // State name input (only shown when grouping is on)
+    if (groupIntoStates) {
+      const stateRow = document.createElement("div");
+      stateRow.className = "d-flex align-items-center gap-2 mt-1";
+      const stateLabel = document.createElement("label");
+      stateLabel.className = "text-muted small mb-0";
+      stateLabel.textContent = "State:";
+      const stateInput = document.createElement("input");
+      stateInput.type = "text";
+      stateInput.className = "form-control form-control-sm";
+      stateInput.style.maxWidth = "160px";
+      stateInput.setAttribute("list", "state-name-suggestions");
+      stateInput.placeholder = "e.g. D2O";
+      stateInput.value = entry.state || "";
+      stateInput.addEventListener("input", function () {
+        plottedFiles[idx].state = stateInput.value.trim() || null;
+        _refreshStateDatalist();
+      });
+      stateInput.addEventListener("change", function () {
+        // On blur / commit: re-render so badges, ties panel, and trace
+        // colours update.
+        _renderPlottedFilesList();
+        _renderSetupReflectivityPlot();
+        _saveFormValues();
+      });
+      stateRow.appendChild(stateLabel);
+      stateRow.appendChild(stateInput);
+
+      if (entry.isFit && !(entry.state && entry.state.trim())) {
+        const badge = document.createElement("span");
+        badge.className = "badge bg-warning text-dark";
+        badge.textContent = "ungrouped";
+        badge.title =
+          "Assign this file a state name, or untick its fit checkbox.";
+        stateRow.appendChild(badge);
+      } else if (entry.state) {
+        const swatch = document.createElement("span");
+        swatch.className = "badge";
+        swatch.textContent = entry.state;
+        swatch.style.backgroundColor = _colorForState(entry.state);
+        swatch.style.color = "#fff";
+        stateRow.appendChild(swatch);
+      }
+      labels.appendChild(stateRow);
+    }
+
     left.appendChild(labels);
 
     const right = document.createElement("div");
@@ -438,9 +598,13 @@ function _renderSetupReflectivityPlot() {
   if (!el) return;
 
   const traces = [];
+  const useStateColours = groupIntoStates && _collectStateNames().length >= 2;
   plottedFiles.forEach(function (entry, i) {
     if (!entry.visible) return;
-    const color = COLORS[i % COLORS.length];
+    const color = (useStateColours && entry.state)
+      ? _colorForState(entry.state)
+      : COLORS[i % COLORS.length];
+    const stateSuffix = (useStateColours && entry.state) ? " [" + entry.state + "]" : "";
     traces.push({
       x: entry.Q,
       y: entry.R,
@@ -451,7 +615,9 @@ function _renderSetupReflectivityPlot() {
         color: color,
         symbol: entry.isFit ? "circle" : "diamond",
       },
-      name: entry.isFit ? _basename(entry.path) + " (fit)" : _basename(entry.path),
+      name: (entry.isFit
+        ? _basename(entry.path) + " (fit)"
+        : _basename(entry.path)) + stateSuffix,
     });
   });
 
@@ -484,45 +650,540 @@ function _renderSetupReflectivityPlot() {
   }, { responsive: true, displayModeBar: false, scrollZoom: true });
 }
 
+/* ---- cross-state ties panel ---------------------------------- */
+
+let tiesMode = "auto";   // "auto" | "shared" | "unshared"
+let tiesText = "";
+
+const TIES_HELP_URL =
+  "https://github.com/neutrons-ai/aure/blob/main/src/aure/skills/multi-state-corefinement/SKILL.md";
+
+const TIES_PRESETS = {
+  structural: [
+    "Cu.thickness",
+    "Cu.material.rho",
+    "Cu.interface",
+    "substrate.interface",
+  ],
+  substrate: ["substrate.interface"],
+  "all-but-ambient": [
+    "Cu.thickness",
+    "Cu.material.rho",
+    "Cu.interface",
+    "substrate.interface",
+    "intensity",
+  ],
+};
+
+function _parseTiesText(text) {
+  if (!text) return [];
+  return text
+    .split(/[\n,]+/)
+    .map(function (s) { return s.trim(); })
+    .filter(function (s) { return s.length > 0; });
+}
+
+function _renderTiesPanel() {
+  const card = document.getElementById("ties-card");
+  if (!card) return;
+
+  const stateNames = _collectStateNames();
+  const fitFiles = plottedFiles.filter(function (f) { return f.isFit; });
+  // Only show when grouping is on, ≥2 distinct state names, and every
+  // fit file is assigned a state (mirrors server validation).
+  const allGrouped = fitFiles.length > 0 && fitFiles.every(function (f) {
+    return f.state && f.state.trim();
+  });
+  const visible = groupIntoStates && stateNames.length >= 2 && allGrouped;
+  card.style.display = visible ? "" : "none";
+  if (!visible) return;
+
+  const radios = card.querySelectorAll("input.ties-mode");
+  radios.forEach(function (r) { r.checked = r.value === tiesMode; });
+
+  const presets = document.getElementById("ties-presets");
+  if (presets) presets.style.display = (tiesMode === "shared") ? "" : "none";
+
+  const ta = document.getElementById("ties-text");
+  if (ta) {
+    ta.value = tiesText || "";
+    ta.disabled = (tiesMode === "auto");
+    ta.setAttribute("list", "ties-param-suggestions");
+  }
+
+  const help = document.getElementById("ties-help");
+  if (help) help.href = TIES_HELP_URL;
+}
+
+function _refreshTiesParamDatalist(extraParams) {
+  const dl = document.getElementById("ties-param-suggestions");
+  if (!dl) return;
+  const merged = new Set();
+  // Skill-bundled presets contribute their canonical names.
+  Object.values(TIES_PRESETS).forEach(function (arr) {
+    arr.forEach(function (p) { merged.add(p); });
+  });
+  (_knownSharedParamsCache || []).forEach(function (p) { merged.add(p); });
+  if (Array.isArray(extraParams)) {
+    extraParams.forEach(function (p) { if (p) merged.add(p); });
+  }
+  dl.innerHTML = "";
+  Array.from(merged).sort().forEach(function (p) {
+    const opt = document.createElement("option");
+    opt.value = p;
+    dl.appendChild(opt);
+  });
+}
+
+let _knownSharedParamsCache = [];
+let _knownSharedParamsFetched = false;
+function _fetchKnownSharedParamsOnce() {
+  if (_knownSharedParamsFetched) return;
+  _knownSharedParamsFetched = true;
+  fetch("/api/known-shared-params")
+    .then(function (r) { return r.ok ? r.json() : { parameters: [] }; })
+    .then(function (j) {
+      _knownSharedParamsCache = (j && j.parameters) || [];
+      _refreshTiesParamDatalist();
+    })
+    .catch(function () { /* silent */ });
+}
+
+function _wireTiesPanel() {
+  const card = document.getElementById("ties-card");
+  if (!card) return;
+
+  card.querySelectorAll("input.ties-mode").forEach(function (r) {
+    r.addEventListener("change", function () {
+      if (r.checked) {
+        tiesMode = r.value;
+        _renderTiesPanel();
+        _saveFormValues();
+      }
+    });
+  });
+
+  const ta = document.getElementById("ties-text");
+  if (ta) {
+    ta.addEventListener("input", function () {
+      tiesText = ta.value;
+      _saveFormValues();
+    });
+  }
+
+  card.querySelectorAll("[data-ties-preset]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      const key = btn.getAttribute("data-ties-preset");
+      const items = TIES_PRESETS[key] || [];
+      tiesText = items.join("\n");
+      _renderTiesPanel();
+      _saveFormValues();
+    });
+  });
+
+  _refreshTiesParamDatalist();
+  _fetchKnownSharedParamsOnce();
+
+  const previewBtn = document.getElementById("ties-preview-btn");
+  if (previewBtn) {
+    previewBtn.addEventListener("click", _previewStructure);
+  }
+}
+
+function _setPreviewStatus(msg, isError) {
+  const el = document.getElementById("ties-preview-status");
+  if (!el) return;
+  el.textContent = msg || "";
+  el.classList.toggle("text-danger", !!isError);
+  el.classList.toggle("text-muted", !isError);
+}
+
+function _previewStructure() {
+  const btn = document.getElementById("ties-preview-btn");
+  if (btn) btn.disabled = true;
+  _setPreviewStatus("Running intake → analysis → modeling…", false);
+  const built = _buildAnalysisBody({ skipOutputDir: true });
+  if (built.errors && built.errors.length) {
+    _setPreviewStatus(built.errors.join("; "), true);
+    if (btn) btn.disabled = false;
+    return;
+  }
+  fetch("/api/preview-structure", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(built.body),
+  })
+    .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
+    .then(function (res) {
+      if (!res.ok) {
+        const errs = (res.body && res.body.errors) || ["Preview failed."];
+        _setPreviewStatus(errs.join("; "), true);
+        return;
+      }
+      const params = (res.body.parameters || []).slice();
+      _refreshTiesParamDatalist(params);
+      _renderPreviewChecklist(res.body.layers || [], params);
+      _setPreviewStatus(
+        (res.body.layers || []).length + " layers · " + params.length + " parameters",
+        false
+      );
+    })
+    .catch(function (e) { _setPreviewStatus(String(e), true); })
+    .finally(function () { if (btn) btn.disabled = false; });
+}
+
+function _renderPreviewChecklist(layers, params) {
+  const host = document.getElementById("ties-checklist-host");
+  if (!host) return;
+  host.innerHTML = "";
+  if (!params.length) return;
+
+  // Split into structural (layer.* / substrate.interface) and ambient/intensity columns.
+  const structural = params.filter(function (p) {
+    return !/^(intensity|theta_offset|sample_broadening|ambient)/i.test(p);
+  });
+  const ambient = params.filter(function (p) {
+    return /^(intensity|theta_offset|sample_broadening|ambient)/i.test(p);
+  });
+  const selected = new Set(
+    tiesText.split(/\r?\n/).map(function (s) { return s.trim(); }).filter(Boolean)
+  );
+
+  function column(title, items) {
+    const col = document.createElement("div");
+    col.className = "col-md-6";
+    const h = document.createElement("div");
+    h.className = "small fw-semibold mb-1";
+    h.textContent = title;
+    col.appendChild(h);
+    items.forEach(function (p) {
+      const div = document.createElement("div");
+      div.className = "form-check";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.className = "form-check-input";
+      cb.id = "ties-cb-" + p.replace(/[^a-z0-9]/gi, "_");
+      cb.checked = selected.has(p);
+      cb.addEventListener("change", function () {
+        const cur = new Set(
+          tiesText.split(/\r?\n/).map(function (s) { return s.trim(); }).filter(Boolean)
+        );
+        if (cb.checked) cur.add(p); else cur.delete(p);
+        tiesText = Array.from(cur).join("\n");
+        const ta = document.getElementById("ties-text");
+        if (ta) ta.value = tiesText;
+        _saveFormValues();
+      });
+      const lbl = document.createElement("label");
+      lbl.className = "form-check-label small font-monospace";
+      lbl.htmlFor = cb.id;
+      lbl.textContent = p;
+      div.appendChild(cb);
+      div.appendChild(lbl);
+      col.appendChild(div);
+    });
+    return col;
+  }
+
+  const row = document.createElement("div");
+  row.className = "row g-2 mb-2";
+  row.appendChild(column("Structural", structural));
+  if (ambient.length) row.appendChild(column("Ambient / intensity", ambient));
+  host.appendChild(row);
+}
+
+/* ---- per-state overrides accordion --------------------------- */
+
+let stateOverrides = {};  // { [stateName]: { ambient, intensity:{init,min,max},
+                          //                  theta_offset:{...},
+                          //                  sample_broadening:{...},
+                          //                  back_reflection: bool,
+                          //                  extra_description: str } }
+
+function _ensureOverride(name) {
+  if (!stateOverrides[name]) stateOverrides[name] = {};
+  return stateOverrides[name];
+}
+
+function _triplet(name, key, ov) {
+  // Render an {init, min, max} triplet of numeric inputs.
+  const wrap = document.createElement("div");
+  wrap.className = "row g-2 mb-2";
+  ["init", "min", "max"].forEach(function (sub) {
+    const col = document.createElement("div");
+    col.className = "col-auto";
+    const lbl = document.createElement("label");
+    lbl.className = "form-label small mb-0";
+    lbl.textContent = sub;
+    const inp = document.createElement("input");
+    inp.type = "number";
+    inp.step = "any";
+    inp.className = "form-control form-control-sm";
+    inp.style.maxWidth = "120px";
+    inp.value = (ov[key] && ov[key][sub] != null) ? ov[key][sub] : "";
+    inp.addEventListener("change", function () {
+      const o = _ensureOverride(name);
+      const cur = o[key] || {};
+      const v = inp.value.trim();
+      if (v === "") { delete cur[sub]; }
+      else { cur[sub] = parseFloat(v); }
+      // Drop empty triplet sub-objects.
+      if (Object.keys(cur).length) { o[key] = cur; }
+      else { delete o[key]; }
+      _validateTriplet(o[key]);
+      _saveFormValues();
+    });
+    col.appendChild(lbl);
+    col.appendChild(inp);
+    wrap.appendChild(col);
+  });
+  return wrap;
+}
+
+function _validateTriplet(t) {
+  if (!t) return true;
+  if (t.init != null && t.min != null && t.init < t.min) return false;
+  if (t.init != null && t.max != null && t.init > t.max) return false;
+  if (t.min != null && t.max != null && t.min > t.max) return false;
+  return true;
+}
+
+function _renderOverridesPanel() {
+  const card = document.getElementById("overrides-card");
+  const acc = document.getElementById("overrides-accordion");
+  if (!card || !acc) return;
+
+  const stateNames = _collectStateNames();
+  const visible = groupIntoStates && stateNames.length >= 2;
+  card.style.display = visible ? "" : "none";
+  if (!visible) { acc.innerHTML = ""; return; }
+
+  // Drop stale overrides for renamed/removed states.
+  Object.keys(stateOverrides).forEach(function (n) {
+    if (stateNames.indexOf(n) < 0) delete stateOverrides[n];
+  });
+
+  acc.innerHTML = "";
+  stateNames.forEach(function (name, idx) {
+    const ov = _ensureOverride(name);
+    const item = document.createElement("div");
+    item.className = "accordion-item";
+    const hid = "ov-h-" + idx;
+    const cid = "ov-c-" + idx;
+    item.innerHTML =
+      '<h2 class="accordion-header" id="' + hid + '">' +
+        '<button class="accordion-button collapsed" type="button" ' +
+        'data-bs-toggle="collapse" data-bs-target="#' + cid + '">' +
+        '<span class="badge me-2" style="background-color:' +
+          _colorForState(name) + ';color:#fff">' + name + '</span>' +
+        '<span class="small text-muted">overrides</span>' +
+        '</button>' +
+      '</h2>' +
+      '<div id="' + cid + '" class="accordion-collapse collapse" ' +
+        'data-bs-parent="#overrides-accordion"><div class="accordion-body small"></div></div>';
+    const body = item.querySelector(".accordion-body");
+
+    // ambient (single number)
+    const ambWrap = document.createElement("div");
+    ambWrap.className = "mb-2";
+    ambWrap.innerHTML = '<label class="form-label small mb-0">Ambient SLD ' +
+      '<span class="text-muted">(10⁻⁶ Å⁻²)</span></label>';
+    const ambIn = document.createElement("input");
+    ambIn.type = "number";
+    ambIn.step = "any";
+    ambIn.className = "form-control form-control-sm";
+    ambIn.style.maxWidth = "200px";
+    ambIn.value = (ov.ambient != null) ? ov.ambient : "";
+    ambIn.addEventListener("change", function () {
+      const v = ambIn.value.trim();
+      if (v === "") delete ov.ambient;
+      else ov.ambient = parseFloat(v);
+      _saveFormValues();
+    });
+    ambWrap.appendChild(ambIn);
+    body.appendChild(ambWrap);
+
+    // intensity / theta_offset / sample_broadening triplets
+    [
+      ["intensity", "Intensity"],
+      ["theta_offset", "θ offset"],
+      ["sample_broadening", "Sample broadening"],
+    ].forEach(function (pair) {
+      const wrap = document.createElement("div");
+      wrap.className = "mb-1";
+      const lbl = document.createElement("div");
+      lbl.className = "form-label small mb-0";
+      lbl.textContent = pair[1];
+      wrap.appendChild(lbl);
+      wrap.appendChild(_triplet(name, pair[0], ov));
+      body.appendChild(wrap);
+    });
+
+    // back_reflection checkbox
+    const brWrap = document.createElement("div");
+    brWrap.className = "form-check form-switch mb-2";
+    brWrap.innerHTML =
+      '<input class="form-check-input" type="checkbox" id="ov-br-' + idx + '">' +
+      '<label class="form-check-label" for="ov-br-' + idx + '">' +
+      'Back reflection</label>';
+    const brIn = brWrap.querySelector("input");
+    brIn.checked = !!ov.back_reflection;
+    brIn.addEventListener("change", function () {
+      if (brIn.checked) ov.back_reflection = true;
+      else delete ov.back_reflection;
+      _saveFormValues();
+    });
+    body.appendChild(brWrap);
+
+    // extra_description textarea
+    const descWrap = document.createElement("div");
+    descWrap.className = "mb-1";
+    descWrap.innerHTML = '<label class="form-label small mb-0">Extra description</label>';
+    const descIn = document.createElement("textarea");
+    descIn.className = "form-control form-control-sm";
+    descIn.rows = 2;
+    descIn.value = ov.extra_description || "";
+    descIn.addEventListener("change", function () {
+      const v = descIn.value.trim();
+      if (v) ov.extra_description = v;
+      else delete ov.extra_description;
+      _saveFormValues();
+    });
+    descWrap.appendChild(descIn);
+    body.appendChild(descWrap);
+
+    acc.appendChild(item);
+  });
+}
+
 /* ---- analysis launch ----------------------------------------- */
 
-function startAnalysis() {
-  const sampleDesc = document.getElementById("sample-desc").value.trim();
-  const hypothesis = document.getElementById("hypothesis").value.trim();
-  const outputDir = document.getElementById("output-dir").value.trim();
-
-  // Derive primary data file from plotted files list
+function _buildAnalysisBody(opts) {
+  // Compose the JSON body for /api/start-analysis (or /api/preview-structure).
+  // Returns { body, errors }; if errors is non-empty the caller should abort.
+  const sampleDesc = (document.getElementById("sample-desc").value || "").trim();
+  const hypothesis = (document.getElementById("hypothesis").value || "").trim();
+  const outputDir = (document.getElementById("output-dir").value || "").trim();
   const fitFiles = plottedFiles.filter(function (f) { return f.isFit; });
-  if (!fitFiles.length) { alert("Please load at least one data file."); return; }
-  if (!sampleDesc) { alert("Please enter a sample description."); return; }
-  if (!outputDir) { alert("Please select an output directory."); return; }
+  const errors = [];
 
-  const dataFile = fitFiles[0].path;
+  if (!fitFiles.length) errors.push("Please load at least one data file.");
+  if (!sampleDesc) errors.push("Please enter a sample description.");
+  if (!opts || !opts.skipOutputDir) {
+    if (!outputDir) errors.push("Please select an output directory.");
+  }
+
+  const maxIter = parseInt(document.getElementById("max-iterations").value, 10) || 5;
+  const body = {
+    data_file: fitFiles.length ? fitFiles[0].path : "",
+    sample_description: sampleDesc,
+    hypothesis: hypothesis || null,
+    output_dir: outputDir,
+    interactive: document.getElementById("interactive-mode").checked,
+    max_iterations: maxIter,
+  };
+
+  const stateNames = _collectStateNames();
+  const fitStates = fitFiles.map(function (f) {
+    return (f.state || "").trim();
+  });
+  const hasGrouped = fitStates.some(function (s) { return s.length > 0; });
+  const allGrouped = fitStates.every(function (s) { return s.length > 0; });
+
+  if (groupIntoStates && hasGrouped) {
+    if (!allGrouped) {
+      errors.push(
+        "Some fit files have no state assigned. Either tag every fit file " +
+        "with a state name or untick its fit checkbox."
+      );
+    }
+    if (errors.length) return { body: body, errors: errors };
+
+    // Group fit files by state name (order = first-seen order).
+    const order = [];
+    const byState = Object.create(null);
+    fitFiles.forEach(function (f) {
+      const name = f.state.trim();
+      if (!byState[name]) { byState[name] = []; order.push(name); }
+      byState[name].push(f);
+    });
+
+    if (order.length < 2) {
+      errors.push(
+        "Multi-state co-refinement requires at least 2 distinct state names."
+      );
+      return { body: body, errors: errors };
+    }
+
+    const states = order.map(function (name) {
+      const files = byState[name].map(function (f) {
+        const stem = _basename(f.path).replace(/\.[^.]+$/, "");
+        return { file: f.path, label: stem };
+      });
+      const entry = { name: name, data_files: files };
+      const ov = stateOverrides[name] || {};
+      if (ov.ambient != null && !Number.isNaN(ov.ambient)) {
+        entry.ambient = { rho: ov.ambient };
+      }
+      ["intensity", "theta_offset", "sample_broadening"].forEach(function (k) {
+        if (ov[k] && Object.keys(ov[k]).length) {
+          if (!_validateTriplet(ov[k])) {
+            errors.push(
+              "State '" + name + "' " + k +
+              ": init/min/max must satisfy min ≤ init ≤ max."
+            );
+          }
+          entry[k] = Object.assign({}, ov[k]);
+        }
+      });
+      if (ov.back_reflection === true) entry.back_reflection = true;
+      if (ov.extra_description) entry.extra_description = ov.extra_description;
+      return entry;
+    });
+
+    body.states = states;
+
+    const tieParams = _parseTiesText(tiesText);
+    if (tiesMode === "shared" && tieParams.length) {
+      body.shared_parameters = tieParams;
+    } else if (tiesMode === "unshared" && tieParams.length) {
+      body.unshared_parameters = tieParams;
+    }
+    if (body.shared_parameters && body.unshared_parameters) {
+      // Radio prevents this, but be defensive.
+      errors.push(
+        "shared_parameters and unshared_parameters are mutually exclusive."
+      );
+    }
+    // Multi-state path drops top-level data_files.
+  } else {
+    // Legacy single-state / multi-file co-refinement.
+    const dataFiles = fitFiles.map(function (f) {
+      const stem = _basename(f.path).replace(/\.[^.]+$/, "");
+      return { file: f.path, label: stem };
+    });
+    if (dataFiles.length > 1) body.data_files = dataFiles;
+  }
+
+  return { body: body, errors: errors };
+}
+
+function startAnalysis() {
+  const { body, errors } = _buildAnalysisBody({ skipOutputDir: false });
+  if (errors.length) {
+    alert(errors.join("\n"));
+    return;
+  }
   _saveFormValues();
 
   const btn = document.getElementById("btn-start");
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Starting…';
 
-  const maxIter = parseInt(document.getElementById("max-iterations").value, 10) || 5;
-
-  const dataFiles = fitFiles.map(function (f) {
-    const stem = _basename(f.path).replace(/\.[^.]+$/, "");
-    return { file: f.path, label: stem };
-  });
-
   fetch("/api/start-analysis", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      data_file: dataFile,
-      sample_description: sampleDesc,
-      hypothesis: hypothesis || null,
-      output_dir: outputDir,
-      interactive: document.getElementById("interactive-mode").checked,
-      max_iterations: maxIter,
-      data_files: dataFiles.length > 1 ? dataFiles : undefined,
-    }),
+    body: JSON.stringify(body),
   })
     .then((r) => r.json().then((d) => ({ ok: r.ok, data: d })))
     .then(({ ok, data }) => {

@@ -39,7 +39,17 @@ co-refinement (`states:` is for *physical states*, not measurement segments).
 
 ## How to configure
 
-Add a `states:` block to the user config:
+You can configure a multi-state run two ways:
+
+- **Web UI** (`aure web`, Setup tab): tick *Group files into states*, label
+  each file with a state name, pick a ties mode (Auto / Shared / Unshared),
+  optionally click *Preview structure* to see the available layer
+  parameters as a checklist, and adjust per-state ambient / intensity /
+  theta_offset / sample_broadening / back_reflection / extra_description
+  overrides from the accordion. The UI submits the same JSON body as the
+  CLI/Python path.
+- **YAML config** (`aure analyze ... --config`): add a `states:` block to
+  the user config:
 
 ```yaml
 states:

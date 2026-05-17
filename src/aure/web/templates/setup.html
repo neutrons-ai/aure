@@ -42,9 +42,104 @@
                 <div class="form-text mb-1">
                   Tick the checkbox to include a file in the fit.
                   Multiple checked files trigger co-refinement with shared structural parameters.
+                  For samples measured under several physical conditions (solvent contrast,
+                  anneal step, swelling series, applied potential, …) enable
+                  <em>Group files into states</em> below to declare per-state file groups
+                  with shared structural ties.
                 </div>
+                <div class="form-check form-switch mb-2">
+                  <input class="form-check-input" type="checkbox" id="group-into-states" />
+                  <label class="form-check-label small" for="group-into-states">
+                    Group files into states (multi-state co-refinement)
+                  </label>
+                </div>
+                <datalist id="state-name-suggestions"></datalist>
                 <div id="setup-plotted-files" class="list-group list-group-flush border rounded bg-white">
                   <div class="list-group-item text-muted small">No files loaded yet.</div>
+                </div>
+              </div>
+            </div>
+
+            {# Cross-state parameter ties (multi-state only) #}
+            <div id="ties-card" class="mb-3" style="display:none">
+              <div class="card border-info">
+                <div class="card-header bg-light d-flex justify-content-between align-items-center">
+                  <span class="fw-semibold">
+                    <i class="bi bi-link-45deg"></i> Cross-state parameter ties
+                  </span>
+                  <a href="#" id="ties-help" class="small text-decoration-none"
+                     title="Open the multi-state-corefinement skill docs"
+                     target="_blank" rel="noopener">
+                    <i class="bi bi-info-circle"></i> What are these?
+                  </a>
+                </div>
+                <div class="card-body">
+                  <div class="form-text mb-2">
+                    Choose how structural parameters are tied across states.
+                    <strong>Auto</strong> ties each layer's
+                    <code>thickness</code>, <code>material.rho</code> and
+                    <code>interface</code>, plus
+                    <code>substrate.interface</code>. Use <em>Shared</em> to
+                    list explicit tied params, or <em>Unshared</em> to subtract
+                    from the auto set. Shared and Unshared are mutually exclusive.
+                  </div>
+                  <div class="d-flex gap-3 mb-2 flex-wrap">
+                    <div class="form-check">
+                      <input class="form-check-input ties-mode" type="radio"
+                             name="ties-mode" id="ties-mode-auto" value="auto" checked />
+                      <label class="form-check-label" for="ties-mode-auto">Auto (recommended)</label>
+                    </div>
+                    <div class="form-check">
+                      <input class="form-check-input ties-mode" type="radio"
+                             name="ties-mode" id="ties-mode-shared" value="shared" />
+                      <label class="form-check-label" for="ties-mode-shared">Shared (whitelist)</label>
+                    </div>
+                    <div class="form-check">
+                      <input class="form-check-input ties-mode" type="radio"
+                             name="ties-mode" id="ties-mode-unshared" value="unshared" />
+                      <label class="form-check-label" for="ties-mode-unshared">Unshared (blacklist)</label>
+                    </div>
+                  </div>
+                  <div id="ties-presets" class="mb-2" style="display:none">
+                    <span class="small text-muted me-2">Presets:</span>
+                    <button type="button" class="btn btn-sm btn-outline-secondary me-1"
+                            data-ties-preset="structural">Structural (default)</button>
+                    <button type="button" class="btn btn-sm btn-outline-secondary me-1"
+                            data-ties-preset="substrate">Substrate only</button>
+                    <button type="button" class="btn btn-sm btn-outline-secondary"
+                            data-ties-preset="all-but-ambient">All but ambient</button>
+                  </div>
+                  <div id="ties-preview-row" class="mb-2">
+                    <button type="button" id="ties-preview-btn"
+                            class="btn btn-sm btn-outline-primary">
+                      <i class="bi bi-eye"></i> Preview structure
+                    </button>
+                    <span id="ties-preview-status" class="small text-muted ms-2"></span>
+                  </div>
+                  <div id="ties-checklist-host"></div>
+                  <textarea id="ties-text" class="form-control font-monospace"
+                            rows="4" disabled
+                            placeholder="One dotted name per line, e.g.&#10;Cu.thickness&#10;Cu.material.rho&#10;substrate.interface"></textarea>
+                  <datalist id="ties-param-suggestions"></datalist>
+                </div>
+              </div>
+            </div>
+
+            {# Per-state overrides accordion (multi-state only) #}
+            <div id="overrides-card" class="mb-3" style="display:none">
+              <div class="card border-secondary">
+                <div class="card-header bg-light fw-semibold">
+                  <i class="bi bi-sliders2"></i> Per-state overrides
+                  <span class="text-muted fw-normal small">(optional)</span>
+                </div>
+                <div class="card-body">
+                  <div class="form-text mb-2">
+                    Optional: override ambient SLD, intensity, theta_offset,
+                    sample broadening, back-reflection geometry, or add a
+                    free-text description for any individual state. Leave fields
+                    blank to use the workflow defaults.
+                  </div>
+                  <div class="accordion" id="overrides-accordion"></div>
                 </div>
               </div>
             </div>

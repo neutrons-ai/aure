@@ -1,5 +1,5 @@
 output/
-validation/results/
+validation/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
