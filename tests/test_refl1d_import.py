@@ -329,6 +329,49 @@ def test_back_reflection_override_applies(tmp_path, one_file):
     assert summary["back_reflection"] is True
 
 
+def test_synthesized_description_mentions_back_reflection(tmp_path, one_file):
+    """Back-reflection runs must surface the entry side in the description
+    — the LLM uses this on resume/refine to keep the substrate side straight.
+    """
+    from aure.refl1d_import import import_refl1d
+
+    # Build the problem in back-reflection mode so the orientation is
+    # genuine. The heuristic recognises ``silicon`` as a substrate and
+    # picks the orientation without needing the explicit override.
+    defn = _single_state_definition(one_file)
+    defn["back_reflection"] = True
+    src = _save_problem_to(tmp_path, defn)
+    out = tmp_path / "imported"
+    summary = import_refl1d(str(src), str(out))
+
+    assert summary["back_reflection"] is True
+    final = json.loads((out / "final_state.json").read_text())
+    desc = final["state"]["sample_description"]
+    assert "Neutrons enter from the silicon substrate side" in desc
+
+
+def test_synthesized_description_orders_layers_top_down(tmp_path, two_files):
+    """Layers in ParsedSample run bottom-up (substrate-adjacent first);
+    the synthesized description should reverse them so the English
+    reading is top-down (\"Cu on Ti on Si\")."""
+    from aure.refl1d_import import import_refl1d
+
+    src = _save_problem_to(tmp_path, _two_state_definition(two_files))
+    out = tmp_path / "imported"
+    import_refl1d(str(src), str(out), state_names=["D2O", "H2O"])
+
+    final = json.loads((out / "final_state.json").read_text())
+    desc = final["state"]["sample_description"]
+    # Fixture layers are [Cu, Ti] (Cu adjacent to substrate, Ti adjacent
+    # to ambient). Top-down reading is "Ti on Cu on silicon".
+    cu_idx = desc.find("Cu")
+    ti_idx = desc.find("Ti")
+    assert ti_idx >= 0 and cu_idx >= 0
+    assert ti_idx < cu_idx, (
+        f"layers should read top-down but description says {desc!r}"
+    )
+
+
 def test_per_file_results_carry_state_name(tmp_path, two_files):
     """``PerFileFitResult.state`` is required by the multi-state web view."""
     from aure.refl1d_import import import_refl1d

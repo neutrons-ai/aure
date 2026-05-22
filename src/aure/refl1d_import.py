@@ -1044,17 +1044,34 @@ def _synth_features(
 def _default_sample_description(
     parsed: ParsedSample, n_states: int
 ) -> str:
-    """Synthesise a sample description from the recovered structure."""
+    """Synthesise a sample description from the recovered structure.
+
+    Layer order in :class:`ParsedSample` runs *bottom-up* (the first
+    entry is adjacent to the substrate, the last entry is adjacent to
+    the ambient). The conventional English reading runs top-down
+    ("Cu on Ti on Si"), so we reverse before joining.
+
+    When the run is back-reflecting, we append a sentence that names
+    the substrate explicitly — the LLM relies on this to keep the
+    neutron-entry side straight during refinement.
+    """
     layers = parsed.get("layers") or []
     sub = parsed["substrate"]["name"]
     amb = parsed["ambient"]["name"]
+    back_reflection = bool(parsed.get("back_reflection", False))
+
     if layers:
+        top_down = list(reversed(layers))
         layer_str = " on ".join(
-            f"{lay['thickness']:.1f} Å {lay['name']}" for lay in layers
+            f"{lay['thickness']:.1f} Å {lay['name']}" for lay in top_down
         )
+        base = f"{layer_str} on {sub} in {amb}"
     else:
-        layer_str = "bare substrate"
-    base = f"{layer_str} on {sub} in {amb}"
+        base = f"bare {sub} substrate in {amb}"
+
+    if back_reflection:
+        base += f". Neutrons enter from the {sub} substrate side"
+
     if n_states > 1:
         base += f" (imported {n_states}-state co-refinement)"
     else:
