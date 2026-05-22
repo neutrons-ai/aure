@@ -137,46 +137,26 @@ for initial Globus authentication setup.
 
 ## Co-refinement (multi-file fitting)
 
-When you have multiple reflectivity datasets measured on the same sample
-(e.g. different Q-range segments, or different contrasts with shared
-structural parameters), AuRE can fit them simultaneously. All structural
-layer parameters (thickness, SLD, roughness) are tied across files while
-each file gets its own intensity normalization.
+When you have multiple reflectivity datasets — either Q-range segments of one
+physical sample, or several physical states of the same sample (solvent
+contrast, anneal step, swelling series, …) — AuRE fits them simultaneously.
 
-### CLI
+All data files live inside a `states:` block in your setup YAML. Even a
+single-file run uses one state.
 
-Pass extra files with `-d` / `--extra-data` (repeatable):
+### CLI (ad-hoc shortcut)
+
+For a quick one-off without a setup file, the positional `DATA_FILE` plus
+`-d / --extra-data` builds a synthetic one-state run for you:
 
 ```bash
 aure analyze low-Q.dat "Cu/Ti on Si" -d mid-Q.dat -d high-Q.dat -o ./output -v
 ```
 
-### Manifest (batch)
+### Setup YAML (preferred)
 
-List the additional files under `data_files` alongside the primary `data_file`:
-
-```yaml
-jobs:
-  - name: copper_corefinement
-    data_file: data/REFL_218386.txt
-    data_files:
-      - data/REFL_218387.txt
-      - data/REFL_218388.txt
-    sample_description: 50 nm copper on 5 nm Ti on silicon
-```
-
-### Web UI
-
-In the setup page, click **Load Data** multiple times to add files.  Tick the
-checkbox next to each file to include it in the fit — multiple checked files
-trigger co-refinement automatically.
-
-### Multi-state co-refinement
-
-When the **same sample** is measured under multiple physical conditions —
-solvent contrast (D₂O / H₂O), an anneal step, swelling series, applied
-potential, etc. — use the `states:` block in the user config to drive a
-shared-structure / per-state-ambient fit:
+For anything multi-state or repeatable, drop the configuration in a setup
+file and pass it via `-c`:
 
 ```yaml
 sample_description: |
@@ -186,11 +166,11 @@ states:
   - name: D2O
     extra_description: ambient is D2O (SLD ~6.4)
     data_files:
-      - Rawdata/REFL_226642_combined_data_auto.txt
+      - file: Rawdata/REFL_226642_combined_data_auto.txt
   - name: H2O
     extra_description: ambient is H2O (SLD ~-0.56)
     data_files:
-      - Rawdata/REFL_226660_combined_data_auto.txt
+      - file: Rawdata/REFL_226660_combined_data_auto.txt
 
 # Optional whitelist (mutually exclusive with `unshared_parameters`)
 shared_parameters:
@@ -200,20 +180,55 @@ shared_parameters:
 ```
 
 ```bash
-aure analyze "" "" --config aure_config.yaml -o ./output -v
+aure analyze -c setup.yaml -o ./output -v
 ```
 
-The default tied set (when neither `shared_parameters` nor
-`unshared_parameters` is supplied) ties thickness, SLD, and interface for
-every layer plus the substrate interface. Per-state outputs are written
-under `output/refl1d_output/fit_iter{i}_{method}/state_<name>/profile.dat`.
-See the `multi-state-corefinement` skill for guidance on choosing the tie
-set for common experiments.
+Single-Q-segment co-refinement: declare one state with multiple files.
+Multi-state: declare multiple states. The default tied set
+(when neither `shared_parameters` nor `unshared_parameters` is supplied) ties
+thickness, SLD, and interface for every layer plus the substrate interface.
 
-#### Web UI
+### Manifest (batch)
 
-The setup tab gains multi-state affordances when more than one data file is
-loaded:
+A batch manifest is a list of setups under `jobs:` plus an optional
+`defaults:` block. A flat setup file (no `jobs:` wrapper) is accepted as a
+1-job manifest:
+
+```yaml
+defaults:
+  output_root: ./output
+  max_refinements: 5
+
+jobs:
+  - name: copper_corefinement
+    sample_description: 50 nm copper on 5 nm Ti on silicon
+    states:
+      - name: state0
+        data_files:
+          - file: data/REFL_218386.txt
+          - file: data/REFL_218387.txt
+          - file: data/REFL_218388.txt
+```
+
+### Web UI
+
+In the Setup tab:
+- **Load Setup** uploads a YAML and prefills every field (sample
+  description, states, ties, refinement settings).
+- **Save Setup** downloads the current form state as a YAML you can
+  rerun via `aure analyze -c` / `aure batch` or share with collaborators.
+- Click **Load Data** to add files manually, tick the fit checkbox on
+  each one, then toggle *Group files into states* for multi-state mode.
+
+Per-state outputs are written under
+`output/refl1d_output/fit_iter{i}_{method}/state_<name>/profile.dat`. See the
+`multi-state-corefinement` skill for guidance on choosing the tie set for
+common experiments.
+
+#### Web UI affordances
+
+The setup tab includes everything you need for multi-state work without
+hand-editing YAML:
 
 - **Group files into states** toggle adds a state-name column next to each
   fit file. Same-state files plot in matching colours.
@@ -227,8 +242,9 @@ loaded:
 - **Per-state overrides accordion** lets you adjust ambient SLD,
   intensity / theta_offset / sample_broadening triplets, back-reflection,
   and per-state extra descriptions without leaving the page.
-- The dotted-name suggestions datalist merges skill presets with parameter
-  names harvested from past runs in the same output root.
+- **Load Setup / Save Setup** round-trip the entire form to a setup YAML
+  that also works with `aure analyze -c` and `aure batch` — handy for
+  saving experimental configurations or sharing with collaborators.
 
 ### Python API
 
@@ -238,10 +254,15 @@ from aure import run_analysis
 result = run_analysis(
     data_file="data/REFL_218386.txt",
     sample_description="Cu/Ti on Si in dTHF",
-    data_files=[
-        {"file": "data/REFL_218386.txt", "label": "REFL_218386"},
-        {"file": "data/REFL_218387.txt", "label": "REFL_218387"},
-        {"file": "data/REFL_218388.txt", "label": "REFL_218388"},
+    states=[
+        {
+            "name": "state0",
+            "data_files": [
+                {"file": "data/REFL_218386.txt", "label": "REFL_218386"},
+                {"file": "data/REFL_218387.txt", "label": "REFL_218387"},
+                {"file": "data/REFL_218388.txt", "label": "REFL_218388"},
+            ],
+        }
     ],
     output_dir="./output",
 )
@@ -276,30 +297,38 @@ aure check-llm [--json] [--no-test] [--fix]
 Run a full analysis workflow on a reflectivity data file.
 
 ```bash
-aure analyze DATA_FILE SAMPLE_DESCRIPTION [OPTIONS]
+aure analyze [DATA_FILE] [SAMPLE_DESCRIPTION] [OPTIONS]
 ```
+
+`DATA_FILE` and `SAMPLE_DESCRIPTION` are optional when `-c setup.yaml`
+supplies them (the YAML's `states:` block carries the data files, its
+`sample_description:` field carries the description). When both positional
+arguments and the setup file specify the same field, positionals win.
 
 | Option | Description |
 |--------|-------------|
 | `-o, --output-dir PATH` | Save checkpoints and model scripts to this directory |
 | `-m, --max-refinements N` | Maximum refinement iterations (default: 5) |
 | `-h, --hypothesis TEXT` | Optional hypothesis to test |
-| `-d, --extra-data PATH` | Additional data file for co-refinement (repeatable) |
-| `-c, --config PATH` | YAML config file with evaluation criteria and model constraints |
+| `-d, --extra-data PATH` | Extra data file (single-state co-refinement; ad-hoc only) |
+| `-c, --config PATH` | Setup YAML file (states, evaluation criteria, model constraints, …) |
 | `-v, --verbose` | Stream workflow progress to stderr |
 | `--json` | Emit results as JSON |
 
 **Examples:**
 
 ```bash
-# Basic analysis
+# Ad-hoc single-file analysis
 aure analyze data.txt "100 nm polystyrene on silicon"
 
 # Save outputs, increase refinement budget
 aure analyze data.txt "Cu/Ti bilayer on Si in dTHF" -o ./output -m 8 -v
 
-# Multi-file co-refinement
+# Ad-hoc multi-file co-refinement (single state synthesised internally)
 aure analyze low-Q.dat "multilayer" -d mid-Q.dat -d high-Q.dat -o ./output
+
+# Multi-state co-refinement via a setup file
+aure analyze -c setup.yaml -o ./output
 ```
 
 ### `aure batch`
@@ -317,8 +346,11 @@ aure batch MANIFEST [OPTIONS]
 | `-j, --job NAME` | Run only the named job(s). Repeatable. Default: all |
 | `--dry-run` | Validate the manifest and print the plan without running |
 
-The manifest is a YAML file with a `defaults` section and a `jobs` list.
-See [manifest.example.yaml](manifest.example.yaml) for the full schema.
+The manifest is a YAML file with an optional `defaults` section and a
+`jobs` list. A flat single-setup file (no `jobs:` wrapper) is also accepted
+— `aure batch` treats it as a one-job manifest. See
+[manifest.example.yaml](manifest.example.yaml) and
+[aure_config.example.yaml](aure_config.example.yaml) for the full schemas.
 
 Each job supports a `command` field — either `analyze` (default, full
 fit-and-refine workflow) or `prepare` (intake → analysis → modeling only,
@@ -335,6 +367,9 @@ aure batch manifest.yaml -j copper_on_silicon
 
 # Preview without executing
 aure batch manifest.yaml --dry-run
+
+# Flat single-job manifest — same file usable with `aure analyze -c`
+aure batch setup.yaml
 ```
 
 **Minimal prepare-mode manifest:**
@@ -347,25 +382,33 @@ jobs:
   # Full workflow (fit + refine)
   - name: copper_analysis
     command: analyze
-    data_file: data/copper.txt
     sample_description: 50 nm copper on silicon
     max_refinements: 5
+    states:
+      - name: state0
+        data_files:
+          - file: data/copper.txt
 
   # Prepare only — stops before fitting, writes <output_root>/<name>/<model_name>.json
   - name: copper_prepare
     command: prepare
-    data_file: data/copper.txt
     sample_description: 50 nm copper on silicon
     model_name: copper_model        # optional; defaults to the job name
+    states:
+      - name: state0
+        data_files:
+          - file: data/copper.txt
 
   # Multi-file prepare with co-refinement (shared structure, per-file normalisation)
   - name: copper_corefinement_prepare
     command: prepare
-    data_file: data/low-Q.txt
-    data_files:
-      - data/mid-Q.txt
-      - data/high-Q.txt
     sample_description: 50 nm copper on silicon
+    states:
+      - name: state0
+        data_files:
+          - file: data/low-Q.txt
+          - file: data/mid-Q.txt
+          - file: data/high-Q.txt
 ```
 
 The resulting `problem.json` can be passed directly to refl1d:

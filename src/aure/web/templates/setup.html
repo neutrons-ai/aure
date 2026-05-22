@@ -21,8 +21,23 @@
   <div class="row justify-content-center">
     <div class="col-lg-8 col-xl-6">
       <div class="card mt-3">
-        <div class="card-header">
+        <div class="card-header d-flex justify-content-between align-items-center">
           <h5 class="mb-0"><i class="bi bi-sliders"></i> New Analysis</h5>
+          <div class="btn-group btn-group-sm">
+            <input type="file" id="setup-load-input" accept=".yaml,.yml"
+                   style="display:none"
+                   onchange="loadSetupFromFile(this.files[0])" />
+            <button class="btn btn-outline-secondary" type="button"
+                    onclick="document.getElementById('setup-load-input').click()"
+                    title="Load a setup YAML file">
+              <i class="bi bi-upload"></i> Load Setup
+            </button>
+            <button class="btn btn-outline-secondary" type="button"
+                    onclick="saveSetupToFile()"
+                    title="Download the current form state as a setup YAML">
+              <i class="bi bi-download"></i> Save Setup
+            </button>
+          </div>
         </div>
         <div class="card-body">
           <form id="setup-form" onsubmit="return false;">

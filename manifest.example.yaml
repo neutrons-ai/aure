@@ -7,6 +7,11 @@
 #
 # All paths are relative to the manifest file's directory unless
 # they are absolute.
+#
+# Every job declares its data files inside a `states:` block.
+# Even single-file analyses have one state — there is no flat
+# `data_file:` shortcut at the YAML layer (use the `aure analyze
+# DATA_FILE` CLI positional for ad-hoc single-file runs).
 # ──────────────────────────────────────────────────────────────
 
 # ── Shared defaults (applied to every job unless overridden) ──
@@ -34,35 +39,41 @@ defaults:
 
 # ── Jobs ──────────────────────────────────────────────────────
 jobs:
+  # Simplest job: one file, one state.
   - name: copper_on_silicon
-    data_file: tests/data/REFL_218386_combined_data_auto.txt
     sample_description: >-
       50 nm copper on 5 nm Ti on silicon.
       The ambient medium is dTHF (SLD about 6).
       Neutrons enter from the silicon substrate side.
     hypothesis: The copper layer may have roughness > 10 Å
+    states:
+      - name: state0
+        data_files:
+          - file: tests/data/REFL_218386_combined_data_auto.txt
 
-  # Co-refinement: multiple data files sharing the same sample model
+  # Single-state co-refinement: multiple Q-range segments of one sample.
+  # All structural parameters are tied across files (single Sample);
+  # each probe gets its own intensity normalisation.
   - name: copper_corefinement
-    data_file: data/REFL_218386.txt
-    data_files:
-      - data/REFL_218387.txt
-      - data/REFL_218388.txt
     sample_description: >-
       50 nm copper on 5 nm Ti on silicon.
       The ambient medium is dTHF (SLD about 6).
     max_refinements: 5
+    states:
+      - name: state0
+        data_files:
+          - file: data/REFL_218386.txt
+          - file: data/REFL_218387.txt
+          - file: data/REFL_218388.txt
 
   # Multi-state co-refinement: one sample, several physical states.
-  # `data_file:` is still required (it must equal one of the state files).
-  # `states:` overrides the legacy `data_files:` flat list. Use either
-  # `shared_parameters:` (whitelist) OR `unshared_parameters:` (blacklist),
-  # not both. When neither is given, the default tied set is used (all
-  # layer thicknesses, SLDs, interfaces + substrate.interface).
+  # Use either `shared_parameters:` (whitelist) OR `unshared_parameters:`
+  # (blacklist), not both. When neither is given, the default tied set is
+  # used (all layer thicknesses, SLDs, interfaces + substrate.interface).
   - name: cu_d2o_h2o_corefinement
-    data_file: data/REFL_226642_combined_data_auto.txt
     sample_description: >-
       2 nm CuOx / 50 nm Cu / 3 nm Ti on Si.
+    max_refinements: 5
     states:
       - name: D2O
         extra_description: ambient is D2O (SLD ~6.4)
@@ -79,25 +90,32 @@ jobs:
       - Ti.thickness
       - Ti.material.rho
       - Ti.interface
-    max_refinements: 5
 
   - name: polystyrene_film
-    data_file: data/ps_film.txt
     sample_description: 100 nm polystyrene on silicon
-    max_refinements: 3        # override the default for this job
+    max_refinements: 3          # override the default for this job
+    states:
+      - name: state0
+        data_files:
+          - file: data/ps_film.txt
 
-  # Minimal job – only the two required fields
+  # Minimal job: just one data file + description.
   - name: quick_test
-    data_file: data/sample.txt
     sample_description: thin gold film on glass
-    fit_method: lm             # fast local fit only
+    fit_method: lm              # fast local fit only
     fit_steps: 500
+    states:
+      - name: state0
+        data_files:
+          - file: data/sample.txt
 
   # Prepare-only job: generates <output_root>/<name>/<model_name>.json
   - name: ps_prepare_only
     command: prepare
-    data_file: data/ps_film.txt
     sample_description: 100 nm polystyrene on silicon
-    data_files:
-      - data/ps_film_repeat.txt
     model_name: ps_model
+    states:
+      - name: state0
+        data_files:
+          - file: data/ps_film.txt
+          - file: data/ps_film_repeat.txt

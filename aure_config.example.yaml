@@ -1,67 +1,79 @@
 # ==========================================================================
-# AuRE analysis configuration
+# AuRE setup file (states-only, single run)
 # ==========================================================================
 #
-# Pass this file to the CLI with:
-#   aure analyze data.dat "sample description" --config config.yaml
+# A "setup" YAML describes ONE analysis run. Pass it to the CLI with:
 #
-# Both sections are optional — omit any section you don't need.
-# Each entry is a plain-English rule that the LLM will follow.
+#   aure analyze -c setup.yaml -o ./output
+#
+# Or use the same file with batch (treated as a one-job manifest):
+#
+#   aure batch setup.yaml
+#
+# The web UI's Setup tab has Load / Save buttons that read and write
+# files in this exact format.
+#
+# Every field below is optional unless noted. Paths are resolved relative
+# to this file's directory.
 
 # --------------------------------------------------------------------------
-# Evaluation criteria
+# Identification (optional; defaults to "job0" / file stem)
 # --------------------------------------------------------------------------
-# Extra rules applied when judging whether a fit is acceptable.
-# These supplement (not replace) the built-in χ² threshold and physics checks.
+# name: cu_d2o_h2o          # used to name the output subdirectory
+# model_name: cu_d2o_h2o    # used for the generated problem.json
 #
-evaluation_criteria:
-  - "Layer roughness must be above 5 Å to be considered acceptable."
-  - "Layer roughness should be below half of adjacent layer thicknesses to avoid unphysical intermixing."
+# command: analyze          # analyze (default) | prepare
+# output_root: ./output     # parent directory for the output
 
 # --------------------------------------------------------------------------
-# Model constraints
+# Sample description (required)
 # --------------------------------------------------------------------------
-# Hard constraints the LLM must respect when building or refining a model.
-# Use these to prevent the LLM from making unwanted structural changes.
-#
-model_constraints:
-  - "Do not add an extra layer between the copper and titanium layers."
-  - "If you add an SiOx layer on top of the silicon substrate, do not allow its thickness to exceed 35 Å. "
-  - "The substrate roughness must not exceed 10 Å."
+sample_description: |
+  50 nm copper on 5 nm Ti on silicon.
+  The ambient medium is dTHF (SLD about 6).
+  Neutrons enter from the silicon substrate side.
+
+# Optional: a hypothesis to bias the LLM's refinement loop toward.
+# hypothesis: The copper layer may have a CuOx skin.
 
 # --------------------------------------------------------------------------
-# Multi-state co-refinement (optional)
+# Data (required, always via states)
 # --------------------------------------------------------------------------
-# Use `states:` when the same sample is measured under multiple physical
-# conditions (e.g. solvent contrast, anneal step, elapsed time). Each state
-# groups one or more data files that share a single refl1d Sample. Across
-# states, only the layer attributes named in `shared_parameters` (whitelist)
-# or implied by `unshared_parameters` (blacklist) are tied. The two are
-# mutually exclusive.
+# Each state groups data files that share one physical sample / Sample.
+# A single-file analysis is one state with one file. A multi-Q-segment
+# co-refinement is one state with N files. A solvent-contrast / anneal /
+# swelling series is N states (one per physical condition).
 #
-# When this section is present, the CLI ignores --extra-data and the
-# positional DATA_FILE is overridden by the first state's first file.
-#
-# sample_description: |
-#   2 nm CuOx / 50 nm Cu / 3 nm Ti on Si.
-#   Neutrons enter from the silicon side.
-#
+states:
+  - name: state0
+    data_files:
+      - file: tests/data/REFL_218386_combined_data_auto.txt
+
+# Example: multi-Q-segment co-refinement (single sample, multiple files).
+# states:
+#   - name: state0
+#     data_files:
+#       - file: low-Q.dat
+#       - file: mid-Q.dat
+#       - file: high-Q.dat
+
+# Example: solvent-contrast multi-state co-refinement.
 # states:
 #   - name: D2O
 #     extra_description: ambient is D2O (SLD ~6.4)
 #     data_files:
-#       - Rawdata/REFL_226642_combined_data_auto.txt
-#
+#       - file: Rawdata/REFL_226642_combined_data_auto.txt
 #   - name: H2O
-#     extra_description: ambient is H2O (SLD ~-0.56), same sample, 24 h later
+#     extra_description: ambient is H2O (SLD ~-0.56)
 #     data_files:
-#       - Rawdata/REFL_226660_combined_data_auto.txt
+#       - file: Rawdata/REFL_226660_combined_data_auto.txt
 #
-# # `back_reflection` is a per-model setting (set at the top level if needed).
 # # All states must share the same orientation — mixing normal and back-
 # # reflecting states in one run would silently mis-alias substrate.interface.
 #
-# # Whitelist OR blacklist (not both):
+# # Cross-state ties — whitelist OR blacklist (not both). Default tied set
+# # (when omitted): every layer's thickness / material.rho / interface and
+# # the substrate's interface.
 # shared_parameters:
 #   - Cu.thickness
 #   - Cu.material.rho
@@ -70,3 +82,37 @@ model_constraints:
 #   - Ti.material.rho
 #   - Ti.interface
 # # unshared_parameters: [CuOx.thickness]
+
+# --------------------------------------------------------------------------
+# Refinement controls (optional)
+# --------------------------------------------------------------------------
+# max_refinements: 5          # default 5
+# fit_method: dream           # lm | de | dream
+# fit_steps: 1000
+# fit_burn: 1000
+
+# --------------------------------------------------------------------------
+# Evaluation criteria  (extra rules the LLM applies when judging the fit)
+# --------------------------------------------------------------------------
+evaluation_criteria:
+  - Layer roughness must be above 5 Å to be considered acceptable.
+  - Layer roughness should be below half of adjacent layer thicknesses to avoid unphysical intermixing.
+
+# --------------------------------------------------------------------------
+# Model constraints  (hard rules the LLM must respect when building models)
+# --------------------------------------------------------------------------
+model_constraints:
+  - Do not add an extra layer between the copper and titanium layers.
+  - If you add an SiOx layer on top of the silicon substrate, do not allow its thickness to exceed 35 Å.
+  - The substrate roughness must not exceed 10 Å.
+
+# --------------------------------------------------------------------------
+# Pass-through metadata (ignored by AuRE; preserved on round-trip)
+# --------------------------------------------------------------------------
+# Useful for analyzer interop — e.g. `plan-data` emits `perform_assembly`
+# and `notes` here for downstream schedulers to consume.
+#
+# metadata:
+#   perform_assembly: true
+#   notes: |
+#     Sequence 226642 is complete (3 parts present).

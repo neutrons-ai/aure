@@ -389,8 +389,8 @@ def check_llm(output_json: bool, no_test: bool, fix: bool):
 
 
 @cli.command()
-@click.argument("data_file", type=click.Path(exists=True))
-@click.argument("sample_description")
+@click.argument("data_file", type=click.Path(exists=True), required=False)
+@click.argument("sample_description", required=False)
 @click.option(
     "--hypothesis",
     "-h",
@@ -401,12 +401,12 @@ def check_llm(output_json: bool, no_test: bool, fix: bool):
     "-d",
     multiple=True,
     type=click.Path(exists=True),
-    help="Additional data files for multi-file co-refinement (Q-range segments)",
+    help="Additional data files for multi-file co-refinement (single state)",
 )
 @click.option(
     "--max-refinements",
     "-m",
-    default=5,
+    default=None,
     type=int,
     help="Maximum number of refinement iterations (default: 5)",
 )
@@ -433,14 +433,14 @@ def check_llm(output_json: bool, no_test: bool, fix: bool):
     "-c",
     "config_file",
     type=click.Path(exists=True),
-    help="YAML config file with evaluation criteria and model constraints",
+    help="Setup YAML file (states, evaluation criteria, model constraints, …)",
 )
 def analyze(
-    data_file: str,
-    sample_description: str,
+    data_file: Optional[str],
+    sample_description: Optional[str],
     hypothesis: Optional[str],
     extra_data: tuple,
-    max_refinements: int,
+    max_refinements: Optional[int],
     output_dir: Optional[str],
     output_json: bool,
     verbose: bool,
@@ -449,50 +449,26 @@ def analyze(
     """
     Analyze a reflectivity data file with fitting and refinement.
 
-    DATA_FILE: Path to the reflectivity data file (.dat, .txt, .refl)
+    DATA_FILE and SAMPLE_DESCRIPTION are the ad-hoc single-file shortcut.
+    For multi-state co-refinement or finer control, pass a setup YAML via
+    ``-c setup.yaml`` and omit the positional arguments. Positional
+    arguments override anything declared in the setup.
 
-    SAMPLE_DESCRIPTION: Natural language description of the sample
+    When --output-dir is specified, checkpoints are saved after each
+    workflow node (intake, analysis, modeling, fitting, evaluation).
 
-    The workflow generates a model, fits it to the data, evaluates the fit,
-    and refines the model if needed (up to --max-refinements iterations).
-
-    For multi-file co-refinement (e.g. spliced Q-range segments that share
-    the same sample state), pass additional files with --extra-data / -d:
-
-        aure analyze low-Q.dat "sample" -d mid-Q.dat -d high-Q.dat
-
-    All structural parameters are tied across files; each file gets its own
-    intensity normalization.
-
-    When --output-dir is specified, checkpoints are saved after each workflow
-    node (intake, analysis, modeling, fitting, evaluation, refinement).
-    These can be used to inspect intermediate results or resume the workflow.
-
+    \b
     Examples:
-
-        # Basic analysis with default 5 refinement iterations
-        python -m aure.cli analyze data.dat "100 nm polystyrene on silicon"
-
-        # Multi-file co-refinement
-        python -m aure.cli analyze low-Q.dat "multilayer" -d mid-Q.dat -d high-Q.dat
-
-        # Save checkpoints to a directory
-        python -m aure.cli analyze data.dat "multilayer" -o ./results
-
-        # Limit refinement iterations
-        python -m aure.cli analyze data.dat "thin film" --max-refinements 3
-
-        # Resume from a checkpoint
-        python -m aure.cli resume ./results/checkpoints/004_fitting.json
+        aure analyze data.dat "100 nm polystyrene on silicon"
+        aure analyze low-Q.dat "multilayer" -d mid-Q.dat -d high-Q.dat
+        aure analyze -c setup.yaml -o ./results
     """
-    # Configure logging if verbose
     if verbose:
         logging.basicConfig(
             level=logging.INFO,
             format="%(message)s",
             stream=sys.stderr,
         )
-        # Set specific loggers
         for module in [
             "agent.nodes.fitting",
             "agent.nodes.evaluation",
@@ -500,67 +476,107 @@ def analyze(
         ]:
             logging.getLogger(module).setLevel(logging.INFO)
 
+    from .setup import (
+        SetupConfig,
+        load_setup,
+        primary_data_file,
+        setup_to_user_config,
+    )
     from .workflow import run_analysis
 
-    # Load user config (evaluation criteria / model constraints / states)
-    try:
-        user_config = load_user_config(config_file)
-    except Exception as e:
-        click.echo(click.style(f"  Config error: {e}", fg="red"))
-        sys.exit(2)
+    # ── Load setup ────────────────────────────────────────────────
+    setup: SetupConfig = {}  # type: ignore[assignment]
+    if config_file:
+        try:
+            setup = load_setup(config_file)
+        except Exception as e:
+            click.echo(click.style(f"  Setup error: {e}", fg="red"))
+            sys.exit(2)
 
-    from .config import states_from_config
+    # ── Merge positional overrides into the setup ─────────────────
+    # Rule: positional args win over setup values, but warn if both supplied.
+    if sample_description:
+        if setup.get("sample_description") and setup["sample_description"] != sample_description:
+            click.echo(
+                click.style(
+                    "  Note: positional SAMPLE_DESCRIPTION overrides the setup file.",
+                    fg="yellow",
+                )
+            )
+        setup["sample_description"] = sample_description
+    if hypothesis:
+        setup["hypothesis"] = hypothesis
+    if max_refinements is not None:
+        setup["max_refinements"] = max_refinements
 
-    config_states = states_from_config(user_config)
-
-    # ------------------------------------------------------------------
-    # Multi-state path: states defined in the config drive the workflow.
-    # CLI ``--extra-data`` is incompatible with config-driven states.
-    # The positional DATA_FILE may be left at its default but must not
-    # conflict with what the config declares.
-    # ------------------------------------------------------------------
-    data_files = None
-    states = None
-    if config_states:
+    # ── Resolve data files ────────────────────────────────────────
+    # Three mutually exclusive paths:
+    #   1. Setup carries states  → use them as-is. --extra-data forbidden.
+    #   2. Positional DATA_FILE  → synthesize a single state from it (+ --extra-data).
+    #   3. Neither               → error.
+    states = setup.get("states") or []
+    if states:
         if extra_data:
             click.echo(
                 click.style(
-                    "  Cannot combine --extra-data with `states:` in the config. "
-                    "Move all data files into the config's states block.",
+                    "  Cannot combine --extra-data with `states:` in the setup file. "
+                    "Move all data files into the setup's states block.",
                     fg="red",
                 )
             )
             sys.exit(2)
-        states = config_states
-        # Override the positional DATA_FILE with the first state's first file
-        # so downstream paths that still read state["data_file"] keep working.
-        from .state import flatten_data_files as _flatten
-
-        flat = _flatten(config_states)
-        data_files = flat
-        if flat:
+        if data_file:
             from pathlib import Path as _Path
+            from .state import flatten_data_files as _flatten
 
-            first = flat[0]["file"]
+            first = _flatten(states)[0]["file"]
             if _Path(data_file).resolve() != _Path(first).resolve():
                 click.echo(
                     click.style(
-                        f"  Note: positional DATA_FILE ignored; using state files "
-                        f"declared in {config_file}.",
+                        "  Note: positional DATA_FILE ignored; using files from setup.",
                         fg="yellow",
                     )
                 )
-            data_file = first
     else:
-        # Build data_files list for the legacy multi-file co-refinement path.
-        all_files = [data_file] + list(extra_data)
-        if len(all_files) > 1:
-            from pathlib import Path as _Path
+        if not data_file:
+            click.echo(
+                click.style(
+                    "  Missing data file. Pass it as the positional argument "
+                    "or define a `states:` block in --config.",
+                    fg="red",
+                )
+            )
+            sys.exit(2)
+        from pathlib import Path as _Path
 
-            data_files = [
+        all_files = [data_file] + list(extra_data)
+        synthetic_state = {
+            "name": "state0",
+            "data_files": [
                 {"file": str(_Path(f).resolve()), "label": _Path(f).stem}
                 for f in all_files
-            ]
+            ],
+        }
+        states = [synthetic_state]
+        setup["states"] = states
+
+    if not setup.get("sample_description"):
+        click.echo(
+            click.style(
+                "  Missing sample description. Provide it as the positional "
+                "argument or set `sample_description:` in --config.",
+                fg="red",
+            )
+        )
+        sys.exit(2)
+
+    # ── Derive runner kwargs ──────────────────────────────────────
+    sample_description = setup["sample_description"]
+    hypothesis = setup.get("hypothesis")
+    max_refinements = setup.get("max_refinements", 5)
+    user_config = setup_to_user_config(setup)
+    data_file = primary_data_file(setup)
+    data_files = None  # multi-state path: runner reads from `states`
 
     if not output_json:
         click.echo(click.style("═" * 60, fg="blue"))
@@ -575,18 +591,19 @@ def analyze(
         click.echo()
 
         click.echo(f"  Data file: {data_file}")
-        if states:
+        n_files = sum(len(s.get("data_files", [])) for s in states)
+        if len(states) > 1:
             for st in states:
                 names = ", ".join(ds["label"] for ds in st.get("data_files", []))
                 click.echo(f"  State {st['name']}: {names}")
             click.echo(
                 f"  Multi-state co-refinement: {len(states)} states, "
-                f"{sum(len(s.get('data_files', [])) for s in states)} files"
+                f"{n_files} files"
             )
-        elif extra_data:
-            for ef in extra_data:
-                click.echo(f"  Extra data: {ef}")
-            click.echo(f"  Co-refinement: {len(all_files)} files (shared structure)")
+        elif n_files > 1:
+            for ds in states[0].get("data_files", []):
+                click.echo(f"  + {ds['file']}")
+            click.echo(f"  Co-refinement: {n_files} files (shared structure)")
         click.echo(f"  Sample: {sample_description}")
         if hypothesis:
             click.echo(f"  Hypothesis: {hypothesis}")
@@ -798,8 +815,8 @@ def _print_analysis_results(result: dict, output_dir: Optional[str] = None):
 
 
 @cli.command()
-@click.argument("data_file", type=click.Path(exists=True))
-@click.argument("sample_description")
+@click.argument("data_file", type=click.Path(exists=True), required=False)
+@click.argument("sample_description", required=False)
 @click.option(
     "--hypothesis",
     "-h",
@@ -810,7 +827,7 @@ def _print_analysis_results(result: dict, output_dir: Optional[str] = None):
     "-d",
     multiple=True,
     type=click.Path(exists=True),
-    help="Additional data files for multi-file co-refinement (Q-range segments)",
+    help="Additional data files for multi-file co-refinement (single state)",
 )
 @click.option(
     "--output-dir",
@@ -830,7 +847,7 @@ def _print_analysis_results(result: dict, output_dir: Optional[str] = None):
     "-c",
     "config_file",
     type=click.Path(exists=True),
-    help="YAML config file with model constraints",
+    help="Setup YAML file (states, model constraints, …)",
 )
 @click.option(
     "--json",
@@ -845,8 +862,8 @@ def _print_analysis_results(result: dict, output_dir: Optional[str] = None):
     help="Enable verbose logging",
 )
 def prepare(
-    data_file: str,
-    sample_description: str,
+    data_file: Optional[str],
+    sample_description: Optional[str],
     hypothesis: Optional[str],
     extra_data: tuple,
     output_dir: Optional[str],
@@ -858,9 +875,9 @@ def prepare(
     """
     Run intake, analysis, and modeling only; emit a refl1d-ready problem.json.
 
-    DATA_FILE: Path to the reflectivity data file (.dat, .txt, .refl)
-
-    SAMPLE_DESCRIPTION: Natural language description of the sample
+    DATA_FILE and SAMPLE_DESCRIPTION are the ad-hoc single-file shortcut.
+    For multi-state co-refinement, pass a setup YAML via ``-c setup.yaml``
+    and omit the positional arguments.
 
     This stops before fitting, producing a ModelDefinition and a
     ``problem.json`` that can be loaded directly by refl1d (``refl1d
@@ -871,6 +888,7 @@ def prepare(
         aure prepare data.dat "100 nm polystyrene on silicon"
         aure prepare data.dat "multilayer" -o ./out -n my_model
         aure prepare low-Q.dat "multilayer" -d mid-Q.dat -d high-Q.dat
+        aure prepare -c setup.yaml -n my_model
     """
     if verbose:
         logging.basicConfig(
@@ -879,24 +897,87 @@ def prepare(
             stream=sys.stderr,
         )
 
+    from .setup import (
+        SetupConfig,
+        load_setup,
+        primary_data_file,
+        setup_to_user_config,
+    )
     from .workflow import run_prepare
     from .nodes.model_builder import save_problem_json
 
-    # Resolve model name and output directory defaults
-    resolved_model_name = model_name or Path(data_file).stem
-    resolved_output_dir = output_dir or str(Path("output") / resolved_model_name)
+    # ── Load setup ────────────────────────────────────────────────
+    setup: SetupConfig = {}  # type: ignore[assignment]
+    if config_file:
+        try:
+            setup = load_setup(config_file)
+        except Exception as e:
+            click.echo(click.style(f"  Setup error: {e}", fg="red"))
+            sys.exit(2)
 
-    user_config = load_user_config(config_file)
+    # ── Merge positional overrides ────────────────────────────────
+    if sample_description:
+        setup["sample_description"] = sample_description
+    if hypothesis:
+        setup["hypothesis"] = hypothesis
+    if model_name:
+        setup["model_name"] = model_name
 
-    # Build data_files list for multi-file co-refinement
-    all_files = [data_file] + list(extra_data)
-    data_files = None
-    if len(all_files) > 1:
+    # ── Resolve data files ────────────────────────────────────────
+    states = setup.get("states") or []
+    if states:
+        if extra_data:
+            click.echo(
+                click.style(
+                    "  Cannot combine --extra-data with `states:` in the setup file.",
+                    fg="red",
+                )
+            )
+            sys.exit(2)
+    else:
+        if not data_file:
+            click.echo(
+                click.style(
+                    "  Missing data file. Pass it as the positional argument "
+                    "or define a `states:` block in --config.",
+                    fg="red",
+                )
+            )
+            sys.exit(2)
         from pathlib import Path as _Path
 
-        data_files = [
-            {"file": str(_Path(f).resolve()), "label": _Path(f).stem} for f in all_files
+        all_files = [data_file] + list(extra_data)
+        states = [
+            {
+                "name": "state0",
+                "data_files": [
+                    {"file": str(_Path(f).resolve()), "label": _Path(f).stem}
+                    for f in all_files
+                ],
+            }
         ]
+        setup["states"] = states
+
+    if not setup.get("sample_description"):
+        click.echo(
+            click.style(
+                "  Missing sample description. Provide it as the positional "
+                "argument or set `sample_description:` in --config.",
+                fg="red",
+            )
+        )
+        sys.exit(2)
+
+    # ── Derive runner kwargs ──────────────────────────────────────
+    sample_description = setup["sample_description"]
+    hypothesis = setup.get("hypothesis")
+    user_config = setup_to_user_config(setup)
+    data_file = primary_data_file(setup)
+    # Multi-state runs use the `states` arg; legacy `data_files` is left empty.
+    data_files = None
+
+    resolved_model_name = setup.get("model_name") or Path(data_file).stem
+    resolved_output_dir = output_dir or str(Path("output") / resolved_model_name)
 
     if not output_json:
         click.echo(click.style("═" * 60, fg="blue"))
@@ -910,10 +991,19 @@ def prepare(
         click.echo()
 
         click.echo(f"  Data file:  {data_file}")
-        if extra_data:
-            for ef in extra_data:
-                click.echo(f"  Extra data: {ef}")
-            click.echo(f"  Co-refinement: {len(all_files)} files (shared structure)")
+        n_files = sum(len(s.get("data_files", [])) for s in states)
+        if len(states) > 1:
+            for st in states:
+                names = ", ".join(ds["label"] for ds in st.get("data_files", []))
+                click.echo(f"  State {st['name']}: {names}")
+            click.echo(
+                f"  Multi-state co-refinement: {len(states)} states, "
+                f"{n_files} files"
+            )
+        elif n_files > 1:
+            for ds in states[0].get("data_files", []):
+                click.echo(f"  + {ds['file']}")
+            click.echo(f"  Co-refinement: {n_files} files (shared structure)")
         click.echo(f"  Sample:     {sample_description}")
         if hypothesis:
             click.echo(f"  Hypothesis: {hypothesis}")
@@ -953,6 +1043,7 @@ def prepare(
             checkpoint_callback=checkpoint_callback if not output_json else None,
             user_config=user_config,
             data_files=data_files,
+            states=states if len(states) > 1 else None,
         )
     except Exception as e:
         if output_json:
@@ -1062,10 +1153,11 @@ def batch(manifest: str, job: tuple, dry_run: bool):
 
     MANIFEST: Path to a YAML file describing batch jobs.
 
-    The manifest contains a ``defaults`` section (shared settings) and a
-    ``jobs`` list.  Each job must supply at least ``name``, ``data_file``,
-    and ``sample_description``.  Any option from the ``defaults`` block
-    can be overridden per-job.
+    Two manifest shapes are accepted:
+
+    1. **Multi-job**: top-level ``jobs:`` list + optional ``defaults:`` block.
+    2. **Flat setup**: a single setup file (no ``jobs:`` wrapper). Treated
+       as a one-job manifest.
 
     See manifest.example.yaml for the full schema.
 
@@ -1074,43 +1166,55 @@ def batch(manifest: str, job: tuple, dry_run: bool):
         aure batch manifest.yaml
         aure batch manifest.yaml -j copper_on_silicon
         aure batch manifest.yaml --dry-run
+        aure batch setup.yaml                # flat single-job manifest
     """
-    import yaml
+    import os
+    from .setup import (
+        load_manifest,
+        primary_data_file,
+        setup_to_user_config,
+    )
 
     manifest_path = Path(manifest).resolve()
-    manifest_dir = manifest_path.parent
 
-    # ── Parse ──────────────────────────────────────────────────
-    with open(manifest_path) as fh:
-        doc = yaml.safe_load(fh)
+    # ── Load manifest (also accepts a flat setup file) ────────────
+    try:
+        loaded = load_manifest(manifest_path)
+    except Exception as exc:
+        raise click.BadParameter(str(exc)) from exc
 
-    if not isinstance(doc, dict):
-        raise click.BadParameter("Manifest must be a YAML mapping with 'jobs'.")
+    jobs = loaded["jobs"]
 
-    defaults = doc.get("defaults") or {}
-    jobs = doc.get("jobs")
-    if not jobs or not isinstance(jobs, list):
+    if job and len(jobs) == 1 and not loaded["defaults"]:
+        # A flat setup has nothing to filter; refuse politely.
         raise click.BadParameter(
-            "Manifest must contain a 'jobs' list with at least one entry."
+            "--job filter is only valid for multi-job manifests."
         )
-
-    # Validate every job has the required fields
-    for i, j in enumerate(jobs):
-        for field in ("name", "data_file", "sample_description"):
-            if field not in j:
-                raise click.BadParameter(
-                    f"Job #{i + 1} is missing required field '{field}'."
-                )
 
     # Filter by --job if specified
     if job:
         selected = {n for n in job}
-        jobs = [j for j in jobs if j["name"] in selected]
-        missing = selected - {j["name"] for j in jobs}
+        jobs = [j for j in jobs if j.get("name") in selected]
+        missing = selected - {j.get("name", "") for j in jobs}
         if missing:
             raise click.BadParameter(
                 f"Job(s) not found in manifest: {', '.join(sorted(missing))}"
             )
+
+    # Every job needs a name (we use it for the output subdir). Default
+    # to "job{i}" if missing — typically only happens for flat setups
+    # that didn't declare one.
+    for i, j in enumerate(jobs):
+        j.setdefault("name", f"job{i}")
+        command = str(j.get("command", "analyze")).strip().lower()
+        if command not in {"analyze", "prepare"}:
+            raise click.BadParameter(
+                f"Job '{j['name']}' has invalid command '{command}'. "
+                "Use 'analyze' or 'prepare'."
+            )
+        j["command"] = command
+
+    manifest_dir = manifest_path.parent
 
     # ── Dry-run report ─────────────────────────────────────────
     click.echo(click.style("═" * 60, fg="blue"))
@@ -1121,47 +1225,38 @@ def batch(manifest: str, job: tuple, dry_run: bool):
     click.echo()
 
     for j in jobs:
-        merged = {**defaults, **j}
-        command = str(merged.get("command", "analyze")).strip().lower()
-        if command not in {"analyze", "prepare"}:
-            raise click.BadParameter(
-                f"Job '{merged['name']}' has invalid command '{command}'. "
-                "Use 'analyze' or 'prepare'."
-            )
-        data_file = _resolve_path(merged["data_file"], manifest_dir)
-        output_root = _resolve_path(merged.get("output_root", "./output"), manifest_dir)
-        output_dir = str(Path(output_root) / merged["name"])
-        click.echo(f"  • {merged['name']}")
+        name = j["name"]
+        command = j["command"]
+        output_root = _resolve_path(
+            j.get("output_root", "./output"), manifest_dir
+        )
+        output_dir = str(Path(output_root) / name)
+        states = j.get("states", [])
+        click.echo(f"  • {name}")
         click.echo(f"      mode   : {command}")
-        click.echo(f"      data   : {data_file}")
-        # Show extra data files for co-refinement
-        if merged.get("data_files"):
-            for df in merged["data_files"]:
-                extra = _resolve_path(
-                    df if isinstance(df, str) else df["file"], manifest_dir
-                )
-                click.echo(f"             + {extra}")
-        # Show multi-state co-refinement
-        if merged.get("states"):
-            for st in merged["states"]:
+        n_files = sum(len(s.get("data_files") or []) for s in states)
+        if len(states) > 1:
+            for st in states:
                 files = st.get("data_files") or []
-                names = ", ".join(
-                    Path(df if isinstance(df, str) else df["file"]).name for df in files
-                )
+                names = ", ".join(Path(ds["file"]).name for ds in files)
                 click.echo(f"      state  : {st.get('name', '?')} ({names})")
-        click.echo(f"      sample : {merged['sample_description'][:72]}")
+            click.echo(f"      files  : {len(states)} states, {n_files} files")
+        else:
+            for ds in states[0].get("data_files", []):
+                click.echo(f"      data   : {ds['file']}")
+        click.echo(f"      sample : {j.get('sample_description', '')[:72]}")
         click.echo(f"      output : {output_dir}")
-        if merged.get("hypothesis"):
-            click.echo(f"      hypothesis : {merged['hypothesis'][:72]}")
+        if j.get("hypothesis"):
+            click.echo(f"      hypothesis : {j['hypothesis'][:72]}")
         if command == "analyze":
             click.echo(
-                f"      fit    : {merged.get('fit_method', 'dream')} "
-                f"steps={merged.get('fit_steps', 1000)} "
-                f"burn={merged.get('fit_burn', 1000)}"
+                f"      fit    : {j.get('fit_method', 'dream')} "
+                f"steps={j.get('fit_steps', 1000)} "
+                f"burn={j.get('fit_burn', 1000)}"
             )
-            click.echo(f"      refine : max {merged.get('max_refinements', 5)}")
+            click.echo(f"      refine : max {j.get('max_refinements', 5)}")
         else:
-            click.echo(f"      model  : {merged.get('model_name', merged['name'])}")
+            click.echo(f"      model  : {j.get('model_name', name)}")
         click.echo()
 
     if dry_run:
@@ -1171,88 +1266,29 @@ def batch(manifest: str, job: tuple, dry_run: bool):
     # ── Execute ────────────────────────────────────────────────
     from .workflow import run_analysis, run_prepare
     from .nodes.model_builder import save_problem_json
-    import os
 
     results_summary: list[dict] = []
 
     for idx, j in enumerate(jobs, 1):
-        merged = {**defaults, **j}
-        name = merged["name"]
-        command = str(merged.get("command", "analyze")).strip().lower()
-        data_file = _resolve_path(merged["data_file"], manifest_dir)
-        output_root = _resolve_path(merged.get("output_root", "./output"), manifest_dir)
+        name = j["name"]
+        command = j["command"]
+        output_root = _resolve_path(
+            j.get("output_root", "./output"), manifest_dir
+        )
         output_dir = str(Path(output_root) / name)
 
-        # Build data_files list for co-refinement
-        data_files = None
-        raw_extra = merged.get("data_files")
-        if raw_extra and isinstance(raw_extra, list):
-            all_files = [data_file] + [
-                _resolve_path(df if isinstance(df, str) else df["file"], manifest_dir)
-                for df in raw_extra
-            ]
-            data_files = [{"file": str(f), "label": Path(f).stem} for f in all_files]
-
-        # Multi-state co-refinement (Ticket 10): a job may declare a `states:`
-        # block that mirrors the user-config YAML. When present it overrides
-        # `data_files` and supplies cross-state parameter ties.
-        states = None
-        job_user_config: dict = {}
-        raw_states = merged.get("states")
-        if raw_states:
-            if data_files:
-                raise click.BadParameter(
-                    f"Job '{name}': cannot combine `states:` with `data_files:`. "
-                    "Move all files into the states block."
-                )
-            # Resolve every state's file paths against the manifest directory
-            resolved_states: list[dict] = []
-            for st in raw_states:
-                st_copy = dict(st)
-                st_copy["data_files"] = [
-                    {
-                        **(df if isinstance(df, dict) else {"file": df}),
-                        "file": str(
-                            _resolve_path(
-                                df if isinstance(df, str) else df["file"],
-                                manifest_dir,
-                            )
-                        ),
-                    }
-                    for df in (st.get("data_files") or [])
-                ]
-                resolved_states.append(st_copy)
-            user_cfg_for_states: dict = {"states": resolved_states}
-            if "shared_parameters" in merged:
-                user_cfg_for_states["shared_parameters"] = merged["shared_parameters"]
-            if "unshared_parameters" in merged:
-                user_cfg_for_states["unshared_parameters"] = merged[
-                    "unshared_parameters"
-                ]
-            from .config import states_from_config
-
-            states = states_from_config(user_cfg_for_states)
-            # Override data_file with the first state's first file so the
-            # workflow's positional arg is always real.
-            from .state import flatten_data_files as _flatten_batch
-
-            flat = _flatten_batch(states)
-            if flat:
-                data_file = flat[0]["file"]
-            if "shared_parameters" in merged:
-                job_user_config["shared_parameters"] = merged["shared_parameters"]
-            if "unshared_parameters" in merged:
-                job_user_config["unshared_parameters"] = merged["unshared_parameters"]
+        states = j.get("states") or []
+        data_file = primary_data_file(j)
+        job_user_config = setup_to_user_config(j) or None
 
         click.echo(click.style(f"  [{idx}/{len(jobs)}] {name}", fg="cyan", bold=True))
 
-        # Apply per-job env overrides (restored after each job)
-        env_overrides = _build_env_overrides(merged)
+        env_overrides = _build_env_overrides(j)
         saved_env = {k: os.environ.get(k) for k in env_overrides}
         os.environ.update(env_overrides)
 
-        verbose = merged.get("verbose", False)
-        output_json = merged.get("json", False)
+        verbose = j.get("verbose", False)
+        output_json = j.get("json", False)
 
         if verbose:
             logging.basicConfig(
@@ -1275,13 +1311,12 @@ def batch(manifest: str, job: tuple, dry_run: bool):
             if command == "prepare":
                 result = run_prepare(
                     data_file=data_file,
-                    sample_description=merged["sample_description"],
-                    hypothesis=merged.get("hypothesis"),
+                    sample_description=j["sample_description"],
+                    hypothesis=j.get("hypothesis"),
                     output_dir=output_dir,
                     checkpoint_callback=checkpoint_cb if not output_json else None,
-                    data_files=data_files,
-                    states=states,
-                    user_config=job_user_config or None,
+                    states=states if len(states) > 1 else None,
+                    user_config=job_user_config,
                 )
                 model = result.get("current_model")
                 if not model:
@@ -1291,7 +1326,7 @@ def batch(manifest: str, job: tuple, dry_run: bool):
                         "Cannot serialize a legacy script-string model to problem.json"
                     )
 
-                resolved_model_name = merged.get("model_name", name)
+                resolved_model_name = j.get("model_name", name)
                 problem_path = Path(output_dir) / f"{resolved_model_name}.json"
                 definition_path = (
                     Path(output_dir) / f"{resolved_model_name}_definition.json"
@@ -1349,14 +1384,13 @@ def batch(manifest: str, job: tuple, dry_run: bool):
             else:
                 result = run_analysis(
                     data_file=data_file,
-                    sample_description=merged["sample_description"],
-                    hypothesis=merged.get("hypothesis"),
-                    max_iterations=int(merged.get("max_refinements", 5)),
+                    sample_description=j["sample_description"],
+                    hypothesis=j.get("hypothesis"),
+                    max_iterations=int(j.get("max_refinements", 5)),
                     output_dir=output_dir,
                     checkpoint_callback=checkpoint_cb if not output_json else None,
-                    data_files=data_files,
-                    states=states,
-                    user_config=job_user_config or None,
+                    states=states if len(states) > 1 else None,
+                    user_config=job_user_config,
                 )
                 chi2 = None
                 if result.get("fit_results"):
@@ -1401,7 +1435,6 @@ def batch(manifest: str, job: tuple, dry_run: bool):
             else:
                 click.echo(click.style(f"    Error: {e}", fg="red"))
         finally:
-            # Restore environment
             for k, v in saved_env.items():
                 if v is None:
                     os.environ.pop(k, None)

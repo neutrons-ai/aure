@@ -92,9 +92,20 @@ Each skill is a directory containing a `SKILL.md` (Agent Skills spec format). `s
 - `aure serve` ([src/aure/web/](src/aure/web/)) — Flask app, dual-mode: interactive setup (no arg) or viewer (`aure serve OUTPUT_DIR`). Three tabs: Setup / History (χ² progression) / Results (R(Q), SLD, live parameter editor with Refl1D-recomputed dashed "User" curve, ISAAC export).
 - `aure mcp-server` ([src/aure/mcp_server.py](src/aure/mcp_server.py)) — FastMCP server (stdio or SSE) exposing the workflow to AI assistants.
 
-### User config ([aure_config.example.yaml](aure_config.example.yaml))
+### Setup file format ([src/aure/setup.py](src/aure/setup.py), [aure_config.example.yaml](aure_config.example.yaml))
 
-`-c config.yaml` passes plain-English `evaluation_criteria` and `model_constraints` strings that are interpolated into the LLM prompts (`config.format_user_constraints`). They supplement, not replace, built-in checks.
+A "setup" YAML describes ONE analysis run. It is the canonical format shared by:
+
+- `aure analyze -c setup.yaml` (positional DATA_FILE / SAMPLE_DESCRIPTION become optional when the setup carries them)
+- `aure batch setup.yaml` — flat single-job manifest (no `jobs:` wrapper required)
+- `aure batch manifest.yaml` — each job entry is a setup, merged with the top-level `defaults:` block
+- The web UI's Setup tab **Load / Save** buttons (`POST /api/setup/load`, `POST /api/setup/export`)
+
+The schema is **states-only**. Top-level `data_file:` / `data_files:` are no longer accepted — every analysis declares its files inside a `states:` block, even a single-file analysis (`states: [{name: state0, data_files: [{file: ...}]}]`). The `aure analyze DATA_FILE` CLI positional remains for ad-hoc one-off runs and internally wraps the file in a synthetic `state0`.
+
+Analyzer-compat synonyms: `describe:` / `description:` for `sample_description:`, and `data:` for `data_files:` inside a state — so output from analyzer's `plan-data` command loads straight into AuRE. A `metadata:` block is preserved verbatim on round-trip but otherwise ignored.
+
+`aure.setup.load_setup` / `dump_setup` / `load_manifest` are the entry points; they reuse `_parse_states` from [config.py](src/aure/config.py) so all multi-state validation lives in one place.
 
 ### Optional `export` extra
 

@@ -717,6 +717,124 @@ def api_preview_structure():
         _PREVIEW_LOCK.release()
 
 
+@bp.route("/api/setup/load", methods=["POST"])
+def api_setup_load():
+    """Parse a setup YAML and return the prefill payload the form expects.
+
+    Accepts EITHER a multipart upload (key ``file``) OR a JSON body
+    ``{"yaml": "<text>"}``. Returns a dict shaped like the ``prev_run``
+    payload built by :func:`setup` so the JS can reuse its existing
+    prefill code unchanged.
+    """
+    import tempfile
+
+    from ..config import ConfigError
+    from ..setup import load_setup
+
+    yaml_text: Optional[str] = None
+    upload = request.files.get("file")
+    if upload is not None:
+        try:
+            yaml_text = upload.read().decode("utf-8")
+        except UnicodeDecodeError:
+            return jsonify({"errors": ["uploaded file is not valid UTF-8"]}), 400
+    else:
+        body = request.get_json(silent=True) or {}
+        yaml_text = body.get("yaml")
+
+    if not yaml_text:
+        return jsonify(
+            {"errors": ["expected a `file` upload or {'yaml': <text>} JSON body"]}
+        ), 400
+
+    # load_setup wants a file path; write to a temp file then parse so
+    # path resolution inside the YAML (relative `data_files`) keeps
+    # working when the user uploads from elsewhere.
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".yaml", delete=False, encoding="utf-8"
+    ) as tmp:
+        tmp.write(yaml_text)
+        tmp_path = tmp.name
+
+    try:
+        setup = load_setup(tmp_path)
+    except ConfigError as exc:
+        return jsonify({"errors": [str(exc)]}), 400
+    finally:
+        try:
+            Path(tmp_path).unlink()
+        except OSError:
+            pass
+
+    # Reshape into the prefill payload the JS prefill code knows about.
+    states = setup.get("states") or []
+    payload = {
+        "sample_description": setup.get("sample_description", ""),
+        "hypothesis": setup.get("hypothesis", "") or "",
+        "data_files": [
+            {"file": ds["file"], "label": ds.get("label", "")}
+            for st in states
+            for ds in st.get("data_files") or []
+        ],
+        "states": _minimal_state_prefill(states),
+    }
+    if setup.get("shared_parameters"):
+        payload["shared_parameters"] = list(setup["shared_parameters"])  # type: ignore[arg-type]
+    if setup.get("unshared_parameters"):
+        payload["unshared_parameters"] = list(setup["unshared_parameters"])  # type: ignore[arg-type]
+    if setup.get("model_name"):
+        payload["model_name"] = setup["model_name"]
+    if setup.get("max_refinements") is not None:
+        payload["max_refinements"] = setup["max_refinements"]
+    return jsonify(payload)
+
+
+@bp.route("/api/setup/export", methods=["POST"])
+def api_setup_export():
+    """Render the current form state as a downloadable setup YAML.
+
+    Accepts the same JSON body shape as ``/api/start-analysis`` (states +
+    sample_description + hypothesis + …). Validates via
+    :func:`aure.setup._setup_from_dict` then dumps with
+    :func:`aure.setup.dump_setup`. Returns YAML as ``text/yaml``.
+    """
+    from ..config import ConfigError
+    from ..setup import _setup_from_dict, dump_setup
+
+    body = request.get_json(silent=True) or {}
+    if "data_file" in body or "data_files" in body:
+        # The web form sends the legacy flat keys alongside states for
+        # back-compat with /api/start-analysis. We drop them here — the
+        # exported YAML is states-only by design.
+        body = {k: v for k, v in body.items() if k not in ("data_file", "data_files")}
+
+    if not body.get("states"):
+        return jsonify(
+            {"errors": ["at least one state must be declared under `states:`"]}
+        ), 400
+
+    try:
+        setup = _setup_from_dict(body, base_dir=Path.cwd(), source="<web form>")
+    except ConfigError as exc:
+        return jsonify({"errors": [str(exc)]}), 400
+
+    try:
+        yaml_text = dump_setup(setup)
+    except Exception as exc:
+        return jsonify({"errors": [f"dump failed: {exc}"]}), 500
+
+    # Render filename: <model_name>.yaml or "setup.yaml"
+    fname = (setup.get("model_name") or setup.get("name") or "setup") + ".yaml"
+    return (
+        yaml_text,
+        200,
+        {
+            "Content-Type": "text/yaml; charset=utf-8",
+            "Content-Disposition": f'attachment; filename="{fname}"',
+        },
+    )
+
+
 @bp.route("/api/known-shared-params", methods=["GET"])
 def api_known_shared_params():
     """Return distinct shared/unshared parameter names from past runs.

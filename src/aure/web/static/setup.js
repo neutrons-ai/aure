@@ -1168,6 +1168,146 @@ function _buildAnalysisBody(opts) {
   return { body: body, errors: errors };
 }
 
+/* ---- Setup YAML import/export ------------------------------- */
+
+function loadSetupFromFile(file) {
+  // Triggered by the hidden <input type="file"> in the card header.
+  if (!file) return;
+  const fd = new FormData();
+  fd.append("file", file);
+  fetch("/api/setup/load", { method: "POST", body: fd })
+    .then((r) => r.json().then((d) => ({ ok: r.ok, data: d })))
+    .then(({ ok, data }) => {
+      if (!ok) {
+        const msg = (data && data.errors) ? data.errors.join("\n") : "Unknown error";
+        alert("Could not load setup:\n" + msg);
+        return;
+      }
+      _applySetupPrefill(data);
+    })
+    .catch((err) => alert("Network error: " + err))
+    .finally(() => {
+      // Reset the input so re-loading the same file fires `change` again.
+      const inp = document.getElementById("setup-load-input");
+      if (inp) inp.value = "";
+    });
+}
+
+function _applySetupPrefill(payload) {
+  // Reuse the existing _restoreFormValues path by stuffing the payload
+  // into the global `_prevRun` shape and re-running the restore logic
+  // for the relevant fields.
+  if (payload.sample_description != null) {
+    document.getElementById("sample-desc").value = payload.sample_description || "";
+  }
+  if (payload.hypothesis != null) {
+    document.getElementById("hypothesis").value = payload.hypothesis || "";
+  }
+  if (payload.max_refinements != null) {
+    document.getElementById("max-iterations").value = payload.max_refinements;
+  }
+
+  // Build a path → state-name map for file checkboxes.
+  const states = payload.states || [];
+  const pathToState = {};
+  states.forEach(function (st) {
+    (st.data_files || []).forEach(function (df) {
+      if (df && df.file) pathToState[df.file] = st.name;
+    });
+  });
+
+  // Reset plotted files to the new list.
+  plottedFiles = (payload.data_files || []).map(function (df) {
+    return {
+      path: df.file,
+      isFit: true,
+      state: pathToState[df.file] || null,
+    };
+  });
+
+  // Multi-state mode: turn it on when >= 2 states are declared.
+  groupIntoStates = states.length >= 2;
+  const gtoggle = document.getElementById("group-into-states");
+  if (gtoggle) gtoggle.checked = groupIntoStates;
+
+  // Per-state overrides.
+  stateOverrides = {};
+  states.forEach(function (st) {
+    var ov = {};
+    if (st.ambient && typeof st.ambient.rho === "number") ov.ambient = st.ambient.rho;
+    ["intensity", "theta_offset", "sample_broadening"].forEach(function (k) {
+      if (st[k] && typeof st[k] === "object") {
+        ov[k] = {};
+        ["init", "min", "max"].forEach(function (sub) {
+          if (typeof st[k][sub] === "number") ov[k][sub] = st[k][sub];
+        });
+        if (!Object.keys(ov[k]).length) delete ov[k];
+      }
+    });
+    if (st.back_reflection === true) ov.back_reflection = true;
+    if (st.extra_description) ov.extra_description = st.extra_description;
+    if (Object.keys(ov).length) stateOverrides[st.name] = ov;
+  });
+
+  // Ties mode.
+  if (payload.shared_parameters && payload.shared_parameters.length) {
+    tiesMode = "shared";
+    tiesText = payload.shared_parameters.join("\n");
+  } else if (payload.unshared_parameters && payload.unshared_parameters.length) {
+    tiesMode = "unshared";
+    tiesText = payload.unshared_parameters.join("\n");
+  } else {
+    tiesMode = "auto";
+    tiesText = "";
+  }
+
+  // Re-render UI.
+  if (typeof _renderPlottedFilesList === "function") _renderPlottedFilesList();
+  if (typeof _renderSetupReflectivityPlot === "function") _renderSetupReflectivityPlot();
+  if (typeof _wireTiesPanel === "function") _wireTiesPanel();
+  _saveFormValues();
+}
+
+function saveSetupToFile() {
+  const { body, errors } = _buildAnalysisBody({ skipOutputDir: true });
+  if (errors.length) {
+    alert(errors.join("\n"));
+    return;
+  }
+  fetch("/api/setup/export", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  })
+    .then(function (r) {
+      if (!r.ok) {
+        return r.json().then(function (d) {
+          const msg = (d && d.errors) ? d.errors.join("\n") : "Unknown error";
+          throw new Error(msg);
+        });
+      }
+      // Filename from the Content-Disposition header (server provides it).
+      var fname = "setup.yaml";
+      const cd = r.headers.get("Content-Disposition") || "";
+      const m = cd.match(/filename="([^"]+)"/);
+      if (m) fname = m[1];
+      return r.text().then(function (text) {
+        const blob = new Blob([text], { type: "text/yaml" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = fname;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      });
+    })
+    .catch(function (err) {
+      alert("Could not export setup:\n" + err.message);
+    });
+}
+
 function startAnalysis() {
   const { body, errors } = _buildAnalysisBody({ skipOutputDir: false });
   if (errors.length) {

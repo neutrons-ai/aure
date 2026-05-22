@@ -96,30 +96,6 @@ def test_intake_multi_state_enriches_each_state():
         os.unlink(f2)
 
 
-def test_intake_flat_multi_combined_with_distinct_set_ids_errors():
-    """Two flat combined files from different sets must abort with an actionable error."""
-    from aure.nodes.intake import intake_node
-    from aure.state import create_initial_state
-
-    f1 = _make_data_file("REFL_226642_combined_data_auto.txt")
-    f2 = _make_data_file("REFL_226660_combined_data_auto.txt")
-    try:
-        state = create_initial_state(
-            data_file=f1,
-            sample_description="",
-            data_files=[_ds(f1, "a"), _ds(f2, "b")],
-        )
-        result = intake_node(state)
-        assert "error" in result
-        assert "states" in result["error"].lower()
-        # The two set ids are mentioned in the message
-        assert "226642" in result["error"]
-        assert "226660" in result["error"]
-    finally:
-        os.unlink(f1)
-        os.unlink(f2)
-
-
 def test_intake_flat_partials_same_set_id_passes():
     """Legacy partials path (same set_id) is unaffected."""
     from aure.nodes.intake import intake_node

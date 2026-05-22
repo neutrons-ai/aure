@@ -545,30 +545,10 @@ def intake_node(state: ReflectivityState) -> Dict[str, Any]:
             )
         elif existing_data_files:
             # ===== Legacy flat multi-file path =====
-            # Detect ambiguous flat multi-combined: if header inspection
-            # finds more than one distinct set_id, recommend the new
-            # ``states:`` config schema instead of silently treating the
-            # files as one shared sample.
-            distinct_set_ids: set[str] = set()
-            for ds in existing_data_files:
-                sid = _extract_set_id(ds["file"])
-                if sid:
-                    distinct_set_ids.add(sid)
-            if len(distinct_set_ids) > 1:
-                msg = (
-                    "Ambiguous multi-file invocation: the supplied files "
-                    f"come from {len(distinct_set_ids)} different REF_L sets "
-                    f"({sorted(distinct_set_ids)}). Re-run with a config "
-                    "file that defines a `states:` block, one state per "
-                    "physical sample. See aure_config.example.yaml."
-                )
-                updates["error"] = msg
-                updates["messages"].append(
-                    Message(role="system", content=msg, timestamp=None)
-                )
-                return updates
-
-            # Multi-file mode: validate all additional files
+            # The CLI/web layers now always wrap multi-file invocations
+            # in a single ``state0`` and pass them via ``states``, so this
+            # branch only fires when the runner is invoked programmatically
+            # without states. Multi-file mode: validate all additional files.
             validated_files = []
             for ds in existing_data_files:
                 try:
