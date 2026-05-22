@@ -11,6 +11,17 @@ It uses an LLM-driven workflow (powered by [LangGraph](https://github.com/langch
 to go from a raw data file and a plain-English sample description to a fitted
 [Refl1D](https://refl1d.readthedocs.io) model — automatically.
 
+## What's new
+
+- **Multi-state co-refinement** — when one sample is measured under
+  several physical conditions (solvent contrast, anneal step, swelling
+  series, applied potential, ...), declare a `states:` block in your
+  config and AuRE will tie the structural parameters across states
+  while keeping per-state ambient SLD and intensity independent. See
+  [Multi-state co-refinement](#multi-state-co-refinement) below and the
+  bundled `multi-state-corefinement` skill for a reproducible end-to-end
+  example and configuration guidance.
+
 ## How it works
 
 AuRE runs an iterative analysis pipeline:
@@ -159,6 +170,65 @@ jobs:
 In the setup page, click **Load Data** multiple times to add files.  Tick the
 checkbox next to each file to include it in the fit — multiple checked files
 trigger co-refinement automatically.
+
+### Multi-state co-refinement
+
+When the **same sample** is measured under multiple physical conditions —
+solvent contrast (D₂O / H₂O), an anneal step, swelling series, applied
+potential, etc. — use the `states:` block in the user config to drive a
+shared-structure / per-state-ambient fit:
+
+```yaml
+sample_description: |
+  2 nm CuOx / 50 nm Cu / 3 nm Ti on Si.
+
+states:
+  - name: D2O
+    extra_description: ambient is D2O (SLD ~6.4)
+    data_files:
+      - Rawdata/REFL_226642_combined_data_auto.txt
+  - name: H2O
+    extra_description: ambient is H2O (SLD ~-0.56)
+    data_files:
+      - Rawdata/REFL_226660_combined_data_auto.txt
+
+# Optional whitelist (mutually exclusive with `unshared_parameters`)
+shared_parameters:
+  - Cu.thickness
+  - Cu.material.rho
+  - Cu.interface
+```
+
+```bash
+aure analyze "" "" --config aure_config.yaml -o ./output -v
+```
+
+The default tied set (when neither `shared_parameters` nor
+`unshared_parameters` is supplied) ties thickness, SLD, and interface for
+every layer plus the substrate interface. Per-state outputs are written
+under `output/refl1d_output/fit_iter{i}_{method}/state_<name>/profile.dat`.
+See the `multi-state-corefinement` skill for guidance on choosing the tie
+set for common experiments.
+
+#### Web UI
+
+The setup tab gains multi-state affordances when more than one data file is
+loaded:
+
+- **Group files into states** toggle adds a state-name column next to each
+  fit file. Same-state files plot in matching colours.
+- **Cross-state ties panel** picks between Auto (skill defaults), Shared
+  (whitelist) and Unshared (blacklist) modes. Quick-fill presets cover
+  Structural / Substrate / All-but-ambient layouts; the free-form textarea
+  accepts one dotted-name per line.
+- **Preview structure** runs intake → analysis → modeling without fitting
+  and renders a two-column checklist of layers and tieable parameters that
+  tick straight into the textarea.
+- **Per-state overrides accordion** lets you adjust ambient SLD,
+  intensity / theta_offset / sample_broadening triplets, back-reflection,
+  and per-state extra descriptions without leaving the page.
+- The dotted-name suggestions datalist merges skill presets with parameter
+  names harvested from past runs in the same output root.
 
 ### Python API
 

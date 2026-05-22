@@ -8,6 +8,7 @@ the data using bumps.  Supports multiple fitting methods:
 - 'dream': MCMC for uncertainty quantification
 """
 
+import copy
 import os
 import logging
 from typing import Dict, Any, Optional
@@ -16,7 +17,7 @@ from pathlib import Path
 import numpy as np
 
 from ..state import ReflectivityState, FitResult, PerFileFitResult, Message
-from .model_builder import build_problem, build_multi_problem
+from .model_builder import build_problem, build_multi_problem, build_states_problem
 from .evaluation import _count_free_params, _compute_bic
 
 logger = logging.getLogger(__name__)
@@ -66,9 +67,21 @@ def fitting_node(state: ReflectivityState) -> Dict[str, Any]:
         logger.info(f"[FITTING] Running {method.upper()} optimization...")
 
         data_files = state.get("data_files", [])
-        is_multi = len(data_files) > 1 and isinstance(model, dict)
+        is_multi_state = isinstance(model, dict) and len(model.get("states") or []) >= 2
+        is_multi = (
+            len(data_files) > 1 and isinstance(model, dict) and not is_multi_state
+        )
 
-        if is_multi:
+        if is_multi_state:
+            result = run_states_refl1d_fit(
+                model_definition=model,
+                method=method,
+                iteration=iteration,
+                steps=steps,
+                burn=burn,
+                export_dir=export_dir,
+            )
+        elif is_multi:
             result = run_multi_refl1d_fit(
                 model_definition=model,
                 data_files=data_files,
@@ -92,24 +105,41 @@ def fitting_node(state: ReflectivityState) -> Dict[str, Any]:
         updates["current_chi2"] = result["chi_squared"]
         logger.info(f"[FITTING] Completed with χ² = {result['chi_squared']:.3f}")
 
-        # Update best chi2 and save best model
+        # Update best chi2 and save best model. Deepcopy so downstream
+        # mutations of current_model (refine carry-over, state-metadata
+        # attachment) can't silently corrupt the regression snapshot the
+        # evaluation guardrail will restore on χ² worsening.
         best = state.get("best_chi2")
         if best is None or result["chi_squared"] < best:
             updates["best_chi2"] = result["chi_squared"]
-            updates["best_model"] = model
+            updates["best_model"] = copy.deepcopy(model)
             logger.info(f"[FITTING] New best χ² = {result['chi_squared']:.3f}")
 
         # Update best BIC (complexity-penalized score)
         if isinstance(model, dict):
-            n_data = len(state.get("Q", []))
-            n_params = _count_free_params(model)
+            if is_multi_state:
+                # Multi-state: count unique free Parameters across all states
+                # (avoid double-counting tied params); count data points
+                # across every dataset of every state.
+                n_params = result.get("_n_free_params") or _count_free_params(model)
+                n_data = 0
+                for st in model.get("states") or []:
+                    for ds in st.get("data_files") or []:
+                        q = ds.get("Q") or []
+                        n_data += len(q)
+                # Fall back to flattened state['Q'] when per-state Q not loaded
+                if n_data == 0:
+                    n_data = len(state.get("Q", []))
+            else:
+                n_data = len(state.get("Q", []))
+                n_params = _count_free_params(model)
             bic = _compute_bic(result["chi_squared"], n_data, n_params)
             result["bic"] = bic
             logger.info(f"[FITTING] BIC = {bic:.1f} (k={n_params}, n={n_data})")
             best_bic = state.get("best_bic")
             if best_bic is None or bic < best_bic:
                 updates["best_bic"] = bic
-                updates["best_bic_model"] = model
+                updates["best_bic_model"] = copy.deepcopy(model)
                 logger.info(f"[FITTING] New best BIC = {bic:.1f}")
 
         # Format message
@@ -219,6 +249,51 @@ def run_multi_refl1d_fit(
         problem=problem,
         experiments=experiments,
         data_files=sorted_data_files,
+        fit_result=result,
+        method=method,
+        iteration=iteration,
+        export_dir=export_dir,
+    )
+
+
+def run_states_refl1d_fit(
+    model_definition: dict,
+    method: str = "lm",
+    iteration: int = 0,
+    steps: int = 1000,
+    burn: int = 1000,
+    export_dir: Optional[str] = None,
+) -> FitResult:
+    """Execute a multi-state co-refinement fit.
+
+    Builds a single :func:`build_states_problem` ``FitProblem`` with
+    cross-state parameter aliasing and emits a per-file
+    :class:`PerFileFitResult` (with the ``state`` field populated) for
+    every dataset across every state.
+
+    Per-state ``profile.dat`` files are written under
+    ``{export_dir}/state_{name}/`` for downstream consumption.
+    """
+    from bumps.fitters import fit as bumps_fit
+
+    problem, experiments_by_state, sorted_files_by_state = build_states_problem(
+        model_definition
+    )
+
+    n_states = len(experiments_by_state)
+    n_files = sum(len(v) for v in experiments_by_state.values())
+    logger.info(
+        f"[FITTING] Running {method.upper()} multi-state co-refinement: "
+        f"{n_states} states, {n_files} files total"
+    )
+
+    fit_options = _build_fit_options(method, steps, burn, export_dir)
+    result = bumps_fit(problem, **fit_options)
+
+    return _extract_states_bumps_results(
+        problem=problem,
+        experiments_by_state=experiments_by_state,
+        sorted_files_by_state=sorted_files_by_state,
         fit_result=result,
         method=method,
         iteration=iteration,
@@ -515,6 +590,195 @@ def _extract_multi_bumps_results(
         issues=[],
         suggestions=[],
     )
+
+
+def _extract_states_bumps_results(
+    problem,
+    experiments_by_state: dict,
+    sorted_files_by_state: dict,
+    fit_result,
+    method: str,
+    iteration: int,
+    export_dir: Optional[str] = None,
+) -> FitResult:
+    """Extract fit results from a multi-state co-refinement FitProblem.
+
+    Emits one :class:`PerFileFitResult` per dataset (across all states),
+    each tagged with its ``state`` name. The aggregate ``chi_squared`` is
+    the bumps total. Per-state ``profile.dat`` files are written under
+    ``export_dir/state_{name}/`` when ``export_dir`` is provided.
+    """
+    import warnings
+
+    warnings.filterwarnings("ignore", category=UserWarning, module="bumps")
+
+    chi_squared = problem.chisq()
+
+    # Deduplicated free parameter count: bumps usually deduplicates by
+    # identity already, but a defensive id()-keyed dedup keeps us safe
+    # from any future change.
+    unique_params: dict[int, Any] = {}
+    for par in problem._parameters:
+        unique_params.setdefault(id(par), par)
+    n_free_params = len(unique_params)
+
+    # Build name → uncertainty / bounds mapping over deduplicated params.
+    parameters: dict = {}
+    uncertainties: dict = {}
+    param_bounds: dict = {}
+    for i, par in enumerate(problem._parameters):
+        name = str(par.name)
+        if name in parameters:
+            # Same Parameter referenced twice (tied across states): keep first.
+            continue
+        parameters[name] = par.value
+        if hasattr(fit_result, "dx") and fit_result.dx is not None:
+            try:
+                if i < len(fit_result.dx):
+                    uncertainties[name] = fit_result.dx[i]
+            except (IndexError, TypeError):
+                pass
+        if par.bounds is not None:
+            lo, hi = par.bounds
+            param_bounds[name] = [float(lo), float(hi)]
+
+    converged = chi_squared < 100
+    if hasattr(fit_result, "success"):
+        converged = fit_result.success
+
+    logger.info(
+        f"[FITTING] Multi-state fit complete: aggregate χ² = {chi_squared:.3f}, "
+        f"k={n_free_params}"
+    )
+
+    # Per-state, per-file extraction.
+    per_file: list[PerFileFitResult] = []
+    all_Q: list[float] = []
+    all_R: list[float] = []
+    all_residuals: list[float] = []
+    all_residual_ratio: list[float] = []
+
+    for state_name, experiments in experiments_by_state.items():
+        data_files = sorted_files_by_state[state_name]
+        state_chi2_sum = 0.0
+        state_npts = 0
+        for exp, ds in zip(experiments, data_files):
+            pf: dict[str, Any] = {
+                "file": ds["file"],
+                "label": ds.get("label", ""),
+                "state": state_name,
+            }
+            try:
+                exp.update()
+                Q_arr, R_arr = exp.reflectivity()
+                pf["Q_fit"] = Q_arr.tolist()
+                pf["R_fit"] = R_arr.tolist()
+                all_Q.extend(pf["Q_fit"])
+                all_R.extend(pf["R_fit"])
+
+                resid = exp.residuals()
+                n_pts = len(resid)
+                pf["chi_squared"] = (
+                    float(np.sum(resid**2) / n_pts) if n_pts > 0 else float("inf")
+                )
+                state_chi2_sum += float(np.sum(resid**2))
+                state_npts += n_pts
+                logger.info(
+                    f"[FITTING]   [{state_name}] {pf['label']}: "
+                    f"χ² = {pf['chi_squared']:.3f}"
+                )
+
+                R_data = exp.probe.R
+                dR_data = exp.probe.dR
+                R_fit_arr = np.array(pf["R_fit"])
+                res = []
+                ratio = []
+                if R_data is not None and len(R_data) == len(R_fit_arr):
+                    if dR_data is not None and len(dR_data) == len(R_data):
+                        safe_dR = np.maximum(np.abs(dR_data), 1e-20)
+                        res = ((R_data - R_fit_arr) / safe_dR).tolist()
+                    safe_R_fit = np.maximum(R_fit_arr, 1e-20)
+                    ratio = (R_data / safe_R_fit).tolist()
+                pf["residuals"] = res
+                pf["residual_ratio"] = ratio
+                all_residuals.extend(res)
+                all_residual_ratio.extend(ratio)
+            except Exception as e:
+                logger.warning(
+                    f"[FITTING] Could not extract results for "
+                    f"[{state_name}] {pf.get('label', '')}: {e}"
+                )
+                pf["Q_fit"] = []
+                pf["R_fit"] = []
+                pf["chi_squared"] = float("inf")
+                pf["residuals"] = []
+                pf["residual_ratio"] = []
+
+            per_file.append(PerFileFitResult(**pf))
+
+        if state_npts > 0:
+            logger.info(
+                f"[FITTING]   [{state_name}] aggregate χ² = "
+                f"{state_chi2_sum / state_npts:.3f}"
+            )
+
+        # Write per-state profile.dat under export_dir/state_<name>/.
+        if export_dir and experiments:
+            try:
+                _write_state_profile(experiments[0], export_dir, state_name)
+            except Exception as exc:
+                logger.warning(
+                    f"[FITTING] Could not write profile for state {state_name}: {exc}"
+                )
+
+    sld_z, sld_rho = _read_profile_dat(export_dir)
+
+    fr = FitResult(
+        iteration=iteration,
+        method=method,
+        chi_squared=chi_squared,
+        converged=converged,
+        parameters=parameters,
+        uncertainties=uncertainties if uncertainties else None,
+        bounds=param_bounds if param_bounds else None,
+        Q_fit=all_Q,
+        R_fit=all_R,
+        residuals=all_residuals,
+        residual_ratio=all_residual_ratio,
+        sld_z=sld_z,
+        sld_rho=sld_rho,
+        per_file_results=per_file,
+        issues=[],
+        suggestions=[],
+    )
+    # Pass dedup'd free-param count through to fitting_node for BIC.
+    fr["_n_free_params"] = n_free_params  # type: ignore[typeddict-unknown-key]
+    return fr
+
+
+def _write_state_profile(experiment, export_dir: str, state_name: str) -> None:
+    """Write a 2-column ``# z rho`` profile.dat for one state's sample."""
+    state_dir = Path(export_dir) / f"state_{state_name}"
+    state_dir.mkdir(parents=True, exist_ok=True)
+
+    sample = getattr(experiment, "sample", None)
+    if sample is None:
+        return
+
+    # refl1d Stack.render(probe) returns layered slabs; use sample.render
+    # via the experiment to get the smoothed profile (z, rho, irho).
+    try:
+        z, rho, _irho = experiment.smooth_profile()
+    except Exception:
+        # Fallback for older refl1d: compute through Stack
+        z, rho, _irho = sample.render(experiment.probe)
+
+    profile_file = state_dir / "profile.dat"
+    with open(profile_file, "w") as f:
+        f.write("# z rho\n")
+        for zi, ri in zip(z, rho):
+            f.write(f"{float(zi):.6f}  {float(ri):.6e}\n")
+    logger.info(f"[FITTING] Wrote per-state profile: {profile_file}")
 
 
 def _format_fit_result(result: FitResult) -> str:

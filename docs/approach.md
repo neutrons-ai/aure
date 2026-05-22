@@ -502,6 +502,14 @@ the full workflow state. The files you will typically want to inspect are:
   `next_action` and `proposed_hypothesis_id`; plus the updated
   `structural_hypotheses` with statuses.
 
+For multi-state co-refinement runs (`states:` block in the user config),
+each fit iteration also produces a per-state `profile.dat` under
+`output/refl1d_output/fit_iter{i}_{method}/state_<name>/`, and the
+aggregated `FitResult` carries one `PerFileFitResult` entry per dataset
+tagged with its `state` name. See the `multi-state-corefinement` skill
+for the experimental patterns this addresses and for guidance on choosing
+`shared_parameters` vs `unshared_parameters`.
+
 The web UI (`aure serve ./output`) reads these checkpoints and displays
 the history interactively.
 

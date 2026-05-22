@@ -91,6 +91,7 @@ def run_analysis(
     interactive: bool = False,
     pause_callback: Optional[Callable[[Dict[str, Any], str], Optional[str]]] = None,
     data_files: Optional[list[dict]] = None,
+    states: Optional[list[dict]] = None,
 ) -> ReflectivityState:
     """
     Run the reflectivity analysis workflow.
@@ -118,6 +119,7 @@ def run_analysis(
         max_iterations=max_iterations,
         user_config=user_config,
         data_files=data_files,
+        states=states,
     )
     if interactive:
         initial_state["interactive"] = True
@@ -144,6 +146,7 @@ def run_prepare(
     checkpoint_callback: Optional[Callable[[Dict[str, Any], str], None]] = None,
     user_config: Optional[dict] = None,
     data_files: Optional[list[dict]] = None,
+    states: Optional[list[dict]] = None,
 ) -> ReflectivityState:
     """
     Run only intake → analysis → modeling.
@@ -170,6 +173,7 @@ def run_prepare(
         max_iterations=0,
         user_config=user_config,
         data_files=data_files,
+        states=states,
     )
 
     with TracedWorkflow(data_file, sample_description, hypothesis, 0) as tw:

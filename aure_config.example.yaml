@@ -28,3 +28,45 @@ model_constraints:
   - "Do not add an extra layer between the copper and titanium layers."
   - "If you add an SiOx layer on top of the silicon substrate, do not allow its thickness to exceed 35 Å. "
   - "The substrate roughness must not exceed 10 Å."
+
+# --------------------------------------------------------------------------
+# Multi-state co-refinement (optional)
+# --------------------------------------------------------------------------
+# Use `states:` when the same sample is measured under multiple physical
+# conditions (e.g. solvent contrast, anneal step, elapsed time). Each state
+# groups one or more data files that share a single refl1d Sample. Across
+# states, only the layer attributes named in `shared_parameters` (whitelist)
+# or implied by `unshared_parameters` (blacklist) are tied. The two are
+# mutually exclusive.
+#
+# When this section is present, the CLI ignores --extra-data and the
+# positional DATA_FILE is overridden by the first state's first file.
+#
+# sample_description: |
+#   2 nm CuOx / 50 nm Cu / 3 nm Ti on Si.
+#   Neutrons enter from the silicon side.
+#
+# states:
+#   - name: D2O
+#     extra_description: ambient is D2O (SLD ~6.4)
+#     data_files:
+#       - Rawdata/REFL_226642_combined_data_auto.txt
+#
+#   - name: H2O
+#     extra_description: ambient is H2O (SLD ~-0.56), same sample, 24 h later
+#     data_files:
+#       - Rawdata/REFL_226660_combined_data_auto.txt
+#
+# # `back_reflection` is a per-model setting (set at the top level if needed).
+# # All states must share the same orientation — mixing normal and back-
+# # reflecting states in one run would silently mis-alias substrate.interface.
+#
+# # Whitelist OR blacklist (not both):
+# shared_parameters:
+#   - Cu.thickness
+#   - Cu.material.rho
+#   - Cu.interface
+#   - Ti.thickness
+#   - Ti.material.rho
+#   - Ti.interface
+# # unshared_parameters: [CuOx.thickness]

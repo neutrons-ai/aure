@@ -538,6 +538,90 @@ def quick_analyze(
         return {"error": str(e)}
 
 
+@mcp.tool()
+def co_refine_states(
+    config_path: str,
+    output_dir: Optional[str] = None,
+    max_iterations: int = 5,
+) -> dict:
+    """
+    Run a multi-state co-refinement analysis from a YAML config.
+
+    The YAML must contain a top-level ``states:`` block (each entry has
+    ``name`` and ``data_files``) and optionally ``shared_parameters`` or
+    ``unshared_parameters`` (mutually exclusive). Across states only the
+    listed (or default) layer attributes are tied; everything else is
+    fit per-state. The config is read read-only and never modified.
+
+    Args:
+        config_path: Path to the user YAML config file (read-only).
+        output_dir: Optional output directory for checkpoints and results.
+        max_iterations: Maximum number of refinement iterations (default: 5).
+
+    Returns:
+        Summary of the run, including aggregate chi², per-state file
+        labels, and the path to the workflow checkpoints.
+    """
+    try:
+        from .config import load_user_config, states_from_config
+        from .state import flatten_data_files
+
+        cfg = load_user_config(config_path)
+        states = states_from_config(cfg)
+        if not states or len(states) < 2:
+            return {
+                "error": (
+                    "config must declare at least two `states:` entries for "
+                    "multi-state co-refinement"
+                )
+            }
+        sample_description = (cfg.get("sample_description") or "").strip()
+        if not sample_description:
+            return {"error": "config must include `sample_description:`"}
+
+        flat = flatten_data_files(states)
+        if not flat:
+            return {"error": "no data files found across states"}
+        data_file = flat[0]["file"]
+
+        result = run_analysis(
+            data_file=data_file,
+            sample_description=sample_description,
+            max_iterations=max_iterations,
+            output_dir=output_dir,
+            user_config=cfg,
+            states=states,
+        )
+
+        per_file = []
+        for fr in result.get("fit_results", []) or []:
+            for pf in fr.get("per_file_results") or []:
+                per_file.append(
+                    {
+                        "iteration": fr.get("iteration"),
+                        "state": pf.get("state"),
+                        "label": pf.get("label"),
+                        "chi_squared": pf.get("chi_squared"),
+                    }
+                )
+
+        return {
+            "success": result.get("error") is None,
+            "n_states": len(states),
+            "states": [s.get("name") for s in states],
+            "aggregate_chi_squared": (
+                result["fit_results"][-1].get("chi_squared")
+                if result.get("fit_results")
+                else None
+            ),
+            "per_file_chi_squared": per_file,
+            "output_dir": output_dir,
+            "error": result.get("error"),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
 # ============================================================================
 # Helper Functions
 # ============================================================================
