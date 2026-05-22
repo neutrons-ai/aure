@@ -22,7 +22,7 @@ The longest-form design rationale lives in [docs/approach.md](docs/approach.md) 
 
 - Tests: `pytest tests/` (config in `pyproject.toml` adds `--cov=aure` and an html coverage report). Single test: `pytest tests/test_workflow.py::test_name -v`.
 - Lint/format: ruff is wired via pre-commit (`ruff-check --fix --ignore=E741,E402` then `ruff-format`). Install hooks with `pre-commit install`; run on demand with `pre-commit run --all-files`. Other hooks: yamllint, taplo (TOML), gitleaks.
-- CLI entry point: `aure …` (defined in `[project.scripts]` → `aure.cli:main`). Top-level commands: `analyze`, `batch`, `resume`, `checkpoints`, `inspect-checkpoint`, `evaluate`, `plot-results`, `extract-features`, `lookup-sld`, `list-materials`, `mcp-server`, `serve` / `interactive`, `check-llm`. Full reference is in [README.md](README.md).
+- CLI entry point: `aure …` (defined in `[project.scripts]` → `aure.cli:main`). Top-level commands: `analyze`, `batch`, `resume`, `checkpoints`, `inspect-checkpoint`, `evaluate`, `import-refl1d`, `plot-results`, `extract-features`, `lookup-sld`, `list-materials`, `mcp-server`, `serve` / `interactive`, `check-llm`. Full reference is in [README.md](README.md).
 - Validation harness (separate package): `python -m validation.cli compare|chi2|diagnose` — compares fitted runs against reference models. See [validation/](validation/).
 
 ## Architecture
@@ -55,9 +55,22 @@ Conditional edges are wired in `create_workflow()`. `include_fitting=False` trun
 
 The historical design generated Python refl1d scripts; the current design stores models as `ModelDefinition` dicts (see `state.py`) and builds refl1d `Experiment`/`FitProblem` objects on-the-fly in [nodes/model_builder.py](src/aure/nodes/model_builder.py). When extending model semantics, change the dict schema + builder together — don't reintroduce script-string round-tripping.
 
-### Co-refinement (multi-file fitting)
+### Co-refinement (multi-file and multi-state)
 
-Multiple data files measured on the same sample can be fit jointly: structural parameters (thickness/SLD/roughness) are tied across files, but each file gets its own intensity normalization. Driven via `data_files=[…]` (Python API), `-d` flag (CLI), `data_files:` (manifest), or multiple checked files in the web UI. The output directory is named after the lowest run number in the set.
+Two distinct co-refinement modes share the same workflow:
+
+- **Multi-file (single physical sample)**: several data files of *the same physical sample* (e.g. spliced Q-segments) share one refl1d `Sample` so every layer parameter is tied automatically. Driven via `data_files=[…]` / `-d` flag / `data_files:` in a manifest. Built by `build_multi_problem`.
+- **Multi-state (different physical states of one sample)**: several physical states — e.g. solvent contrast, anneal step, applied potential — each with their own data file(s) and `ambient`/`intensity`/`back_reflection`. Structural parameters are tied **across states** based on `shared_parameters` (whitelist) or `unshared_parameters` (blacklist); the default tied set is `thickness`, `material.rho`, `interface` per layer plus substrate `interface`. Driven via a `states:` block in the YAML config (`-c config.yaml`) or per-job in a manifest. Built by `build_states_problem` in [model_builder.py](src/aure/nodes/model_builder.py), which aliases shared `bumps.Parameter` objects across the per-state samples and renames untied params with a `"<state> "` prefix.
+
+`state.iter_states(definition)` and `state.flatten_data_files(states)` are the canonical accessors — they synthesize a one-state view from the legacy single-file shape, so consumers don't need to branch. Intake refuses ambiguous flat multi-file invocations where files come from different REF_L set_ids and asks the user to migrate to `states:`. The `multi-state-corefinement` Agent Skill auto-activates whenever `len(states) > 1`.
+
+### Importing refl1d fits ([src/aure/refl1d_import.py](src/aure/refl1d_import.py))
+
+`aure import-refl1d REFL1D_DIR -o OUTPUT_DIR` ingests a hand-run refl1d `problem.json` into an AuRE workspace so it can be opened with `aure serve`, evaluated, or extended via `aure resume`. The module:
+
+- `definition_from_problem(problem)` walks `problem.models`, groups experiments by sample identity (`id(sample)`), and reconstructs a `ModelDefinition` with explicit `states`. Tied-parameter detection uses Python identity on `bumps.Parameter` instances (which is the protocol `build_states_problem` follows). Material-name heuristics guess `back_reflection` orientation; `--back-reflection` overrides.
+- `extract_fit_result_from_problem(problem, …)` — moved from `cli.py`; reused by `aure evaluate` and the importer.
+- Probes are dumped to `<output_dir>/data/*.txt` so the imported run is self-contained.
 
 ### Checkpoints ([src/aure/workflow/checkpoints.py](src/aure/workflow/checkpoints.py))
 

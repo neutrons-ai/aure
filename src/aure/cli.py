@@ -2146,7 +2146,9 @@ def evaluate(
     if not output_json:
         click.echo("  Extracting fit results...", nl=False)
     try:
-        fit_result = _extract_fit_result_from_problem(
+        from .refl1d_import import extract_fit_result_from_problem
+
+        fit_result = extract_fit_result_from_problem(
             problem,
             method=method,
             iteration=iteration,
@@ -2277,119 +2279,160 @@ def evaluate(
 def _extract_fit_result_from_problem(
     problem, method: str, iteration: int, export_dir: str
 ) -> dict:
-    """Build a FitResult-like dict from a deserialised bumps FitProblem.
+    """Backwards-compatible re-export.
 
-    This mirrors the logic in ``fitting._extract_bumps_results`` but works
-    on a problem that has already been optimised and exported (no ``fit_result``
-    object is available).
+    The real implementation lives in :mod:`aure.refl1d_import`.
     """
-    import numpy as np
-    from .nodes.fitting import _read_profile_dat
-    from .state import FitResult
+    from .refl1d_import import extract_fit_result_from_problem
 
-    chi_squared = float(problem.chisq())
+    return extract_fit_result_from_problem(
+        problem, method=method, iteration=iteration, export_dir=export_dir
+    )
 
-    # Detect multi-experiment problems via problem.models (generator)
-    experiments = list(problem.models)
-    is_multi = len(experiments) > 1
 
-    # Parameters & bounds (shared across experiments)
-    parameters = {}
-    uncertainties = {}  # not available from serialised problem
-    param_bounds = {}
-    for par in problem._parameters:
-        name = str(par.name)
-        parameters[name] = par.value
-        if par.bounds is not None:
-            lo, hi = par.bounds
-            param_bounds[name] = [float(lo), float(hi)]
+# ============================================================================
+# Import a refl1d fit into AuRE
+# ============================================================================
 
-    # Theory curves and residuals from first (or only) experiment
-    Q_fit, R_fit = [], []
-    residuals, residual_ratio = [], []
-    per_file_results = None
 
-    if is_multi:
-        per_file_results = []
-        all_Q, all_R, all_res, all_ratio = [], [], [], []
-        for idx, exp in enumerate(experiments):
-            pf: dict = {"file": "", "label": f"dataset {idx + 1}"}
-            try:
-                exp.update()
-                Q_arr, R_arr = exp.reflectivity()
-                pf["Q_fit"] = Q_arr.tolist()
-                pf["R_fit"] = R_arr.tolist()
-                all_Q.extend(pf["Q_fit"])
-                all_R.extend(pf["R_fit"])
+@cli.command("import-refl1d")
+@click.argument("refl1d_dir", type=click.Path(exists=True))
+@click.option(
+    "--output-dir",
+    "-o",
+    type=click.Path(),
+    default=None,
+    help="Target AuRE output directory (default: <refl1d_dir>/aure_import)",
+)
+@click.option(
+    "--context",
+    "-c",
+    "sample_description",
+    default=None,
+    help="Sample description recorded on the imported run",
+)
+@click.option(
+    "--hypothesis",
+    "-h",
+    default=None,
+    help="Optional hypothesis to attach to the imported run",
+)
+@click.option(
+    "--state-name",
+    "state_names",
+    multiple=True,
+    help="Override recovered state names (repeatable; one per distinct sample)",
+)
+@click.option(
+    "--back-reflection/--no-back-reflection",
+    "back_reflection",
+    default=None,
+    help="Force stack orientation. Default: auto-detect from material names.",
+)
+@click.option("--force", is_flag=True, help="Overwrite OUTPUT_DIR if it exists")
+@click.option("--json", "output_json", is_flag=True, help="Machine-readable summary")
+@click.option("--verbose", "-v", is_flag=True, help="Verbose logging")
+def import_refl1d_cmd(
+    refl1d_dir: str,
+    output_dir: Optional[str],
+    sample_description: Optional[str],
+    hypothesis: Optional[str],
+    state_names: tuple,
+    back_reflection: Optional[bool],
+    force: bool,
+    output_json: bool,
+    verbose: bool,
+):
+    """Load a refl1d ``problem.json`` into an AuRE output directory.
 
-                resid = exp.residuals()
-                n_pts = len(resid)
-                pf["chi_squared"] = (
-                    float(np.sum(resid**2) / n_pts) if n_pts > 0 else float("inf")
-                )
+    REFL1D_DIR may be a specific ``fit_iter*_*`` directory or its parent
+    (the latest fit iteration is then picked automatically). The imported
+    run can be opened with ``aure serve OUTPUT_DIR`` or extended with
+    ``aure resume OUTPUT_DIR/checkpoints/005_evaluation.json``.
 
-                R_data = exp.probe.R
-                dR_data = exp.probe.dR
-                R_fit_arr = np.array(pf["R_fit"])
-                res, ratio = [], []
-                if R_data is not None and len(R_data) == len(R_fit_arr):
-                    if dR_data is not None and len(dR_data) == len(R_data):
-                        safe_dR = np.maximum(np.abs(dR_data), 1e-20)
-                        res = ((R_data - R_fit_arr) / safe_dR).tolist()
-                    safe_R_fit = np.maximum(R_fit_arr, 1e-20)
-                    ratio = (R_data / safe_R_fit).tolist()
-                pf["residuals"] = res
-                pf["residual_ratio"] = ratio
-                all_res.extend(res)
-                all_ratio.extend(ratio)
-            except Exception:
-                pf.setdefault("Q_fit", [])
-                pf.setdefault("R_fit", [])
-                pf.setdefault("chi_squared", float("inf"))
-                pf.setdefault("residuals", [])
-                pf.setdefault("residual_ratio", [])
-            per_file_results.append(pf)
-        Q_fit, R_fit = all_Q, all_R
-        residuals, residual_ratio = all_res, all_ratio
-    else:
-        exp = experiments[0]
-        try:
-            exp.update()
-            Q_arr, R_arr = exp.reflectivity()
-            Q_fit = Q_arr.tolist()
-            R_fit = R_arr.tolist()
+    \b
+    Examples:
+        aure import-refl1d ./refl1d_output/fit_iter0_dream -o ./imported
+        aure import-refl1d ./refl1d_output -o ./imported -c "Cu/Ti on Si in D2O"
+        aure import-refl1d ./fit_iter0_dream -o ./imported --state-name D2O --state-name H2O
+    """
+    if verbose:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(message)s",
+            stream=sys.stderr,
+        )
 
-            R_data = exp.probe.R
-            dR_data = exp.probe.dR
-            R_fit_arr = np.array(R_fit)
-            if R_data is not None and len(R_data) == len(R_fit_arr):
-                if dR_data is not None and len(dR_data) == len(R_data):
-                    safe_dR = np.maximum(np.abs(dR_data), 1e-20)
-                    residuals = ((R_data - R_fit_arr) / safe_dR).tolist()
-                safe_R_fit = np.maximum(R_fit_arr, 1e-20)
-                residual_ratio = (R_data / safe_R_fit).tolist()
-        except Exception:
-            pass
+    from .refl1d_import import import_refl1d
 
-    sld_z, sld_rho = _read_profile_dat(export_dir)
+    target = output_dir or str(Path(refl1d_dir) / "aure_import")
 
-    return FitResult(
-        iteration=iteration,
-        method=method,
-        chi_squared=chi_squared,
-        converged=True,
-        parameters=parameters,
-        uncertainties=uncertainties if uncertainties else None,
-        bounds=param_bounds if param_bounds else None,
-        Q_fit=Q_fit,
-        R_fit=R_fit,
-        residuals=residuals,
-        residual_ratio=residual_ratio,
-        sld_z=sld_z,
-        sld_rho=sld_rho,
-        per_file_results=per_file_results,
-        issues=[],
-        suggestions=[],
+    if not output_json:
+        click.echo(click.style("═" * 60, fg="blue"))
+        click.echo(click.style("  Import refl1d → AuRE", fg="blue", bold=True))
+        click.echo(click.style("═" * 60, fg="blue"))
+        click.echo()
+        click.echo(f"  Source:  {refl1d_dir}")
+        click.echo(f"  Target:  {target}")
+        click.echo()
+
+    try:
+        summary = import_refl1d(
+            refl1d_dir,
+            target,
+            sample_description=sample_description,
+            hypothesis=hypothesis,
+            state_names=list(state_names) or None,
+            back_reflection=back_reflection,
+            force=force,
+        )
+    except FileExistsError as e:
+        msg = str(e)
+        if output_json:
+            click.echo(json.dumps({"error": msg}))
+        else:
+            click.echo(click.style(f"  {msg}", fg="red"))
+        sys.exit(2)
+    except Exception as e:
+        if output_json:
+            click.echo(json.dumps({"error": f"Import failed: {e}"}))
+        else:
+            click.echo(click.style(f"  Import failed: {e}", fg="red"))
+        sys.exit(1)
+
+    if output_json:
+        click.echo(json.dumps(summary, indent=2))
+        return
+
+    click.echo(click.style("  Imported successfully", fg="green", bold=True))
+    click.echo(
+        f"    states     : {len(summary['states'])} "
+        f"({', '.join(summary['states'])})"
+    )
+    click.echo(f"    files      : {summary['n_files']}")
+    click.echo(f"    χ²         : {summary['chi_squared']:.4f}")
+    click.echo(f"    method     : {summary['method']}")
+    click.echo(f"    back-refl. : {summary['back_reflection']}")
+
+    # Tie summary (only emit when there's more than one state)
+    if len(summary["states"]) > 1:
+        tied = summary.get("tied_parameters") or []
+        untied = summary.get("untied_parameters") or []
+        click.echo(f"    tied       : {', '.join(tied) if tied else '(none)'}")
+        click.echo(
+            f"    untied     : {', '.join(untied) if untied else '(none)'}"
+        )
+
+    # Warnings (constraint-expression ties, etc.)
+    for w in summary.get("warnings") or []:
+        click.echo()
+        click.echo(click.style("  ⚠ " + w, fg="yellow"))
+
+    click.echo()
+    click.echo(click.style("  Next:", fg="cyan", bold=True))
+    click.echo(f"    aure serve {summary['output_dir']}")
+    click.echo(
+        f"    aure resume {summary['output_dir']}/checkpoints/005_evaluation.json"
     )
 
 
