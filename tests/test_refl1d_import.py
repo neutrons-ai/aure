@@ -350,6 +350,63 @@ def test_synthesized_description_mentions_back_reflection(tmp_path, one_file):
     assert "Neutrons enter from the silicon substrate side" in desc
 
 
+def test_multi_file_single_state_collapses_to_one_state(tmp_path, two_files):
+    """A Q-segment co-refinement (single Sample shared across N probes)
+    survives bumps round-trip with N distinct Sample objects. The
+    importer should detect identical ambient + substrate + full default
+    tying and collapse to ONE state with N runs — not invent N fake states.
+    """
+    from aure.nodes.model_builder import save_problem_json
+    from aure.refl1d_import import import_refl1d
+
+    # Build a single-state, two-file problem via the legacy
+    # build_multi_problem path (one shared Sample).
+    defn = _single_state_definition(two_files[0])
+    data_files = [
+        {"file": two_files[0], "label": "low-Q"},
+        {"file": two_files[1], "label": "high-Q"},
+    ]
+    fit_dir = tmp_path / "refl1d_output" / "fit_iter0_lm"
+    fit_dir.mkdir(parents=True)
+    save_problem_json(defn, fit_dir / "problem.json", data_files=data_files)
+
+    out = tmp_path / "imported"
+    summary = import_refl1d(str(fit_dir), str(out))
+
+    # ONE state, TWO runs — not two single-file states.
+    assert summary["states"] == ["state0"]
+    assert summary["n_files"] == 2
+
+    final = json.loads((out / "final_state.json").read_text())
+    state = final["state"]["current_model"]["states"][0]
+    labels = [ds["label"] for ds in state["data_files"]]
+    assert labels == ["run0", "run1"]
+
+
+def test_state_names_override_bypasses_collapse(tmp_path, two_files):
+    """Explicit ``--state-name`` arguments must force multi-state
+    interpretation even when ambient + substrate match across samples.
+    """
+    from aure.nodes.model_builder import save_problem_json
+    from aure.refl1d_import import import_refl1d
+
+    defn = _single_state_definition(two_files[0])
+    data_files = [
+        {"file": two_files[0], "label": "a"},
+        {"file": two_files[1], "label": "b"},
+    ]
+    fit_dir = tmp_path / "refl1d_output" / "fit_iter0_lm"
+    fit_dir.mkdir(parents=True)
+    save_problem_json(defn, fit_dir / "problem.json", data_files=data_files)
+
+    out = tmp_path / "imported"
+    summary = import_refl1d(
+        str(fit_dir), str(out), state_names=["before", "after"]
+    )
+    assert summary["states"] == ["before", "after"]
+    assert summary["n_files"] == 2
+
+
 def test_synthesized_description_orders_layers_top_down(tmp_path, two_files):
     """Layers in ParsedSample run bottom-up (substrate-adjacent first);
     the synthesized description should reverse them so the English

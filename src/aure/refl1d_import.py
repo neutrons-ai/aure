@@ -409,12 +409,33 @@ def _state_data_files(
     *,
     out_dir: Path,
     state_name: str,
+    multiple_states: bool,
 ) -> List[DatasetInfo]:
-    """Dump each probe to disk and return a list of ``DatasetInfo``."""
+    """Dump each probe to disk and return a list of ``DatasetInfo``.
+
+    The label format depends on context:
+
+    - single state, single run     → ``run0``
+    - single state, N runs         → ``run0``, ``run1``, …
+    - multiple states, single run  → ``<state_name>``
+    - multiple states, N runs each → ``<state_name>_run0``, ``<state_name>_run1``, …
+
+    Globally unique labels matter for the web UI's
+    ``state_for_label`` map, hence the state-name prefix when more than
+    one state is present.
+    """
     files: List[DatasetInfo] = []
+    multi_run = len(indices) > 1
     for k, exp_idx in enumerate(indices):
         probe = experiments[exp_idx].probe
-        label = f"{state_name}_f{k}" if len(indices) > 1 else state_name
+        if multiple_states and multi_run:
+            label = f"{state_name}_run{k}"
+        elif multiple_states:
+            label = state_name
+        elif multi_run:
+            label = f"run{k}"
+        else:
+            label = "run0"
         out_path = out_dir / f"{label}.txt"
         _write_probe_to_dat(probe, out_path)
         ds: DatasetInfo = {
@@ -470,6 +491,55 @@ def _summarise_ties(
     return (tied, untied, warnings)
 
 
+def _looks_like_single_state(
+    samples: list,
+    state_substrates: list,
+    state_ambients: list,
+    *,
+    back_reflection: bool,
+) -> bool:
+    """Detect a single physical state spread across multiple experiments.
+
+    bumps serialisation drops Python identity, so a problem built with
+    :func:`~aure.nodes.model_builder.build_multi_problem` (one shared
+    ``Sample`` across N probes — i.e. one state with N runs) comes back
+    as N distinct ``Sample`` objects, identical to a true multi-state
+    layout post-deserialisation.
+
+    Heuristic: the two look identical *unless* the per-state ambient or
+    substrate materials differ, or at least one default-tied structural
+    parameter is untied across samples. When all of those match, treat
+    it as one state with N runs (Q-segments, repeats, …) rather than
+    inventing fake states.
+
+    The caller can still force multi-state interpretation by passing
+    ``state_names`` to :func:`definition_from_problem`.
+    """
+    if len(samples) < 2:
+        return True
+
+    # Ambient and substrate must match name + SLD across all samples.
+    first_amb = state_ambients[0]
+    for amb in state_ambients[1:]:
+        if amb.get("name") != first_amb.get("name"):
+            return False
+        if abs(float(amb.get("sld", 0.0)) - float(first_amb.get("sld", 0.0))) > 1e-9:
+            return False
+
+    first_sub = state_substrates[0]
+    for sub in state_substrates[1:]:
+        if sub.get("name") != first_sub.get("name"):
+            return False
+        if abs(float(sub.get("sld", 0.0)) - float(first_sub.get("sld", 0.0))) > 1e-9:
+            return False
+
+    # Every default-tied parameter must actually be aliased.
+    _shared, unshared, _all = _recover_tied_set(
+        samples, back_reflection=back_reflection
+    )
+    return not unshared
+
+
 def definition_from_problem(
     problem,
     *,
@@ -482,6 +552,12 @@ def definition_from_problem(
     The returned dict always carries an explicit ``states`` list so
     downstream code that branches on multi-state behaves uniformly,
     even for single-experiment imports.
+
+    When the deserialised problem looks like a single physical state
+    spread across N experiments (Q-segment co-refinement, repeat runs)
+    — i.e. identical ambient + substrate and full default tying — the
+    experiments are collapsed into one state with N runs. Pass
+    ``state_names`` to force the multi-state interpretation.
 
     Parameters
     ----------
@@ -496,7 +572,8 @@ def definition_from_problem(
         material names; supply ``True``/``False`` to force one.
     state_names
         Optional override for state names (one per distinct sample, in
-        order). When omitted the importer uses ``state0``, ``state1``, …
+        order). When provided, the single-state collapse heuristic is
+        bypassed.
     """
     experiments = list(problem.models)
     if not experiments:
@@ -514,6 +591,30 @@ def definition_from_problem(
             names = [str(s.material.name) for s in sample]
             resolved_back.append(_classify_orientation(names))
 
+    # ── Detect single-state-multi-file ────────────────────────────
+    # When all "states" share ambient + substrate + full default tying,
+    # collapse them into one state with N runs (Q-segments, repeats, …).
+    # The user can override by passing ``state_names`` explicitly.
+    if state_names is None and len(groups) > 1:
+        state_subs = [
+            _structure_from_sample(s, back_reflection=resolved_back[i])[0]
+            for i, s in enumerate(samples)
+        ]
+        state_ambs = [
+            _structure_from_sample(s, back_reflection=resolved_back[i])[2]
+            for i, s in enumerate(samples)
+        ]
+        if _looks_like_single_state(
+            samples, state_subs, state_ambs, back_reflection=resolved_back[0]
+        ):
+            # Flatten all experiment indices into one group.
+            all_indices = [idx for g in groups for idx in g]
+            groups = [all_indices]
+            samples = [samples[0]]
+            resolved_back = [resolved_back[0]]
+
+    multi_state = len(groups) > 1
+
     # Build per-state structures.
     state_defs: List[StateDefinition] = []
     for state_idx, (sample, group) in enumerate(zip(samples, groups)):
@@ -526,7 +627,11 @@ def definition_from_problem(
             sample, back_reflection=resolved_back[state_idx]
         )
         data_files = _state_data_files(
-            experiments, group, out_dir=data_dir, state_name=name
+            experiments,
+            group,
+            out_dir=data_dir,
+            state_name=name,
+            multiple_states=multi_state,
         )
         intensity = _probe_intensity(experiments[group[0]].probe)
         state_def: StateDefinition = {
