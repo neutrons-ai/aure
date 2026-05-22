@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -239,8 +240,6 @@ def test_ui_shape_submit_rejects_missing_file(tmp_path: Path) -> None:
 
 def test_setup_page_prev_run_carries_states(tmp_path: Path) -> None:
     """Ticket 16: setup page exposes `states` from the previous run."""
-    import json
-
     output_dir = tmp_path / "out"
     (output_dir / "checkpoints").mkdir(parents=True)
     final = {
@@ -250,12 +249,28 @@ def test_setup_page_prev_run_carries_states(tmp_path: Path) -> None:
             "states": [
                 {
                     "name": "D2O",
-                    "data_files": [{"label": "REFL_1", "file": "/tmp/x.dat"}],
+                    "data_files": [
+                        {
+                            "label": "REFL_1",
+                            "file": "/tmp/x.dat",
+                            "Q": [0.01, 0.02],
+                            "R": [1.0, 0.8],
+                            "dR": [0.01, 0.01],
+                        }
+                    ],
                     "ambient": {"rho": 6.36},
                 },
                 {
                     "name": "H2O",
-                    "data_files": [{"label": "REFL_2", "file": "/tmp/y.dat"}],
+                    "data_files": [
+                        {
+                            "label": "REFL_2",
+                            "file": "/tmp/y.dat",
+                            "Q": [0.01, 0.02],
+                            "R": [0.9, 0.7],
+                            "dR": [0.01, 0.01],
+                        }
+                    ],
                     "ambient": {"rho": -0.56},
                 },
             ],
@@ -287,6 +302,11 @@ def test_setup_page_prev_run_carries_states(tmp_path: Path) -> None:
     assert '"states"' in html
     assert "D2O" in html and "H2O" in html
     assert "Cu.thickness" in html
+    payload = html.split("var _prevRun = ", 1)[1].split(";\n</script>", 1)[0]
+    prev = json.loads(payload)
+    for st in prev["states"]:
+        for df in st["data_files"]:
+            assert set(df.keys()) == {"file", "label"}
 
 
 # ======================================================================

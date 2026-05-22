@@ -193,6 +193,37 @@ def _apply_overrides_to_model_definition(
 # ------------------------------------------------------------------
 
 
+def _minimal_state_prefill(states: list[dict]) -> list[dict]:
+    """Return a lightweight states payload for setup-page prefill."""
+    out = []
+    for st in states:
+        if not isinstance(st, dict):
+            continue
+        slim: dict = {"name": st.get("name", "")}
+        data_files = []
+        for df in st.get("data_files") or []:
+            if not isinstance(df, dict):
+                continue
+            file_path = df.get("file")
+            if not file_path:
+                continue
+            data_files.append({"file": file_path, "label": df.get("label", "")})
+        slim["data_files"] = data_files
+        ambient = st.get("ambient")
+        if isinstance(ambient, dict) and "rho" in ambient:
+            slim["ambient"] = {"rho": ambient["rho"]}
+        for k in ("intensity", "theta_offset", "sample_broadening"):
+            v = st.get(k)
+            if isinstance(v, dict):
+                slim[k] = {sub: v[sub] for sub in ("init", "min", "max") if sub in v}
+        if "back_reflection" in st:
+            slim["back_reflection"] = bool(st["back_reflection"])
+        if st.get("extra_description"):
+            slim["extra_description"] = st["extra_description"]
+        out.append(slim)
+    return out
+
+
 @bp.route("/")
 def index():
     """Landing page – setup form or redirect to results."""
@@ -232,7 +263,7 @@ def setup():
                 fs = rd.get_final_state() or {}
                 states = fs.get("states") or []
                 if states:
-                    prev_run["states"] = states
+                    prev_run["states"] = _minimal_state_prefill(states)
                 model = fs.get("current_model") or fs.get("best_model") or {}
                 if isinstance(model, dict):
                     if model.get("shared_parameters"):
