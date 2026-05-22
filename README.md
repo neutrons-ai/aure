@@ -19,9 +19,8 @@ to go from a raw data file and a plain-English sample description to a fitted
   config and AuRE will tie the structural parameters across states
   while keeping per-state ambient SLD and intensity independent. See
   [Multi-state co-refinement](#multi-state-co-refinement) below and the
-  bundled `multi-state-corefinement` skill. A reproducible end-to-end
-  validation example lives under
-  [`validation/multi-state/`](validation/multi-state/).
+  bundled `multi-state-corefinement` skill for a reproducible end-to-end
+  example and configuration guidance.
 
 ## How it works
 
