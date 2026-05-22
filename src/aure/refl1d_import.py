@@ -795,6 +795,24 @@ def import_refl1d(
     refl1d_path, problem_file, iteration, method = resolve_refl1d_dir(refl1d_dir)
 
     out = Path(output_dir).resolve()
+
+    # Refuse to write inside the source tree: ``shutil.copytree(refl1d_path,
+    # …/out/refl1d_output/…)`` would otherwise copy the output back into
+    # itself, blowing up with an infinite-recursion path explosion when
+    # ``out`` already exists as a child of the source.
+    try:
+        out.relative_to(refl1d_path)
+        is_inside = True
+    except ValueError:
+        is_inside = False
+    if is_inside:
+        raise ValueError(
+            f"Refusing to write the AuRE workspace inside the source refl1d "
+            f"directory.\n  source: {refl1d_path}\n  output: {out}\n"
+            "Pick an --output-dir outside the source tree (the default is a "
+            "sibling directory)."
+        )
+
     if out.exists():
         if not force:
             raise FileExistsError(
@@ -920,10 +938,17 @@ def import_refl1d(
 
     # Copy the refl1d output tree FIRST so save_final_state can pick up
     # the best-fit problem.json from the canonical fit_iter0_<method> path.
+    # Skip ``out`` if it happens to live under ``refl1d_path`` — the
+    # ``is_inside`` guard above rules this out for the default flow, but
+    # an `--output-dir` next to (and not under) the source can still
+    # contain a sibling directory worth skipping.
     dst_refl1d = out / "refl1d_output" / f"fit_iter0_{method}"
     if dst_refl1d.exists():
         shutil.rmtree(dst_refl1d)
-    shutil.copytree(refl1d_path, dst_refl1d)
+    out_resolved = out
+    def _skip_output(_src, names):
+        return {n for n in names if (Path(_src) / n).resolve() == out_resolved}
+    shutil.copytree(refl1d_path, dst_refl1d, ignore=_skip_output)
 
     # Save checkpoints. Mirror the per-node iteration counts a real run
     # produces: intake/analysis/modeling at iteration 0; fitting at 0;

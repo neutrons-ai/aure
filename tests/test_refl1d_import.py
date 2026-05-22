@@ -293,6 +293,20 @@ def test_force_overwrites_existing_output(tmp_path, one_file):
     assert (out / "final_state.json").exists()
 
 
+def test_rejects_output_inside_source_dir(tmp_path, one_file):
+    """Writing the AuRE workspace inside the refl1d source would make the
+    refl1d-tree copy step recurse into itself. We must refuse with a
+    clear message.
+    """
+    from aure.refl1d_import import import_refl1d
+
+    src = _save_problem_to(tmp_path, _single_state_definition(one_file))
+    out = src / "nested_import"  # inside the source dir
+
+    with pytest.raises(ValueError, match="inside the source refl1d"):
+        import_refl1d(str(src), str(out))
+
+
 def test_resolves_parent_refl1d_output_dir(tmp_path, one_file):
     """Pointing at the parent ``refl1d_output/`` dir should pick the
     latest ``fit_iter*_*`` automatically (same heuristic as ``aure

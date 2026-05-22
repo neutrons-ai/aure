@@ -2335,7 +2335,8 @@ def _extract_fit_result_from_problem(
     "-o",
     type=click.Path(),
     default=None,
-    help="Target AuRE output directory (default: <refl1d_dir>/aure_import)",
+    help="Target AuRE output directory (default: a sibling of REFL1D_DIR "
+    "named <REFL1D_DIR>_aure_import)",
 )
 @click.option(
     "--context",
@@ -2398,7 +2399,14 @@ def import_refl1d_cmd(
 
     from .refl1d_import import import_refl1d
 
-    target = output_dir or str(Path(refl1d_dir) / "aure_import")
+    # Default to a SIBLING of the user-typed source, not a child — putting
+    # the workspace inside the source would make the refl1d-tree copy step
+    # recurse into the output directory.
+    if output_dir:
+        target = output_dir
+    else:
+        src = Path(refl1d_dir).resolve()
+        target = str(src.parent / f"{src.name}_aure_import")
 
     if not output_json:
         click.echo(click.style("═" * 60, fg="blue"))
