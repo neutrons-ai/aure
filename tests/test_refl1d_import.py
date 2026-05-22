@@ -182,11 +182,13 @@ def test_single_state_round_trip_writes_expected_layout(tmp_path, one_file):
 
     summary = import_refl1d(str(src), str(out))
 
-    # Layout
+    # Layout — lean by design: no refl1d_output/ duplicate, SLD profile
+    # and theory curves are inlined in final_state.json.
     assert (out / "run_info.json").is_file()
     assert (out / "final_state.json").is_file()
     assert (out / "problem.json").is_file()
     assert (out / "data").is_dir()
+    assert not (out / "refl1d_output").exists()
     # Checkpoint naming mirrors a real run: fitting/evaluation get an
     # ``_iter{n}`` suffix when iteration > 0 (evaluation increments).
     cp_dir = out / "checkpoints"
@@ -197,7 +199,6 @@ def test_single_state_round_trip_writes_expected_layout(tmp_path, one_file):
         "004_fitting.json",
         "005_evaluation_iter1.json",
     ]
-    assert (out / "refl1d_output" / "fit_iter0_lm" / "problem.json").is_file()
 
     # Summary
     assert summary["states"] == ["state0"]
@@ -405,6 +406,264 @@ def test_state_names_override_bypasses_collapse(tmp_path, two_files):
     )
     assert summary["states"] == ["before", "after"]
     assert summary["n_files"] == 2
+
+
+def test_setup_drives_state_names_and_description(tmp_path, two_files):
+    """When ``--setup`` points at a YAML with the original metadata, the
+    importer uses the setup's state names, sample description, and
+    original file paths verbatim — no auto-detection.
+    """
+    import yaml
+
+    from aure.refl1d_import import import_refl1d
+
+    src = _save_problem_to(tmp_path, _two_state_definition(two_files))
+
+    setup_path = tmp_path / "plan.yaml"
+    setup_path.write_text(
+        yaml.safe_dump(
+            {
+                "sample_description": "Cu/Ti on Si in D2O and H2O (annealed)",
+                "hypothesis": "Cu has a thin oxide skin",
+                "states": [
+                    {"name": "D2O", "data_files": [{"file": two_files[0]}]},
+                    {"name": "H2O", "data_files": [{"file": two_files[1]}]},
+                ],
+            }
+        )
+    )
+
+    out = tmp_path / "imported"
+    summary = import_refl1d(str(src), str(out), setup_path=str(setup_path))
+
+    assert summary["states"] == ["D2O", "H2O"]
+    final = json.loads((out / "final_state.json").read_text())
+    state = final["state"]
+    assert state["sample_description"] == "Cu/Ti on Si in D2O and H2O (annealed)"
+    assert state["hypothesis"] == "Cu has a thin oxide skin"
+    # State names come from the setup, not from auto-defaults.
+    state_names = [st["name"] for st in state["current_model"]["states"]]
+    assert state_names == ["D2O", "H2O"]
+
+
+def test_setup_references_original_data_files(tmp_path, two_files):
+    """The imported model should point at the original setup files, not
+    probe dumps under ``<output>/data/``.
+    """
+    import yaml
+
+    from aure.refl1d_import import import_refl1d
+
+    src = _save_problem_to(tmp_path, _two_state_definition(two_files))
+    setup_path = tmp_path / "plan.yaml"
+    setup_path.write_text(
+        yaml.safe_dump(
+            {
+                "sample_description": "x",
+                "states": [
+                    {"name": "D2O", "data_files": [{"file": two_files[0]}]},
+                    {"name": "H2O", "data_files": [{"file": two_files[1]}]},
+                ],
+            }
+        )
+    )
+
+    out = tmp_path / "imported"
+    import_refl1d(str(src), str(out), setup_path=str(setup_path))
+
+    final = json.loads((out / "final_state.json").read_text())
+    state = final["state"]
+    files_in_model = sorted(
+        ds["file"]
+        for st in state["current_model"]["states"]
+        for ds in st["data_files"]
+    )
+    # The setup paths win — the model points at the originals (resolved).
+    assert files_in_model == sorted(os.path.realpath(p) for p in two_files)
+    # No probe-dump directory was populated for the model's files.
+    for path in files_in_model:
+        assert not str(path).startswith(str(out / "data"))
+
+
+def test_setup_mismatched_file_count_errors(tmp_path, two_files, one_file):
+    """A setup describing a different number of files than the problem
+    has experiments must error out clearly.
+    """
+    import yaml
+
+    from aure.refl1d_import import import_refl1d
+
+    # Problem has 2 experiments
+    src = _save_problem_to(tmp_path, _two_state_definition(two_files))
+
+    # Setup declares only 1 file
+    setup_path = tmp_path / "wrong.yaml"
+    setup_path.write_text(
+        yaml.safe_dump(
+            {
+                "sample_description": "x",
+                "states": [
+                    {"name": "only_one", "data_files": [{"file": one_file}]},
+                ],
+            }
+        )
+    )
+
+    out = tmp_path / "imported"
+    with pytest.raises(ValueError, match="must describe the same problem"):
+        import_refl1d(str(src), str(out), setup_path=str(setup_path))
+
+
+def test_setup_with_state_names_cli_override_rejected(
+    tmp_path, two_files
+):
+    """``--state-name`` and ``--setup`` are mutually exclusive — state
+    names always come from the setup when supplied.
+    """
+    import yaml
+
+    from aure.refl1d_import import import_refl1d
+
+    src = _save_problem_to(tmp_path, _two_state_definition(two_files))
+    setup_path = tmp_path / "plan.yaml"
+    setup_path.write_text(
+        yaml.safe_dump(
+            {
+                "sample_description": "x",
+                "states": [
+                    {"name": "D2O", "data_files": [{"file": two_files[0]}]},
+                    {"name": "H2O", "data_files": [{"file": two_files[1]}]},
+                ],
+            }
+        )
+    )
+
+    out = tmp_path / "imported"
+    with pytest.raises(ValueError, match="cannot be combined"):
+        import_refl1d(
+            str(src),
+            str(out),
+            setup_path=str(setup_path),
+            state_names=["A", "B"],
+        )
+
+
+def test_setup_data_dir_overrides_path_resolution(tmp_path, two_files):
+    """When the setup YAML references data files by bare name and the
+    actual files live in a different directory (the analyzer's typical
+    layout — YAML in ``plan/``, data in ``./``), ``--data-dir`` must
+    redirect path resolution there.
+    """
+    import shutil
+
+    import yaml
+
+    from aure.refl1d_import import import_refl1d
+
+    # Move the data files to a "data/" subdir; leave the YAML in "plan/"
+    data_dir = tmp_path / "data_root"
+    data_dir.mkdir()
+    relocated = []
+    for src_file in two_files:
+        dst = data_dir / Path(src_file).name
+        shutil.copy(src_file, dst)
+        relocated.append(dst)
+
+    refl1d_src = _save_problem_to(tmp_path, _two_state_definition(two_files))
+
+    plan_dir = tmp_path / "plan"
+    plan_dir.mkdir()
+    setup_path = plan_dir / "plan.yaml"
+    setup_path.write_text(
+        yaml.safe_dump(
+            {
+                "sample_description": "x",
+                "states": [
+                    {
+                        "name": "D2O",
+                        "data_files": [{"file": Path(two_files[0]).name}],
+                    },
+                    {
+                        "name": "H2O",
+                        "data_files": [{"file": Path(two_files[1]).name}],
+                    },
+                ],
+            }
+        )
+    )
+
+    out = tmp_path / "imported"
+    # Without --data-dir, the loader would look for the files in plan/,
+    # which doesn't contain them → ConfigError.
+    from aure.config import ConfigError
+
+    with pytest.raises(ConfigError, match="data file not found"):
+        import_refl1d(str(refl1d_src), str(out), setup_path=str(setup_path))
+
+    # With --data-dir, the loader looks in data_root/ instead.
+    import_refl1d(
+        str(refl1d_src),
+        str(out),
+        setup_path=str(setup_path),
+        setup_data_dir=str(data_dir),
+    )
+    final = json.loads((out / "final_state.json").read_text())
+    files_in_model = sorted(
+        ds["file"]
+        for st in final["state"]["current_model"]["states"]
+        for ds in st["data_files"]
+    )
+    expected = sorted(str(p.resolve()) for p in relocated)
+    assert files_in_model == expected
+
+
+def test_setup_data_dir_without_setup_errors():
+    """``setup_data_dir`` without ``setup_path`` is a programmer error."""
+    from aure.refl1d_import import import_refl1d
+
+    with pytest.raises(ValueError, match="setup_data_dir is meaningful"):
+        import_refl1d(
+            "nowhere", "also_nowhere", setup_data_dir="/tmp"
+        )
+
+
+def test_setup_extra_description_carried_through(tmp_path, two_files):
+    """Per-state ``extra_description`` from the setup is preserved on
+    the recovered state, so the LLM sees the scientist's per-state notes.
+    """
+    import yaml
+
+    from aure.refl1d_import import import_refl1d
+
+    src = _save_problem_to(tmp_path, _two_state_definition(two_files))
+    setup_path = tmp_path / "plan.yaml"
+    setup_path.write_text(
+        yaml.safe_dump(
+            {
+                "sample_description": "x",
+                "states": [
+                    {
+                        "name": "D2O",
+                        "extra_description": "first measurement, fresh sample",
+                        "data_files": [{"file": two_files[0]}],
+                    },
+                    {
+                        "name": "H2O",
+                        "extra_description": "24h later, same sample",
+                        "data_files": [{"file": two_files[1]}],
+                    },
+                ],
+            }
+        )
+    )
+
+    out = tmp_path / "imported"
+    import_refl1d(str(src), str(out), setup_path=str(setup_path))
+    final = json.loads((out / "final_state.json").read_text())
+    states = final["state"]["current_model"]["states"]
+    by_name = {st["name"]: st for st in states}
+    assert by_name["D2O"]["extra_description"] == "first measurement, fresh sample"
+    assert by_name["H2O"]["extra_description"] == "24h later, same sample"
 
 
 def test_synthesized_description_orders_layers_top_down(tmp_path, two_files):

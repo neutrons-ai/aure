@@ -2355,7 +2355,26 @@ def _extract_fit_result_from_problem(
     "--state-name",
     "state_names",
     multiple=True,
-    help="Override recovered state names (repeatable; one per distinct sample)",
+    help="Override recovered state names (repeatable; one per distinct sample). "
+    "Cannot be combined with --setup.",
+)
+@click.option(
+    "--setup",
+    "setup_path",
+    type=click.Path(exists=True),
+    default=None,
+    help="Setup YAML describing the original problem (analyzer plan-data "
+    "output or hand-written). Provides authoritative sample description, "
+    "state names, and original data file paths.",
+)
+@click.option(
+    "--data-dir",
+    "data_dir",
+    type=click.Path(exists=True, file_okay=False),
+    default=None,
+    help="Directory holding the data files referenced (by name) in --setup. "
+    "Use when the YAML lists bare filenames but the data lives elsewhere "
+    "(e.g. plan in ./plan/, data in ./).",
 )
 @click.option(
     "--back-reflection/--no-back-reflection",
@@ -2372,6 +2391,8 @@ def import_refl1d_cmd(
     sample_description: Optional[str],
     hypothesis: Optional[str],
     state_names: tuple,
+    setup_path: Optional[str],
+    data_dir: Optional[str],
     back_reflection: Optional[bool],
     force: bool,
     output_json: bool,
@@ -2384,11 +2405,18 @@ def import_refl1d_cmd(
     run can be opened with ``aure serve OUTPUT_DIR`` or extended with
     ``aure resume OUTPUT_DIR/checkpoints/005_evaluation.json``.
 
+    Pass ``--setup`` when the original setup YAML (e.g. from analyzer's
+    ``plan-data``) is still around. The setup becomes the source of truth
+    for state names / sample description / original data paths, while the
+    refl1d output supplies the fitted numbers. Without it, the importer
+    auto-detects everything from the deserialised problem.
+
     \b
     Examples:
         aure import-refl1d ./refl1d_output/fit_iter0_dream -o ./imported
         aure import-refl1d ./refl1d_output -o ./imported -c "Cu/Ti on Si in D2O"
         aure import-refl1d ./fit_iter0_dream -o ./imported --state-name D2O --state-name H2O
+        aure import-refl1d ./Cu-D2O-226642 --setup ./plan/job_Cu-D2O-226642.yaml
     """
     if verbose:
         logging.basicConfig(
@@ -2417,10 +2445,20 @@ def import_refl1d_cmd(
         click.echo(f"  Target:  {target}")
         click.echo()
 
+    if data_dir and not setup_path:
+        click.echo(
+            click.style(
+                "  --data-dir has no effect without --setup; ignoring.",
+                fg="yellow",
+            )
+        )
+
     try:
         summary = import_refl1d(
             refl1d_dir,
             target,
+            setup_path=setup_path,
+            setup_data_dir=data_dir,
             sample_description=sample_description,
             hypothesis=hypothesis,
             state_names=list(state_names) or None,

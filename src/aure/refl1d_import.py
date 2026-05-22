@@ -871,6 +871,181 @@ def resolve_refl1d_dir(refl1d_dir: str) -> Tuple[Path, Path, int, str]:
 
 
 # --------------------------------------------------------------------------
+# Setup-driven inversion
+# --------------------------------------------------------------------------
+
+
+def _setup_file_q_min(file_path: str) -> float:
+    """Return ``Q.min()`` for a 4-column reflectivity data file.
+
+    Used to align user-listed setup files with refl1d experiments,
+    which both :func:`~aure.nodes.model_builder.build_states_problem`
+    and :func:`~aure.nodes.model_builder.build_multi_problem` sort by
+    ``Q.min()`` before assembling.
+    """
+    arr = np.loadtxt(file_path)
+    if arr.ndim == 1:
+        arr = arr.reshape(1, -1)
+    return float(arr[:, 0].min())
+
+
+def _sort_setup_files_by_q(files: list[dict]) -> list[dict]:
+    """Return *files* reordered to match refl1d's internal Q-ascending sort.
+
+    Each element is a :class:`DatasetInfo`-shaped dict from a parsed
+    setup state. The original labels are preserved.
+    """
+    annotated = [(ds, _setup_file_q_min(ds["file"])) for ds in files]
+    annotated.sort(key=lambda x: x[1])
+    return [ds for ds, _ in annotated]
+
+
+def _validate_setup_against_problem(
+    experiments: list, setup_states: list
+) -> None:
+    """Check that the setup's file count lines up with the problem's experiments."""
+    n_files = sum(len(st.get("data_files") or []) for st in setup_states)
+    n_exps = len(experiments)
+    if n_files != n_exps:
+        raise ValueError(
+            f"Setup file declares {n_files} data file(s) across "
+            f"{len(setup_states)} state(s), but the refl1d problem.json has "
+            f"{n_exps} experiment(s). The setup must describe the same problem."
+        )
+
+
+def _definition_from_setup_and_problem(
+    problem,
+    setup: dict,
+    *,
+    back_reflection: Optional[bool] = None,
+) -> ModelDefinition:
+    """Invert a refl1d problem using a setup YAML as the source of truth.
+
+    The setup YAML drives:
+
+    - state grouping (no auto-detection, no single-state collapse)
+    - state names and per-state nuisance / ambient / intensity overrides
+    - data file paths (the originals are referenced directly — no probe
+      dump is written to ``data/``)
+
+    The refl1d problem provides:
+
+    - layer structure (substrate, layers, ambient names + SLDs)
+    - fitted parameter values + bounds
+    - χ², theory curves, residuals (via :func:`extract_fit_result_from_problem`)
+
+    Experiments are matched to setup files by per-state ``Q.min()``
+    ordering: within each state, setup files are sorted in ascending
+    ``Q.min()`` to align with refl1d's internal experiment order. The
+    experiment list is sliced state-by-state, matching the layout that
+    :func:`~aure.nodes.model_builder.build_states_problem` (and
+    :func:`~aure.nodes.model_builder.build_multi_problem`) produce.
+    """
+    experiments = list(problem.models)
+    setup_states = setup.get("states") or []
+    if not setup_states:
+        raise ValueError("setup file has no states: cannot drive the import.")
+
+    _validate_setup_against_problem(experiments, setup_states)
+
+    # ── Slice experiments per state (state-by-state in setup order) ─────
+    exp_by_state: list[list[int]] = []
+    cursor = 0
+    for st in setup_states:
+        n = len(st.get("data_files") or [])
+        exp_by_state.append(list(range(cursor, cursor + n)))
+        cursor += n
+
+    # ── Orientation (back_reflection): CLI override > setup state > auto ─
+    samples = [experiments[idxs[0]].sample for idxs in exp_by_state]
+    resolved_back: list[bool] = []
+    for state_idx, sample in enumerate(samples):
+        if back_reflection is not None:
+            resolved_back.append(bool(back_reflection))
+        elif "back_reflection" in setup_states[state_idx]:
+            resolved_back.append(bool(setup_states[state_idx]["back_reflection"]))
+        else:
+            names = [str(s.material.name) for s in sample]
+            resolved_back.append(_classify_orientation(names))
+
+    # ── Canonical structure (from state 0's refl1d sample) ──────────────
+    base_substrate, base_layers, base_ambient = _structure_from_sample(
+        samples[0], back_reflection=resolved_back[0]
+    )
+
+    # ── Build per-state definitions ─────────────────────────────────────
+    state_defs: List[StateDefinition] = []
+    for state_idx, setup_state in enumerate(setup_states):
+        idxs = exp_by_state[state_idx]
+        sample = samples[state_idx]
+        st_back = resolved_back[state_idx]
+
+        # Use setup's data files, reordered to match refl1d's Q-ascending
+        # experiment order within this state.
+        sorted_files = _sort_setup_files_by_q(setup_state["data_files"])
+        data_files = [
+            {"file": ds["file"], "label": ds.get("label") or Path(ds["file"]).stem}
+            for ds in sorted_files
+        ]
+
+        # Ambient: setup override wins (it carries the scientist's
+        # canonical labelling, e.g. "D2O" instead of refl1d's serialized
+        # short name). Otherwise extract from the per-state refl1d sample.
+        _, _, refl1d_ambient = _structure_from_sample(sample, back_reflection=st_back)
+        ambient = (
+            dict(setup_state["ambient"])
+            if setup_state.get("ambient")
+            else refl1d_ambient
+        )
+
+        # Intensity: setup override wins; else read from the first probe.
+        intensity = (
+            dict(setup_state["intensity"])
+            if setup_state.get("intensity")
+            else _probe_intensity(experiments[idxs[0]].probe)
+        )
+
+        state_def: StateDefinition = {
+            "name": setup_state["name"],
+            "data_files": data_files,
+            "back_reflection": st_back,
+            "ambient": ambient,
+            "intensity": intensity,
+        }
+        for opt in ("extra_description", "theta_offset", "sample_broadening"):
+            if setup_state.get(opt):
+                state_def[opt] = setup_state[opt]
+        state_def["_kind"] = (
+            setup_state.get("_kind")
+            or _detect_state_kind([ds["file"] for ds in data_files])
+        )
+        state_defs.append(state_def)
+
+    # ── Cross-state tied set (still recovered from refl1d via id()) ─────
+    shared_params, unshared_params, _ = _recover_tied_set(
+        samples, back_reflection=resolved_back[0]
+    )
+
+    definition: ModelDefinition = {
+        "substrate": base_substrate,
+        "layers": base_layers,
+        "ambient": base_ambient,
+        "back_reflection": resolved_back[0],
+        "constraints": [],
+        "data_file": state_defs[0]["data_files"][0]["file"],
+        "intensity": state_defs[0]["intensity"],
+        "dq_is_fwhm": True,
+        "states": state_defs,
+    }
+    if shared_params:
+        definition["shared_parameters"] = shared_params
+    if unshared_params:
+        definition["unshared_parameters"] = unshared_params
+    return definition
+
+
+# --------------------------------------------------------------------------
 # Main entry point
 # --------------------------------------------------------------------------
 
@@ -879,6 +1054,8 @@ def import_refl1d(
     refl1d_dir: str,
     output_dir: str,
     *,
+    setup_path: Optional[str] = None,
+    setup_data_dir: Optional[str] = None,
     sample_description: Optional[str] = None,
     hypothesis: Optional[str] = None,
     state_names: Optional[List[str]] = None,
@@ -886,6 +1063,13 @@ def import_refl1d(
     force: bool = False,
 ) -> Dict[str, Any]:
     """Materialise an AuRE output directory from a refl1d ``problem.json``.
+
+    When ``setup_path`` points at a setup YAML describing the same
+    problem (e.g. the file an analyzer ``plan-data`` step emitted), the
+    setup drives state grouping, state names, sample description, and
+    data file paths — the refl1d output supplies the fitted numbers.
+    Without it, the importer auto-detects everything from the deserialised
+    problem (heuristics + collapse logic).
 
     Returns a summary dict describing what was imported (state count,
     χ², output paths). Does not call any LLM — purely deterministic.
@@ -896,8 +1080,22 @@ def import_refl1d(
         If *output_dir* exists and ``force`` is False.
     FileNotFoundError
         If a ``problem.json`` cannot be located under *refl1d_dir*.
+    ValueError
+        If *setup_path* is given but its state/file count doesn't match
+        the problem's experiments, or if *output_dir* would land inside
+        the source refl1d tree.
     """
+    if setup_data_dir is not None and not setup_path:
+        raise ValueError("setup_data_dir is meaningful only together with setup_path")
+
     refl1d_path, problem_file, iteration, method = resolve_refl1d_dir(refl1d_dir)
+
+    # ── Load setup (if any) ──────────────────────────────────────────
+    setup: Optional[dict] = None
+    if setup_path:
+        from .setup import load_setup
+
+        setup = load_setup(setup_path, data_dir=setup_data_dir)
 
     out = Path(output_dir).resolve()
 
@@ -934,12 +1132,27 @@ def import_refl1d(
 
     # --- Reconstruct ModelDefinition (with states) ---------------------------
     data_dir = out / "data"
-    definition = definition_from_problem(
-        problem,
-        data_dir=data_dir,
-        back_reflection=back_reflection,
-        state_names=state_names,
-    )
+    if setup is not None:
+        if state_names:
+            # --setup is authoritative for state names; let the user know
+            # their CLI override is being dropped rather than silently
+            # accepting and ignoring it.
+            raise ValueError(
+                "--state-name cannot be combined with --setup; state names "
+                "come from the setup file."
+            )
+        definition = _definition_from_setup_and_problem(
+            problem,
+            setup,
+            back_reflection=back_reflection,
+        )
+    else:
+        definition = definition_from_problem(
+            problem,
+            data_dir=data_dir,
+            back_reflection=back_reflection,
+            state_names=state_names,
+        )
     states_list: List[StateDefinition] = definition["states"]  # type: ignore[assignment]
 
     # Tie summary + warnings (only meaningful for ≥ 2 distinct samples)
@@ -980,6 +1193,15 @@ def import_refl1d(
     Q0 = primary_ds["Q"]
     R0 = primary_ds["R"]
     dR0 = primary_ds["dR"]
+
+    # Setup metadata wins over auto-synthesised values; explicit CLI
+    # arguments (``sample_description``, ``hypothesis``) override the setup.
+    setup_mode = setup is not None
+    if setup_mode:
+        if hypothesis is None and setup.get("hypothesis"):
+            hypothesis = setup["hypothesis"]
+        if not sample_description and setup.get("sample_description"):
+            sample_description = setup["sample_description"]
 
     parsed_sample = _synth_parsed_sample(definition, hypothesis=hypothesis)
     extracted_features = _synth_features(Q0, R0, dR0)
@@ -1041,20 +1263,6 @@ def import_refl1d(
         sample_description=sample_desc,
     )
 
-    # Copy the refl1d output tree FIRST so save_final_state can pick up
-    # the best-fit problem.json from the canonical fit_iter0_<method> path.
-    # Skip ``out`` if it happens to live under ``refl1d_path`` — the
-    # ``is_inside`` guard above rules this out for the default flow, but
-    # an `--output-dir` next to (and not under) the source can still
-    # contain a sibling directory worth skipping.
-    dst_refl1d = out / "refl1d_output" / f"fit_iter0_{method}"
-    if dst_refl1d.exists():
-        shutil.rmtree(dst_refl1d)
-    out_resolved = out
-    def _skip_output(_src, names):
-        return {n for n in names if (Path(_src) / n).resolve() == out_resolved}
-    shutil.copytree(refl1d_path, dst_refl1d, ignore=_skip_output)
-
     # Save checkpoints. Mirror the per-node iteration counts a real run
     # produces: intake/analysis/modeling at iteration 0; fitting at 0;
     # evaluation increments to 1. The checkpoint manager appends
@@ -1072,11 +1280,29 @@ def import_refl1d(
     state["iteration"] = 1
     mgr.save_checkpoint(state, "evaluation")
 
+    # We don't duplicate the refl1d output tree — the SLD profile and
+    # theory curves are already baked into ``final_state.json`` via
+    # ``extract_fit_result_from_problem``. Only the top-level
+    # ``problem.json`` is needed downstream (``aure evaluate`` and the
+    # web UI's parameter editor both read it).
+    #
+    # ``CheckpointManager.save_final_state`` looks for problem.json at
+    # ``refl1d_output/fit_iter0_<method>/`` and warns if missing. Stage
+    # exactly one file there so the lookup succeeds, then strip the
+    # staging directory once save_final_state has copied it to the top
+    # level.
+    canonical_dir = out / "refl1d_output" / f"fit_iter0_{method}"
+    canonical_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(problem_file, canonical_dir / "problem.json")
+
     mgr.save_final_state(state)
 
-    # Final guarantee: a top-level problem.json must exist (covers the
-    # case where the source refl1d output dir did not match the canonical
-    # fit_iter0_<method> name).
+    # Tear down the staging directory — we never advertised it as part
+    # of the workspace.
+    shutil.rmtree(out / "refl1d_output", ignore_errors=True)
+
+    # Defensive: if save_final_state's copy somehow didn't happen, drop
+    # one in directly.
     top_problem = out / "problem.json"
     if not top_problem.exists():
         shutil.copy2(problem_file, top_problem)

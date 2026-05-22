@@ -147,14 +147,24 @@ _PARTIAL_SETID_RE = re.compile(r"REFL_(\d+)_\d+_\d+_partial\.txt$", re.IGNORECAS
 _NUISANCE_KEYS = ("theta_offset", "sample_broadening")
 
 
-def _parse_states(raw: Any, *, base_dir: Path) -> List[dict]:
+def _parse_states(
+    raw: Any, *, base_dir: Path, data_dir: Optional[Path] = None
+) -> List[dict]:
     """Parse and validate the ``states:`` block.
 
     Returns an empty list when *raw* is falsy.  Each returned state has a
     private ``_kind`` field set to ``"combined"`` or ``"partials"`` for
     downstream consumers (the kind heuristic is filename-based; intake
     re-validates from headers).
+
+    Path resolution: relative paths inside ``data_files`` are resolved
+    against ``data_dir`` when given, otherwise against ``base_dir``
+    (the directory holding the YAML file). Use ``data_dir`` when the
+    YAML references files by name only but the actual data sits in a
+    different directory (e.g. analyzer's ``plan-data`` output stored
+    in ``plan/`` while the data lives in the parent directory).
     """
+    resolution_root = data_dir or base_dir
     if not raw:
         return []
     if not isinstance(raw, list):
@@ -202,7 +212,7 @@ def _parse_states(raw: Any, *, base_dir: Path) -> List[dict]:
 
             resolved = Path(file_path)
             if not resolved.is_absolute():
-                resolved = (base_dir / resolved).resolve()
+                resolved = (resolution_root / resolved).resolve()
             else:
                 resolved = resolved.resolve()
             if not resolved.exists():

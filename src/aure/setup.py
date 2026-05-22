@@ -138,8 +138,20 @@ _LEGACY_DATA_KEYS = ("data_file", "data_files")
 # ---------------------------------------------------------------------------
 
 
-def load_setup(path: str | Path) -> SetupConfig:
+def load_setup(
+    path: str | Path, *, data_dir: Optional[str | Path] = None
+) -> SetupConfig:
     """Read and validate a setup YAML file.
+
+    Parameters
+    ----------
+    path
+        Path to the setup YAML file.
+    data_dir
+        Optional override for the directory used to resolve relative
+        ``data_files`` entries. Defaults to the YAML's parent directory.
+        Useful when the YAML lives in (say) ``plan/job.yaml`` but the
+        data sits in the parent directory, or in a sibling ``data/``.
 
     Raises :class:`~aure.config.ConfigError` on:
     - missing or unreadable file
@@ -173,7 +185,17 @@ def load_setup(path: str | Path) -> SetupConfig:
             "flat setup file."
         )
 
-    return _setup_from_dict(raw, base_dir=p.parent, source=str(p))
+    resolved_data_dir: Optional[Path] = None
+    if data_dir is not None:
+        resolved_data_dir = Path(data_dir).resolve()
+        if not resolved_data_dir.is_dir():
+            raise ConfigError(
+                f"data_dir override is not a directory: {resolved_data_dir}"
+            )
+
+    return _setup_from_dict(
+        raw, base_dir=p.parent, source=str(p), data_dir=resolved_data_dir
+    )
 
 
 def _setup_from_dict(
@@ -181,6 +203,7 @@ def _setup_from_dict(
     *,
     base_dir: Path,
     source: str,
+    data_dir: Optional[Path] = None,
 ) -> SetupConfig:
     """Convert a raw YAML dict into a validated SetupConfig.
 
@@ -270,7 +293,9 @@ def _setup_from_dict(
     out["shared_parameters"] = shared
     out["unshared_parameters"] = unshared
 
-    out["states"] = _parse_states(raw.get("states"), base_dir=base_dir)
+    out["states"] = _parse_states(
+        raw.get("states"), base_dir=base_dir, data_dir=data_dir
+    )
     if not out["states"]:
         raise ConfigError(
             f"{source}: at least one state must be declared under `states:`."
