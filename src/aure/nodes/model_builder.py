@@ -392,7 +392,7 @@ def _layer_index(
     amb_name = (definition.get("ambient") or {}).get("name", "")
 
     if layer_name == sub_name or layer_name.lower() == "substrate":
-        return n if back_reflection else 0
+        return n + 1 if back_reflection else 0
     if layer_name == amb_name or layer_name.lower() == "ambient":
         return 0 if back_reflection else n + 1
 
@@ -419,6 +419,17 @@ def _resolve_tied_set(definition: dict) -> list[tuple[str, str]]:
 
     layers = definition.get("layers", []) or []
     sub_name = (definition.get("substrate") or {}).get("name", "substrate")
+    amb_name = (definition.get("ambient") or {}).get("name")
+
+    # Normalize the literal aliases "substrate"/"ambient" to the actual
+    # material names so tuple comparisons (block lookups, tied_lookup)
+    # are consistent regardless of which spelling the user supplied.
+    def _canon(layer_name: str) -> str:
+        if layer_name.lower() == "substrate":
+            return sub_name
+        if layer_name.lower() == "ambient" and amb_name:
+            return amb_name
+        return layer_name
 
     # Build the default tied set.
     default: list[tuple[str, str]] = []
@@ -439,7 +450,6 @@ def _resolve_tied_set(definition: dict) -> list[tuple[str, str]]:
     valid_layers = {layer["name"] for layer in layers}
     valid_layers.add(sub_name)
     valid_layers.add("substrate")
-    amb_name = (definition.get("ambient") or {}).get("name")
     if amb_name:
         valid_layers.add(amb_name)
     valid_layers.add("ambient")
@@ -453,7 +463,7 @@ def _resolve_tied_set(definition: dict) -> list[tuple[str, str]]:
                     f"shared_parameters references unknown layer {layer_name!r}; "
                     f"known: {sorted(valid_layers)}"
                 )
-            out.append((layer_name, attr))
+            out.append((_canon(layer_name), attr))
         return out
 
     if unshared:
@@ -465,7 +475,7 @@ def _resolve_tied_set(definition: dict) -> list[tuple[str, str]]:
                     f"unshared_parameters references unknown layer {layer_name!r}; "
                     f"known: {sorted(valid_layers)}"
                 )
-            block.add((layer_name, attr))
+            block.add((_canon(layer_name), attr))
         return [pair for pair in default if pair not in block]
 
     return default
@@ -494,12 +504,23 @@ def _state_overrides(definition: dict, state: dict) -> dict:
     Currently supports overrides for ``ambient``, ``back_reflection``,
     and ``intensity``. The structure (substrate / layers) is shared
     across states.
+
+    The state's ``ambient`` is **merged** into the model-level ambient
+    rather than replacing it, so a partial override (e.g. just the SLD)
+    inherits ``name`` from the model. The UI uses the refl1d-side spelling
+    ``rho`` for SLD; translate to the ModelDefinition's ``sld`` here so
+    downstream code sees a uniform schema.
     """
     import copy
 
     eff = copy.deepcopy(definition)
     if state.get("ambient"):
-        eff["ambient"] = state["ambient"]
+        merged = dict(eff.get("ambient") or {})
+        override = dict(state["ambient"])
+        if "rho" in override and "sld" not in override:
+            override["sld"] = override.pop("rho")
+        merged.update(override)
+        eff["ambient"] = merged
     if "back_reflection" in state:
         eff["back_reflection"] = bool(state["back_reflection"])
     if state.get("intensity"):
@@ -536,6 +557,23 @@ def build_states_problem(definition: dict):
     if not states:
         raise ValueError(
             "build_states_problem requires definition['states'] to be non-empty"
+        )
+
+    # Mixed back_reflection orientations across states cannot share
+    # structural parameters cleanly: refl1d applies the substrate
+    # roughness range on sample[0] in the normal stack and on
+    # sample[n+1] in the back-reflection stack, so cross-state aliasing
+    # of substrate.interface (and any same-attr layer pair whose range
+    # is asymmetric) silently drops the range on one side.
+    base_back = bool(definition.get("back_reflection", False))
+    orientations = {
+        bool(st.get("back_reflection", base_back)) for st in states
+    }
+    if len(orientations) > 1:
+        raise ValueError(
+            "build_states_problem: all states must share the same "
+            "back_reflection orientation (mixed orientations would alias "
+            "ranged and unranged parameters across states)"
         )
 
     tied_set = _resolve_tied_set(definition)

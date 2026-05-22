@@ -8,6 +8,7 @@ the data using bumps.  Supports multiple fitting methods:
 - 'dream': MCMC for uncertainty quantification
 """
 
+import copy
 import os
 import logging
 from typing import Dict, Any, Optional
@@ -104,11 +105,14 @@ def fitting_node(state: ReflectivityState) -> Dict[str, Any]:
         updates["current_chi2"] = result["chi_squared"]
         logger.info(f"[FITTING] Completed with χ² = {result['chi_squared']:.3f}")
 
-        # Update best chi2 and save best model
+        # Update best chi2 and save best model. Deepcopy so downstream
+        # mutations of current_model (refine carry-over, state-metadata
+        # attachment) can't silently corrupt the regression snapshot the
+        # evaluation guardrail will restore on χ² worsening.
         best = state.get("best_chi2")
         if best is None or result["chi_squared"] < best:
             updates["best_chi2"] = result["chi_squared"]
-            updates["best_model"] = model
+            updates["best_model"] = copy.deepcopy(model)
             logger.info(f"[FITTING] New best χ² = {result['chi_squared']:.3f}")
 
         # Update best BIC (complexity-penalized score)
@@ -135,7 +139,7 @@ def fitting_node(state: ReflectivityState) -> Dict[str, Any]:
             best_bic = state.get("best_bic")
             if best_bic is None or bic < best_bic:
                 updates["best_bic"] = bic
-                updates["best_bic_model"] = model
+                updates["best_bic_model"] = copy.deepcopy(model)
                 logger.info(f"[FITTING] New best BIC = {bic:.1f}")
 
         # Format message

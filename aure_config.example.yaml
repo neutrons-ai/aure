@@ -56,7 +56,10 @@ model_constraints:
 #     extra_description: ambient is H2O (SLD ~-0.56), same sample, 24 h later
 #     data_files:
 #       - Rawdata/REFL_226660_combined_data_auto.txt
-#     back_reflection: true
+#
+# # `back_reflection` is a per-model setting (set at the top level if needed).
+# # All states must share the same orientation — mixing normal and back-
+# # reflecting states in one run would silently mis-alias substrate.interface.
 #
 # # Whitelist OR blacklist (not both):
 # shared_parameters:

@@ -198,9 +198,14 @@ def test_chi2_revert_restores_full_multi_state_model(monkeypatch):
 
     out = evaluation.evaluation_node(state)
 
-    # current_model has been reverted to best_model (full state restoration)
+    # current_model has been reverted to a snapshot of best_model.
+    # Identity must be *independent* so the next refine iteration's
+    # in-place edits of current_model cannot corrupt best_model.
     assert "current_model" in out
     reverted = out["current_model"]
-    assert reverted is best_model  # same dict reference
+    assert reverted is not best_model
     assert reverted["states"][0]["name"] == "D2O"
     assert reverted["shared_parameters"] == ["Cu.thickness"]
+    # Mutating the reverted current_model must not reach best_model.
+    reverted["states"][0]["name"] = "MUTATED"
+    assert best_model["states"][0]["name"] == "D2O"

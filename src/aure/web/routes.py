@@ -1099,7 +1099,11 @@ def api_live_results():
                     }
                 )
 
-        if fr.get("sld_z") and fr.get("sld_rho"):
+        # In multi-state runs, fr.sld_z/sld_rho is state 0's profile only
+        # (top-level bumps profile.dat). The dedicated /api/sld-profiles
+        # endpoint emits proper per-state profiles, so skip this single
+        # mislabeled curve here.
+        if not has_multi and fr.get("sld_z") and fr.get("sld_rho"):
             sld_label = f"Iteration {it}"
             if chi2 is not None:
                 sld_label += f" (\u03c7\u00b2={chi2:.2f})"

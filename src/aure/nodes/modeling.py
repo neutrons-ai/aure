@@ -12,6 +12,7 @@ When called after evaluation (refinement loop), it uses the LLM to
 regenerate the complete model script based on evaluation feedback.
 """
 
+import copy
 import logging
 import re
 from datetime import datetime, timezone
@@ -241,7 +242,10 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
             prev_states = current_model.get("states") or []
             if prev_states:
                 if "states" not in new_model or not new_model.get("states"):
-                    new_model["states"] = prev_states
+                    # Deepcopy so subsequent in-place edits of new_model
+                    # (e.g. attaching fit_results per state) don't reach
+                    # back into best_model.states through shared refs.
+                    new_model["states"] = copy.deepcopy(prev_states)
 
                 user_config = state.get("user_config") or {}
                 cfg_shared = user_config.get("shared_parameters") or []

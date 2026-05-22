@@ -157,6 +157,50 @@ def test_unshared_parameters_subtracts_from_default(two_files):
     assert s1[1].material.rho is s0[1].material.rho
 
 
+def test_unshared_substrate_alias_actually_unties(two_files):
+    """`substrate.<attr>` in unshared_parameters must match the default tie.
+
+    Regression: the default substrate tie is keyed by ``sub_name`` (e.g.
+    ``"silicon"``), but users / docs spell it ``"substrate"``. Before
+    normalization, the blacklist was silently ignored for the substrate.
+    """
+    from aure.nodes.model_builder import build_states_problem
+
+    defn = _two_state_definition(
+        two_files, unshared_parameters=["substrate.interface"]
+    )
+    _, by_state, _ = build_states_problem(defn)
+    s0 = by_state["D2O"][0].sample
+    s1 = by_state["H2O"][0].sample
+
+    # substrate interface explicitly NOT tied
+    assert s1[0].interface is not s0[0].interface
+    # but Cu.thickness still tied (default)
+    assert s1[1].thickness is s0[1].thickness
+
+
+def test_shared_substrate_alias_ties_and_keeps_canonical_name(two_files):
+    """`substrate.<attr>` in shared_parameters ties and uses the canonical name.
+
+    Regression: the rename pass keyed off ``sub_name``; with the alias
+    spelling, the shared parameter was relabeled with a state prefix
+    even though it was effectively shared.
+    """
+    from aure.nodes.model_builder import build_states_problem
+
+    defn = _two_state_definition(
+        two_files, shared_parameters=["substrate.interface"]
+    )
+    _, by_state, _ = build_states_problem(defn)
+    s0 = by_state["D2O"][0].sample
+    s1 = by_state["H2O"][0].sample
+
+    # substrate.interface tied via alias spelling
+    assert s1[0].interface is s0[0].interface
+    # and the shared parameter keeps the tied (state-unprefixed) name
+    assert s0[0].interface.name == "silicon interface"
+
+
 def test_unknown_layer_in_shared_parameters_raises(two_files):
     from aure.nodes.model_builder import build_states_problem
 
@@ -218,17 +262,72 @@ def test_save_problem_json_round_trip_with_bumps(tmp_path, two_files):
     assert loaded is not None
 
 
-def test_back_reflection_per_state(two_files):
-    """A state can override back_reflection independently of state 0."""
+def test_ui_ambient_rho_override_merges_into_model_ambient(two_files):
+    """A partial ambient override from the UI (``{rho: X}``) must merge
+    into the model-level ambient and translate ``rho`` → ``sld``.
+
+    Regression: ``_state_overrides`` used to replace ``eff["ambient"]``
+    wholesale with the UI payload, leaving the resulting dict without
+    ``name``/``sld``. ``_build_sample`` then raised ``KeyError`` reading
+    ``ambient_info["name"]``.
+    """
+    from aure.nodes.model_builder import build_states_problem
+
+    defn = _two_state_definition(two_files)
+    # Simulate the UI shape: only `rho`, no `name`/`sld`.
+    defn["states"][0]["ambient"] = {"rho": 6.4}
+    defn["states"][1]["ambient"] = {"rho": -0.56}
+
+    # Should build without KeyError.
+    _, by_state, _ = build_states_problem(defn)
+    s0 = by_state["D2O"][0].sample
+    s1 = by_state["H2O"][0].sample
+
+    # State-0 ambient SLD should reflect the override (6.4); state-1 (-0.56).
+    # Ambient slot is sample[n+1] in normal orientation (n=2 layers).
+    assert abs(float(s0[3].material.rho.value) - 6.4) < 1e-9
+    assert abs(float(s1[3].material.rho.value) - (-0.56)) < 1e-9
+
+
+def test_mixed_back_reflection_orientations_rejected(two_files):
+    """Mixed back-reflection orientations across states are rejected.
+
+    Refl1d ranges substrate.interface on sample[0] in the normal stack
+    and on sample[n+1] in the back-reflection stack, so cross-state
+    aliasing silently drops the range on one side. Reject up front.
+    """
     from aure.nodes.model_builder import build_states_problem
 
     defn = _two_state_definition(two_files)
     defn["states"][1]["back_reflection"] = True
-    # Should still build without crashing; aliasing still resolves layer
-    # indices via per-state back_reflection.
-    problem, by_state, _ = build_states_problem(defn)
-    s0 = by_state["D2O"][0].sample
-    s1 = by_state["H2O"][0].sample
-    # In s1 (back_reflection=True) Cu is at index len(layers)-0 = 2; in s0 it's at 1.
-    # Tied Cu.thickness must still be the same Parameter object.
-    assert s0[1].thickness is s1[2].thickness
+    with pytest.raises(ValueError, match="back_reflection"):
+        build_states_problem(defn)
+
+
+def test_back_reflection_substrate_interface_indexed_correctly(two_files):
+    """Substrate interface must alias to sample[n+1] in back-reflection.
+
+    Regression: ``_layer_index`` returned ``n`` for substrate in
+    back-reflection geometry, colliding with the topmost layer
+    (``sample[n - 0] = sample[n]``). The default tie ``(sub_name,
+    "interface")`` would then silently alias the wrong layer's
+    interface across states.
+
+    Stack ordering for back_reflection with layers=[Cu, Ti] (n=2):
+      sample[0]=ambient, sample[1]=Ti, sample[2]=Cu, sample[3]=substrate.
+    """
+    from aure.nodes.model_builder import build_states_problem
+
+    defn = _two_state_definition(two_files, back_reflection=True)
+    _, by_state, _ = build_states_problem(defn)
+    s0 = by_state["D2O"][0].sample  # back: [amb, Ti, Cu, sub]
+    s1 = by_state["H2O"][0].sample  # back: [amb, Ti, Cu, sub]
+
+    # Substrate.interface tied: both at sample[3]
+    assert s1[3].interface is s0[3].interface
+    # And it must NOT have been incorrectly aliased onto Cu (sample[2]).
+    assert s1[2].interface is not s0[3].interface
+    # Cu.interface tied at sample[2]
+    assert s1[2].interface is s0[2].interface
+    # Ti.interface tied at sample[1]
+    assert s1[1].interface is s0[1].interface

@@ -8,6 +8,7 @@ This node uses an LLM to analyze the fit results and determine:
 - What refinements might improve the fit?
 """
 
+import copy
 import json
 import logging
 import os
@@ -313,7 +314,9 @@ def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
                 f"[EVALUATION] χ² regressed ({chi2:.3f} > best {best_chi2:.3f}) "
                 f"— reverting to best model before refinement"
             )
-            updates["current_model"] = best_model
+            # Deepcopy so the next refine iteration's in-place edits of
+            # current_model don't reach back into best_model.
+            updates["current_model"] = copy.deepcopy(best_model)
             chi2_reverted = True
             analysis["issues"].insert(
                 0,
@@ -340,7 +343,7 @@ def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
                 f"[EVALUATION] BIC regressed ({bic:.1f} > best {best_bic_val:.1f}) "
                 f"\u2014 added complexity not justified, reverting to simpler model"
             )
-            updates["current_model"] = best_bic_mdl
+            updates["current_model"] = copy.deepcopy(best_bic_mdl)
             bic_reverted = True
             analysis["issues"].insert(
                 0,
