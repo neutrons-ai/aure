@@ -15,10 +15,13 @@ def _write_minimal_data(path: Path) -> None:
 
 
 def test_co_refine_states_tool_registered() -> None:
-    """The tool must be discoverable by name in the MCP server module."""
+    """The tool must be discoverable by name in the MCP server module
+    and registered with FastMCP via the ``@mcp.tool()`` decorator."""
     assert hasattr(mcp_module, "co_refine_states")
-    # FastMCP wraps the function as a FunctionTool exposing .fn
-    assert callable(mcp_module.co_refine_states.fn)
+    assert callable(mcp_module.co_refine_states)
+    # FastMCP 3.x annotates the function with `__fastmcp__` ToolMeta
+    # instead of wrapping it. Verify the decorator ran.
+    assert getattr(mcp_module.co_refine_states, "__fastmcp__", None) is not None
 
 
 def test_co_refine_states_rejects_single_state(tmp_path: Path) -> None:
@@ -33,7 +36,7 @@ def test_co_refine_states_rejects_single_state(tmp_path: Path) -> None:
     cfg_path = tmp_path / "cfg.yaml"
     cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
 
-    out = mcp_module.co_refine_states.fn(str(cfg_path))
+    out = mcp_module.co_refine_states(str(cfg_path))
     assert "error" in out
     assert "two" in out["error"].lower() or "states" in out["error"].lower()
 
@@ -69,7 +72,7 @@ def test_co_refine_states_dispatches_to_run_analysis(tmp_path: Path) -> None:
     }
 
     with patch.object(mcp_module, "run_analysis", return_value=fake_result) as mock_ra:
-        out = mcp_module.co_refine_states.fn(
+        out = mcp_module.co_refine_states(
             str(cfg_path), output_dir=str(tmp_path / "out"), max_iterations=1
         )
 
