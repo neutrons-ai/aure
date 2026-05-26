@@ -1172,21 +1172,55 @@ def import_refl1d(
     )
     _attach_states_to_per_file(fit_result.get("per_file_results"), states_list)
 
-    # Update per-state data_files with Q/R/dR so the web UI plots them.
-    # Pull straight from the probes — we already wrote out the file.
+    # Update per-state data_files with Q/R/dR + header metadata so the
+    # web UI plots them and a downstream refinement loads them with the
+    # right probe type. Two paths:
+    #
+    # - **setup mode**: enrich from the user's original files on disk.
+    #   The headers carry the real ``theta`` and resolution convention,
+    #   so a subsequent refine call loads them via ``load_probe_from_angle``
+    #   (NeutronProbe), which is what makes per-probe
+    #   ``sample_broadening`` and ``theta_offset`` parameters available.
+    #
+    # - **auto-detect mode**: the data files referenced by the workspace
+    #   are headerless probe dumps under ``<output>/data/``. We extract
+    #   Q/R/dR straight from the deserialised refl1d probe (since the
+    #   dumps contain nothing else useful) and default the rest.
     experiments = list(problem.models)
     flat_data_files = flatten_data_files(states_list)
-    for ds, exp in zip(flat_data_files, experiments):
-        probe = exp.probe
-        ds["Q"] = np.asarray(probe.Q, dtype=float).tolist()
-        ds["R"] = np.asarray(probe.R, dtype=float).tolist()
-        if probe.dR is not None:
-            ds["dR"] = np.asarray(probe.dR, dtype=float).tolist()
-        else:
-            ds["dR"] = [0.0] * len(ds["Q"])
-        ds["dq_is_fwhm"] = True
-        ds["theta"] = 0.0
-        ds["num_segments"] = 0
+    if setup is not None:
+        from .nodes.intake import _parse_theta_from_header
+        from .tools.data_tools import load_reflectivity_data
+
+        for ds in flat_data_files:
+            file_path = ds["file"]
+            data = load_reflectivity_data(file_path)
+            ds["Q"] = data["Q"].tolist()
+            ds["R"] = data["R"].tolist()
+            dR = data.get("dR")
+            ds["dR"] = (
+                dR.tolist() if dR is not None else [0.0] * len(ds["Q"])
+            )
+            # Deterministic theta extraction from the header; falls back
+            # to 0.0 for combined / multi-segment files (intake-style
+            # behaviour). dq_is_fwhm and num_segments use the same
+            # defaults the intake node falls back to when the LLM is
+            # unavailable.
+            ds["theta"] = _parse_theta_from_header(file_path)
+            ds.setdefault("dq_is_fwhm", True)
+            ds.setdefault("num_segments", 0)
+    else:
+        for ds, exp in zip(flat_data_files, experiments):
+            probe = exp.probe
+            ds["Q"] = np.asarray(probe.Q, dtype=float).tolist()
+            ds["R"] = np.asarray(probe.R, dtype=float).tolist()
+            if probe.dR is not None:
+                ds["dR"] = np.asarray(probe.dR, dtype=float).tolist()
+            else:
+                ds["dR"] = [0.0] * len(ds["Q"])
+            ds["dq_is_fwhm"] = True
+            ds["theta"] = 0.0
+            ds["num_segments"] = 0
 
     # --- Build a synthetic ReflectivityState -----------------------------------
     primary_ds = states_list[0]["data_files"][0]

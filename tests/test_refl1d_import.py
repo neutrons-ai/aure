@@ -627,6 +627,63 @@ def test_setup_data_dir_without_setup_errors():
         )
 
 
+def test_setup_mode_recovers_theta_from_file_headers(tmp_path):
+    """A setup-driven import must read ``theta`` from the data file
+    header so a downstream refine builds a NeutronProbe (enabling
+    per-probe ``theta_offset`` / ``sample_broadening``) instead of
+    falling back to a QProbe.
+
+    Regression: the importer used to hardcode ``theta=0`` for every
+    dataset, even in setup mode, which forced the QProbe path on
+    rebuild and dropped the per-segment nuisance parameters.
+    """
+    import yaml
+
+    from aure.refl1d_import import import_refl1d
+
+    # Build a REF_L-style partial file: header carries TwoTheta(deg),
+    # followed by 4-column reflectivity rows. The deterministic theta
+    # parser splits TwoTheta in half.
+    partial = tmp_path / "REFL_226642_3_226644_partial.txt"
+    Q = np.linspace(0.01, 0.10, 60)
+    Qc = 0.0217
+    R = np.where(Q < Qc, 1.0, (Qc / (2 * Q)) ** 4)
+    R = np.clip(R, 1e-10, 1.0)
+    dR = 0.05 * R
+    dQ = 0.02 * Q
+    with open(partial, "w") as fh:
+        fh.write("# DataRun  TwoTheta(deg)  Sequence_id\n")
+        fh.write("# 226642_3 1.5000         226642_3_partials\n")
+        for q, r, dr, dq in zip(Q, R, dR, dQ):
+            fh.write(f"{q:.6f}  {r:.6e}  {dr:.6e}  {dq:.6e}\n")
+
+    defn = _single_state_definition(str(partial))
+    src = _save_problem_to(tmp_path, defn)
+
+    setup_path = tmp_path / "plan.yaml"
+    setup_path.write_text(
+        yaml.safe_dump(
+            {
+                "sample_description": "x",
+                "states": [
+                    {"name": "S", "data_files": [{"file": str(partial)}]},
+                ],
+            }
+        )
+    )
+
+    out = tmp_path / "imported"
+    import_refl1d(str(src), str(out), setup_path=str(setup_path))
+    final = json.loads((out / "final_state.json").read_text())
+
+    flat = final["state"]["data_files"]
+    assert flat, "data_files should be populated"
+    # TwoTheta = 1.5 → theta = 0.75
+    assert flat[0]["theta"] == pytest.approx(0.75, rel=1e-9)
+    # And dq_is_fwhm defaults to True (matches intake's default).
+    assert flat[0]["dq_is_fwhm"] is True
+
+
 def test_setup_extra_description_carried_through(tmp_path, two_files):
     """Per-state ``extra_description`` from the setup is preserved on
     the recovered state, so the LLM sees the scientist's per-state notes.
