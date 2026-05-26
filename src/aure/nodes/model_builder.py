@@ -363,6 +363,23 @@ _ATTR_DISPLAY = {
 }
 
 
+def needs_states_problem(definition: dict) -> bool:
+    """Return True when the model must be built via :func:`build_states_problem`.
+
+    The multi-file path (:func:`build_multi_problem`) doesn't honor per-state
+    ``theta_offset`` / ``sample_broadening`` blocks, so a single-state model
+    with those nuisance parameters still needs the states route to wire them
+    correctly. Multi-state models always need it.
+    """
+    states = definition.get("states") or []
+    if len(states) > 1:
+        return True
+    return any(
+        st.get("theta_offset") or st.get("sample_broadening")
+        for st in states
+    )
+
+
 def parameter_key(
     state_name: str, layer_name: str, attr_path: str, *, tied: bool
 ) -> str:
@@ -637,11 +654,20 @@ def build_states_problem(definition: dict):
         shared_offset = None
 
         state_experiments: list = []
-        for probe in sorted_probes:
-            if not intensity.get("fixed", False):
-                int_val = intensity.get("value", intensity.get("init", 1.0))
-                int_min = intensity.get("min", 0.7)
-                int_max = intensity.get("max", 1.1)
+        for ds, probe in zip(sorted_files, sorted_probes):
+            # Per-file intensity override on the DatasetInfo takes
+            # precedence over the state-level intensity. This is how
+            # ``aure import-refl1d`` preserves the post-fit intensity
+            # values for each segment in a single-state co-refinement,
+            # where each probe carries its own intensity Parameter.
+            ds_intensity = ds.get("intensity") or {}
+            effective_intensity = {**intensity, **ds_intensity}
+            if not effective_intensity.get("fixed", False):
+                int_val = effective_intensity.get(
+                    "value", effective_intensity.get("init", 1.0)
+                )
+                int_min = effective_intensity.get("min", 0.7)
+                int_max = effective_intensity.get("max", 1.1)
                 probe.intensity.value = int_val
                 probe.intensity.range(int_min, int_max)
 
@@ -771,8 +797,7 @@ def save_problem_json(
     """
     from bumps.serialize import save_file
 
-    states = definition.get("states") or []
-    if len(states) > 1:
+    if needs_states_problem(definition):
         problem, _exps, _sorted = build_states_problem(definition)
     elif data_files and len(data_files) > 1:
         problem, _experiments, _sorted = build_multi_problem(definition, data_files)

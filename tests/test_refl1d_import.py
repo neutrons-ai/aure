@@ -627,6 +627,128 @@ def test_setup_data_dir_without_setup_errors():
         )
 
 
+def test_setup_mode_round_trip_preserves_per_probe_intensities(tmp_path):
+    """Single-state co-refinement with per-probe intensities + per-state
+    nuisance must round-trip cleanly: the rebuilt problem yields the
+    same χ² as the original after applying the imported parameters.
+
+    Regression: per-probe intensities used to collapse under the shared
+    name "intensity" (lossy), per-state theta_offset / sample_broadening
+    were treated as model-level overrides that ``build_multi_problem``
+    ignores, and the dispatch picked the wrong builder.
+    """
+    import yaml
+
+    from aure.nodes.model_builder import (
+        apply_parameters,
+        build_states_problem,
+        needs_states_problem,
+    )
+    from aure.refl1d_import import import_refl1d
+
+    # Build a 3-file partial setup so refl1d picks NeutronProbe; enable
+    # per-state theta_offset / sample_broadening.
+    files = [
+        _make_partial_data_file(tmp_path, i + 1, theta_deg=0.5 * (i + 1))
+        for i in range(3)
+    ]
+
+    defn = _single_state_definition(files[0])
+    defn["back_reflection"] = True
+    defn["states"] = [
+        {
+            "name": "run_A",
+            "data_files": [
+                {"file": f, "theta": 0.5 * (i + 1)}
+                for i, f in enumerate(files)
+            ],
+            "back_reflection": True,
+            "theta_offset": {"init": 0.0, "min": -0.01, "max": 0.01},
+            "sample_broadening": {"init": 0.0, "min": 0.0, "max": 0.1},
+        }
+    ]
+
+    # Build, mutate per-probe intensities to be distinct, save.
+    problem, by_state, _ = build_states_problem(defn)
+    intensities = [0.83, 1.15, 1.27]
+    for exp, val in zip(by_state["run_A"], intensities):
+        exp.probe.intensity.value = val
+    # Set the nuisance shared params to non-default values too.
+    first_exp = by_state["run_A"][0]
+    first_exp.probe.theta_offset.value = -0.0034
+    first_exp.probe.sample_broadening.value = 0.033
+    expected_chi2 = float(problem.chisq())
+
+    from bumps.serialize import save_file
+
+    fit_dir = tmp_path / "refl1d_output" / "fit_iter0_lm"
+    fit_dir.mkdir(parents=True)
+    save_file(str(fit_dir / "problem.json"), problem)
+
+    # Setup file points at the same originals.
+    setup_path = tmp_path / "plan.yaml"
+    setup_path.write_text(
+        yaml.safe_dump(
+            {
+                "sample_description": "x",
+                "states": [
+                    {
+                        "name": "run_A",
+                        "back_reflection": True,
+                        "theta_offset": {"init": 0.0, "min": -0.01, "max": 0.01},
+                        "sample_broadening": {"init": 0.0, "min": 0.0, "max": 0.1},
+                        "data_files": [{"file": f} for f in files],
+                    }
+                ],
+            }
+        )
+    )
+
+    out = tmp_path / "imported"
+    import_refl1d(str(fit_dir), str(out), setup_path=str(setup_path))
+
+    final = json.loads((out / "final_state.json").read_text())
+    model = final["state"]["current_model"]
+    params = final["state"]["fit_results"][0]["parameters"]
+
+    # Dispatch must pick the states-problem path (single state + nuisance).
+    assert needs_states_problem(model)
+
+    # Per-probe intensities preserved (no collapse).
+    intensity_keys = [k for k in params if "intensity" in k]
+    assert len(intensity_keys) == 3, intensity_keys
+    intensity_values = sorted(params[k] for k in intensity_keys)
+    assert intensity_values == pytest.approx(sorted(intensities), rel=1e-9)
+
+    # Round-trip χ² check: rebuilding the problem and re-applying the
+    # imported parameters should reproduce the original χ² exactly.
+    rebuilt, _, _ = build_states_problem(model)
+    apply_parameters(rebuilt, params)
+    assert float(rebuilt.chisq()) == pytest.approx(expected_chi2, rel=1e-6)
+
+
+def _make_partial_data_file(
+    tmp_path, idx: int, theta_deg: float, n: int = 60, set_id: int = 2222
+) -> str:
+    """Write a REF_L-style partial with a TwoTheta header so the
+    importer treats it as a NeutronProbe-able partial. All partials
+    of one sequence share a single ``set_id`` per the REF_L convention
+    (validated by ``_parse_states``).
+    """
+    Q = np.linspace(0.01 + 0.02 * (idx - 1), 0.10 + 0.02 * (idx - 1), n)
+    R = (0.0217 / (2 * Q)) ** 4
+    R = np.clip(R, 1e-10, 1.0)
+    dR = 0.05 * R
+    dQ = 0.02 * Q
+    path = tmp_path / f"REFL_{set_id}_{idx}_{set_id + idx}_partial.txt"
+    with open(path, "w") as fh:
+        fh.write("# DataRun  TwoTheta(deg)  Sequence_id\n")
+        fh.write(f"# {set_id}_{idx}  {2 * theta_deg:.4f}  {set_id}_partials\n")
+        for q, r, dr, dq in zip(Q, R, dR, dQ):
+            fh.write(f"{q:.6f}  {r:.6e}  {dr:.6e}  {dq:.6e}\n")
+    return str(path)
+
+
 def test_setup_mode_recovers_theta_from_file_headers(tmp_path):
     """A setup-driven import must read ``theta`` from the data file
     header so a downstream refine builds a NeutronProbe (enabling

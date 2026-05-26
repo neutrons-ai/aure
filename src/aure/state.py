@@ -135,12 +135,19 @@ class DatasetInfo(TypedDict, total=False):
     ``file`` and ``label`` are the only fields required at construction time
     (e.g. from the CLI/web layer).  ``dq_is_fwhm`` and ``theta`` are
     populated later during the intake node and are therefore optional here.
+
+    ``intensity`` is an optional per-probe override applied by
+    :func:`~aure.nodes.model_builder.build_states_problem`. It takes
+    precedence over the state-level intensity and is used by
+    ``aure import-refl1d`` to preserve the post-fit intensity values
+    for individual segments in a co-refinement.
     """
 
     file: str  # Absolute path to the data file
     label: str  # Short human-readable label (e.g. "low-Q", "file1")
     dq_is_fwhm: bool  # Whether dQ column is FWHM (True) or 1-sigma (False)
     theta: float  # Incident angle in degrees (half of TwoTheta from header)
+    intensity: dict  # Per-probe intensity override: {value/init, min, max, fixed}
 
 
 class PerFileFitResult(TypedDict, total=False):

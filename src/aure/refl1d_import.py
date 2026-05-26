@@ -299,6 +299,48 @@ def _probe_intensity(probe) -> dict:
     }
 
 
+def _probe_nuisance(probe, attr: str) -> Optional[dict]:
+    """Recover a ranged per-state nuisance parameter from a probe.
+
+    Returns ``None`` when the probe doesn't expose *attr* or when it
+    isn't ranged (i.e. wasn't a free parameter in the original fit).
+    Otherwise returns ``{"init": fitted_value, "min": lo, "max": hi}``
+    so the rebuilt :func:`~aure.nodes.model_builder.build_states_problem`
+    starts from the fitted state with the same bounds.
+    """
+    par = getattr(probe, attr, None)
+    if par is None:
+        return None
+    lo, hi = _bounds(par)
+    if lo is None or hi is None:
+        return None
+    return {
+        "init": float(par.value),
+        "min": float(lo),
+        "max": float(hi),
+    }
+
+
+def _shared_nuisance_for_state(experiments, exp_indices, attr: str) -> Optional[dict]:
+    """Recover one shared nuisance parameter for a state.
+
+    The state's probes must share a single ``Parameter`` object for *attr*
+    (i.e. the original fit used a per-state shared nuisance) and the
+    parameter must be ranged. Returns ``None`` otherwise.
+    """
+    if not exp_indices:
+        return None
+    first = experiments[exp_indices[0]].probe
+    par = getattr(first, attr, None)
+    if par is None:
+        return None
+    for idx in exp_indices[1:]:
+        other = getattr(experiments[idx].probe, attr, None)
+        if other is None or other is not par:
+            return None
+    return _probe_nuisance(first, attr)
+
+
 def _group_experiments_by_sample(experiments: list) -> List[List[int]]:
     """Return groups of experiment indices that share a refl1d ``Sample``.
 
@@ -633,6 +675,11 @@ def definition_from_problem(
             state_name=name,
             multiple_states=multi_state,
         )
+        # Attach the matching probe's intensity so each segment in a
+        # co-refinement can recover its own fitted value via
+        # build_states_problem on rebuild.
+        for ds, exp_idx in zip(data_files, group):
+            ds["intensity"] = _probe_intensity(experiments[exp_idx].probe)
         intensity = _probe_intensity(experiments[group[0]].probe)
         state_def: StateDefinition = {
             "name": name,
@@ -641,6 +688,12 @@ def definition_from_problem(
             "ambient": ambient,
             "intensity": intensity,
         }
+        # Recover per-state shared nuisance with FITTED values (matches
+        # what _definition_from_setup_and_problem does in setup mode).
+        for attr in ("theta_offset", "sample_broadening"):
+            recovered = _shared_nuisance_for_state(experiments, group, attr)
+            if recovered:
+                state_def[attr] = recovered
         # Stash structure under the state too; build_states_problem reads
         # from the top-level keys but the web UI's parameter editor walks
         # the per-state layers when present.
@@ -808,6 +861,85 @@ def extract_fit_result_from_problem(
         issues=[],
         suggestions=[],
     )
+
+
+def _disambiguate_probe_parameters(
+    fit_result: dict,
+    problem,
+    states: List[StateDefinition],
+) -> None:
+    """Rewrite per-probe parameter keys in ``fit_result`` to match
+    :func:`~aure.nodes.model_builder.build_states_problem`'s naming.
+
+    Without this, three independent ``intensity`` Parameter objects all
+    named ``"intensity"`` collide into one dict entry — the workspace
+    forgets that each segment had its own fitted value, and on rebuild
+    every probe gets the same starting intensity.
+
+    Per-probe attributes (``intensity``) are renamed to
+    ``"<state> <label> intensity"`` (or ``"<state> intensity"`` when
+    the state has a single file). Per-state shared attributes
+    (``theta_offset``, ``sample_broadening``) become
+    ``"<state> <attr>"``. The disambiguation walks ``problem._parameters``
+    by ``id()`` so values are preserved exactly.
+    """
+    experiments = list(problem.models)
+
+    # Build {id(Parameter): new_name} for every per-probe / per-state nuisance.
+    rename: dict[int, str] = {}
+    exp_cursor = 0
+    for state_def in states:
+        state_name = state_def["name"]
+        n = len(state_def.get("data_files") or [])
+        if n == 0:
+            continue
+        idxs = list(range(exp_cursor, exp_cursor + n))
+        exp_cursor += n
+        multi_in_state = n > 1
+
+        # Per-probe: intensity (always distinct objects).
+        for ds, exp_idx in zip(state_def["data_files"], idxs):
+            probe = experiments[exp_idx].probe
+            par = getattr(probe, "intensity", None)
+            if par is None:
+                continue
+            label = ds.get("label", "")
+            if multi_in_state and label:
+                rename[id(par)] = f"{state_name} {label} intensity"
+            else:
+                rename[id(par)] = f"{state_name} intensity"
+
+        # Per-state shared: theta_offset, sample_broadening.
+        for attr in ("theta_offset", "sample_broadening"):
+            seen_ids: set[int] = set()
+            for exp_idx in idxs:
+                par = getattr(experiments[exp_idx].probe, attr, None)
+                if par is None or id(par) in seen_ids:
+                    continue
+                seen_ids.add(id(par))
+                # Only rename if it was actually ranged (a free parameter).
+                lo, hi = _bounds(par)
+                if lo is None or hi is None:
+                    continue
+                rename[id(par)] = f"{state_name} {attr}"
+
+    if not rename:
+        return
+
+    # Rebuild parameters / bounds dicts walking ``problem._parameters``
+    # so each Parameter contributes a unique entry under its new name.
+    new_params: dict[str, float] = {}
+    new_bounds: dict[str, list] = {}
+    for par in problem._parameters:
+        name = rename.get(id(par), str(par.name))
+        new_params[name] = par.value
+        lo, hi = _bounds(par)
+        if lo is not None and hi is not None:
+            new_bounds[name] = [lo, hi]
+
+    fit_result["parameters"] = new_params
+    if fit_result.get("bounds") is not None:
+        fit_result["bounds"] = new_bounds
 
 
 def _attach_states_to_per_file(
@@ -982,12 +1114,22 @@ def _definition_from_setup_and_problem(
         st_back = resolved_back[state_idx]
 
         # Use setup's data files, reordered to match refl1d's Q-ascending
-        # experiment order within this state.
+        # experiment order within this state. Each ``DatasetInfo`` gets a
+        # per-probe intensity override populated from the matching
+        # refl1d probe so build_states_problem can apply the fitted
+        # value on rebuild.
         sorted_files = _sort_setup_files_by_q(setup_state["data_files"])
-        data_files = [
-            {"file": ds["file"], "label": ds.get("label") or Path(ds["file"]).stem}
-            for ds in sorted_files
-        ]
+        # Sort indices into ``idxs`` the same way (they're already in
+        # ascending Q from build_states_problem's prior sort, so the
+        # zip lines up).
+        data_files = []
+        for ds, exp_idx in zip(sorted_files, idxs):
+            entry = {
+                "file": ds["file"],
+                "label": ds.get("label") or Path(ds["file"]).stem,
+                "intensity": _probe_intensity(experiments[exp_idx].probe),
+            }
+            data_files.append(entry)
 
         # Ambient: setup override wins (it carries the scientist's
         # canonical labelling, e.g. "D2O" instead of refl1d's serialized
@@ -999,7 +1141,9 @@ def _definition_from_setup_and_problem(
             else refl1d_ambient
         )
 
-        # Intensity: setup override wins; else read from the first probe.
+        # State-level intensity stays as a fallback — the per-file
+        # ``intensity`` overrides on each DatasetInfo are the real
+        # source of truth when build_states_problem rebuilds.
         intensity = (
             dict(setup_state["intensity"])
             if setup_state.get("intensity")
@@ -1013,9 +1157,18 @@ def _definition_from_setup_and_problem(
             "ambient": ambient,
             "intensity": intensity,
         }
-        for opt in ("extra_description", "theta_offset", "sample_broadening"):
-            if setup_state.get(opt):
-                state_def[opt] = setup_state[opt]
+        # Recover per-state shared nuisance with FITTED values so the
+        # rebuilt problem starts from the fitted state (and reproduces
+        # the same χ²). The setup file's init values were the original
+        # starting points — we override them here.
+        for attr in ("theta_offset", "sample_broadening"):
+            recovered = _shared_nuisance_for_state(experiments, idxs, attr)
+            if recovered:
+                state_def[attr] = recovered
+            elif setup_state.get(attr):
+                state_def[attr] = setup_state[attr]
+        if setup_state.get("extra_description"):
+            state_def["extra_description"] = setup_state["extra_description"]
         state_def["_kind"] = (
             setup_state.get("_kind")
             or _detect_state_kind([ds["file"] for ds in data_files])
@@ -1170,6 +1323,12 @@ def import_refl1d(
         iteration=0,  # imported runs always anchor at iteration 0
         export_dir=str(refl1d_path),
     )
+    # Per-probe intensity and per-state nuisance parameters collide
+    # under shared default names (e.g. all three intensities are named
+    # "intensity"). Rename keys by id() to match the convention
+    # build_states_problem uses on rebuild so apply_parameters can
+    # find them.
+    _disambiguate_probe_parameters(fit_result, problem, states_list)
     _attach_states_to_per_file(fit_result.get("per_file_results"), states_list)
 
     # Update per-state data_files with Q/R/dR + header metadata so the

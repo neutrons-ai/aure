@@ -368,12 +368,11 @@ class RunData:
             fitted_params = fr.get("parameters", {})
             model = self._get_model_for_iteration(iteration)
 
-            # Multi-state: emit one profile per state per iteration.
-            if (
-                isinstance(model, dict)
-                and isinstance(model.get("states"), list)
-                and len(model["states"]) >= 2
-            ):
+            # Multi-state (or single-state with per-state nuisance): emit one
+            # profile per state per iteration via the states-problem path.
+            from aure.nodes.model_builder import needs_states_problem as _needs_states
+
+            if isinstance(model, dict) and _needs_states(model):
                 try:
                     state_results = _compute_states_sld(model, fitted_params)
                 except Exception as exc:
@@ -710,13 +709,13 @@ class RunData:
         if model is None:
             return {"error": "No model available"}
 
-        # Multi-state co-refinement: structure carries `states`, take precedence
+        # Multi-state (or single state with per-state nuisance):
+        # build_states_problem is the only path that wires up shared
+        # theta_offset / sample_broadening correctly. Take precedence
         # over the legacy multi-file path.
-        if (
-            isinstance(model, dict)
-            and isinstance(model.get("states"), list)
-            and len(model["states"]) >= 2
-        ):
+        from aure.nodes.model_builder import needs_states_problem as _needs_states
+
+        if isinstance(model, dict) and _needs_states(model):
             try:
                 return _compute_states_simulation(
                     model,

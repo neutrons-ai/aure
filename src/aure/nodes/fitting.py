@@ -17,7 +17,12 @@ from pathlib import Path
 import numpy as np
 
 from ..state import ReflectivityState, FitResult, PerFileFitResult, Message
-from .model_builder import build_problem, build_multi_problem, build_states_problem
+from .model_builder import (
+    build_problem,
+    build_multi_problem,
+    build_states_problem,
+    needs_states_problem,
+)
 from .evaluation import _count_free_params, _compute_bic
 
 logger = logging.getLogger(__name__)
@@ -67,7 +72,7 @@ def fitting_node(state: ReflectivityState) -> Dict[str, Any]:
         logger.info(f"[FITTING] Running {method.upper()} optimization...")
 
         data_files = state.get("data_files", [])
-        is_multi_state = isinstance(model, dict) and len(model.get("states") or []) >= 2
+        is_multi_state = isinstance(model, dict) and needs_states_problem(model)
         is_multi = (
             len(data_files) > 1 and isinstance(model, dict) and not is_multi_state
         )
