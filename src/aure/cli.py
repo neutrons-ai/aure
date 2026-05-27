@@ -17,10 +17,11 @@ from pathlib import Path
 from typing import Optional
 
 import click
-from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_dotenv()
+from .env_config import load_env
+
+# Load environment variables from .env then ~/.aure (project .env wins)
+load_env()
 
 from .config import load_user_config  # noqa: E402
 from .llm import (  # noqa: E402

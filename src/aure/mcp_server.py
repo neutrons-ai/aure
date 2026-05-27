@@ -15,10 +15,10 @@ Or with the CLI:
 import os
 from typing import Optional
 
-from dotenv import load_dotenv
+from .env_config import load_env
 
-# Load environment variables from .env file (for LangSmith tracing, LLM config, etc.)
-load_dotenv()
+# Load environment variables from .env then ~/.aure (for LangSmith tracing, LLM config, etc.)
+load_env()
 
 from fastmcp import FastMCP
 
