@@ -49,6 +49,10 @@ def fitting_node(state: ReflectivityState) -> Dict[str, Any]:
         updates["error"] = "No model to fit"
         return updates
 
+    # Name the exported FitProblem after the setup's model_name; otherwise
+    # bumps writes the refl1d output as None-*.dat / None.json.
+    model_name = (state.get("user_config") or {}).get("model_name") or None
+
     iteration = state.get("iteration", 0)
     method = os.environ.get("FIT_METHOD", "dream").lower()
     # Allow UI / state override for DREAM steps, then env var, then default
@@ -85,6 +89,7 @@ def fitting_node(state: ReflectivityState) -> Dict[str, Any]:
                 steps=steps,
                 burn=burn,
                 export_dir=export_dir,
+                model_name=model_name,
             )
         elif is_multi:
             result = run_multi_refl1d_fit(
@@ -95,6 +100,7 @@ def fitting_node(state: ReflectivityState) -> Dict[str, Any]:
                 steps=steps,
                 burn=burn,
                 export_dir=export_dir,
+                model_name=model_name,
             )
         else:
             result = run_refl1d_fit(
@@ -104,6 +110,7 @@ def fitting_node(state: ReflectivityState) -> Dict[str, Any]:
                 steps=steps,
                 burn=burn,
                 export_dir=export_dir,
+                model_name=model_name,
             )
 
         updates["fit_results"] = [result]
@@ -172,6 +179,7 @@ def run_refl1d_fit(
     steps: int = 1000,
     burn: int = 1000,
     export_dir: Optional[str] = None,
+    model_name: Optional[str] = None,
 ) -> FitResult:
     """
     Execute refl1d fit by building a FitProblem from a ModelDefinition.
@@ -183,6 +191,7 @@ def run_refl1d_fit(
         steps: Number of steps for MCMC methods
         burn: Number of burn-in steps for MCMC
         export_dir: Optional directory for bumps/refl1d export output
+        model_name: Optional name for the FitProblem (drives export filenames)
 
     Returns:
         FitResult dictionary
@@ -190,6 +199,7 @@ def run_refl1d_fit(
     from bumps.fitters import fit as bumps_fit
 
     problem = build_problem(model_definition)
+    _name_problem(problem, model_name)
 
     # Configure fit options based on method
     fit_options = _build_fit_options(method, steps, burn, export_dir)
@@ -216,6 +226,7 @@ def run_multi_refl1d_fit(
     steps: int = 1000,
     burn: int = 1000,
     export_dir: Optional[str] = None,
+    model_name: Optional[str] = None,
 ) -> FitResult:
     """Execute a joint fit across multiple data files (co-refinement).
 
@@ -242,6 +253,7 @@ def run_multi_refl1d_fit(
     problem, experiments, sorted_data_files = build_multi_problem(
         model_definition, data_files
     )
+    _name_problem(problem, model_name)
     n_files = len(sorted_data_files)
     logger.info(
         f"[FITTING] Running {method.upper()} co-refinement across {n_files} files..."
@@ -268,6 +280,7 @@ def run_states_refl1d_fit(
     steps: int = 1000,
     burn: int = 1000,
     export_dir: Optional[str] = None,
+    model_name: Optional[str] = None,
 ) -> FitResult:
     """Execute a multi-state co-refinement fit.
 
@@ -284,6 +297,7 @@ def run_states_refl1d_fit(
     problem, experiments_by_state, sorted_files_by_state = build_states_problem(
         model_definition
     )
+    _name_problem(problem, model_name)
 
     n_states = len(experiments_by_state)
     n_files = sum(len(v) for v in experiments_by_state.values())
@@ -304,6 +318,19 @@ def run_states_refl1d_fit(
         iteration=iteration,
         export_dir=export_dir,
     )
+
+
+def _name_problem(problem, model_name: Optional[str]) -> None:
+    """Name the FitProblem so bumps' export uses it as the filename stem.
+
+    Without a name, bumps writes the refl1d output as ``None-*.dat`` /
+    ``None.json``; setting it yields ``<model_name>-*`` / ``<model_name>.json``.
+    """
+    if model_name:
+        try:
+            problem.name = model_name
+        except Exception:  # pragma: no cover - defensive
+            logger.warning("[FITTING] Could not set FitProblem.name=%r", model_name)
 
 
 def _build_fit_options(

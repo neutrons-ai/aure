@@ -423,8 +423,10 @@ def setup_to_user_config(setup: SetupConfig) -> dict:
 
     The runner / modeling node reads ``evaluation_criteria``,
     ``model_constraints``, ``shared_parameters``, and ``unshared_parameters``
-    from a plain dict (see :mod:`aure.nodes.modeling`). All other setup
-    fields drive the CLI/web caller directly.
+    from a plain dict (see :mod:`aure.nodes.modeling`). ``model_name`` is
+    carried so the fitting node can name the exported FitProblem (otherwise
+    bumps writes ``None-*`` / ``None.json``). All other setup fields drive the
+    CLI/web caller directly.
     """
     cfg: dict = {}
     for key in (
@@ -433,6 +435,7 @@ def setup_to_user_config(setup: SetupConfig) -> dict:
         "shared_parameters",
         "unshared_parameters",
         "sample_description",
+        "model_name",
     ):
         value = setup.get(key)  # type: ignore[literal-required]
         if value:

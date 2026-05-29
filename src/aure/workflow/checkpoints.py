@@ -211,12 +211,15 @@ class CheckpointManager:
             logger.warning("[CHECKPOINT] Could not copy best problem.json: %s", exc)
 
     def _copy_best_problem_json(self, state: Dict[str, Any]):
-        """Copy ``problem.json`` from the best fit's refl1d output to the
-        top-level output directory.
+        """Copy the best fit's serialized FitProblem JSON to the top-level
+        output directory as ``problem.json``.
 
-        Locates the fit iteration that produced the best chi-squared, finds
-        the corresponding ``refl1d_output/fit_iter{N}_{method}/problem.json``,
-        and copies it to ``<output_dir>/problem.json``.
+        Locates the fit iteration that produced the best chi-squared, then
+        finds the exported FitProblem JSON in
+        ``refl1d_output/fit_iter{N}_{method}/``. bumps names that file after
+        the problem (``<model_name>.json``, or ``None.json`` when unnamed), not
+        literally ``problem.json`` — so we resolve it by name and fall back to
+        the largest non-``*-expt.json`` / non-``*_definition.json`` JSON.
         """
         import shutil
 
@@ -243,15 +246,46 @@ class CheckpointManager:
 
         iteration = best_fit.get("iteration", 0)
         method = best_fit.get("method", "dream")
+        fit_dir = self.refl1d_output_dir / f"fit_iter{iteration}_{method}"
 
-        src = self.refl1d_output_dir / f"fit_iter{iteration}_{method}" / "problem.json"
-        if not src.exists():
-            logger.warning("[CHECKPOINT] Best-fit problem.json not found: %s", src)
+        src = self._find_problem_json(fit_dir, state)
+        if src is None:
+            logger.warning(
+                "[CHECKPOINT] Best-fit FitProblem JSON not found in %s", fit_dir
+            )
             return
 
         dst = self.output_dir / "problem.json"
         shutil.copy2(src, dst)
-        logger.info(f"[CHECKPOINT] Copied best-fit problem.json → {dst}")
+        logger.info("[CHECKPOINT] Copied best-fit problem.json (%s) → %s", src.name, dst)
+
+    @staticmethod
+    def _find_problem_json(fit_dir, state: Dict[str, Any]):
+        """Locate the serialized FitProblem JSON bumps exported into *fit_dir*.
+
+        Returns the path, or ``None`` if the directory is missing / has no
+        candidate. Prefers the model-named file, then ``problem.json``, then
+        the largest JSON that is not a per-experiment (``*-expt.json``) or
+        model-definition (``*_definition.json``) sidecar.
+        """
+        if not fit_dir.is_dir():
+            return None
+
+        model_name = (state.get("user_config") or {}).get("model_name")
+        for preferred in (f"{model_name}.json" if model_name else None, "problem.json"):
+            if preferred:
+                candidate = fit_dir / preferred
+                if candidate.is_file():
+                    return candidate
+
+        sidecar = ("-expt.json", "_definition.json")
+        candidates = [
+            p for p in fit_dir.glob("*.json")
+            if not any(p.name.endswith(s) for s in sidecar)
+        ]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda p: p.stat().st_size)
 
     def _save_checkpoint_log(
         self,

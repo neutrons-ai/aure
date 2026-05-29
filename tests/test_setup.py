@@ -403,6 +403,18 @@ def test_setup_to_user_config_subset(data_file):
     assert "hypothesis" not in uc
 
 
+def test_setup_to_user_config_carries_model_name():
+    """model_name must survive so the fitting node can name the FitProblem
+    (otherwise bumps exports None-*.dat / None.json)."""
+    from aure.setup import setup_to_user_config
+
+    uc = setup_to_user_config({"model_name": "sample5_ocv_226642", "sample_description": "x"})
+    assert uc["model_name"] == "sample5_ocv_226642"
+
+    # Absent / blank model_name is simply not carried (no None leak).
+    assert "model_name" not in setup_to_user_config({"sample_description": "x"})
+
+
 # ----------------------------------------------------------------------
 # CLI ergonomics
 # ----------------------------------------------------------------------
