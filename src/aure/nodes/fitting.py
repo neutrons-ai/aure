@@ -196,17 +196,15 @@ def run_refl1d_fit(
     Returns:
         FitResult dictionary
     """
-    from bumps.fitters import fit as bumps_fit
-
     problem = build_problem(model_definition)
     _name_problem(problem, model_name)
 
     # Configure fit options based on method
-    fit_options = _build_fit_options(method, steps, burn, export_dir)
+    fit_options = _build_fit_options(method, steps, burn)
 
     # Run the fit
     logger.info(f"[FITTING] Running {method.upper()} with bumps.fit...")
-    result = bumps_fit(problem, **fit_options)
+    result = _run_bumps_fit(problem, fit_options, export_dir, model_name)
 
     # Extract results
     return _extract_bumps_results(
@@ -248,8 +246,6 @@ def run_multi_refl1d_fit(
     FitResult
         Aggregate results with per-file breakdowns in ``per_file_results``.
     """
-    from bumps.fitters import fit as bumps_fit
-
     problem, experiments, sorted_data_files = build_multi_problem(
         model_definition, data_files
     )
@@ -259,8 +255,8 @@ def run_multi_refl1d_fit(
         f"[FITTING] Running {method.upper()} co-refinement across {n_files} files..."
     )
 
-    fit_options = _build_fit_options(method, steps, burn, export_dir)
-    result = bumps_fit(problem, **fit_options)
+    fit_options = _build_fit_options(method, steps, burn)
+    result = _run_bumps_fit(problem, fit_options, export_dir, model_name)
 
     return _extract_multi_bumps_results(
         problem=problem,
@@ -292,8 +288,6 @@ def run_states_refl1d_fit(
     Per-state ``profile.dat`` files are written under
     ``{export_dir}/state_{name}/`` for downstream consumption.
     """
-    from bumps.fitters import fit as bumps_fit
-
     problem, experiments_by_state, sorted_files_by_state = build_states_problem(
         model_definition
     )
@@ -306,8 +300,8 @@ def run_states_refl1d_fit(
         f"{n_states} states, {n_files} files total"
     )
 
-    fit_options = _build_fit_options(method, steps, burn, export_dir)
-    result = bumps_fit(problem, **fit_options)
+    fit_options = _build_fit_options(method, steps, burn)
+    result = _run_bumps_fit(problem, fit_options, export_dir, model_name)
 
     return _extract_states_bumps_results(
         problem=problem,
@@ -333,10 +327,12 @@ def _name_problem(problem, model_name: Optional[str]) -> None:
             logger.warning("[FITTING] Could not set FitProblem.name=%r", model_name)
 
 
-def _build_fit_options(
-    method: str, steps: int, burn: int, export_dir: Optional[str]
-) -> dict:
-    """Build the options dict for bumps.fitters.fit."""
+def _build_fit_options(method: str, steps: int, burn: int) -> dict:
+    """Build the options dict for bumps.fitters.fit.
+
+    The export directory is intentionally NOT passed here; we export the
+    output ourselves after the fit returns (see :func:`_run_bumps_fit`).
+    """
     fit_options = {
         "method": method,
         "parallel": 0,
@@ -356,11 +352,50 @@ def _build_fit_options(
     elif method == "lm":
         fit_options["steps"] = steps
 
-    if export_dir:
-        fit_options["export"] = export_dir
-        logger.info(f"[FITTING] Exporting refl1d output to {export_dir}")
-
     return fit_options
+
+
+def _run_bumps_fit(
+    problem,
+    fit_options: dict,
+    export_dir: Optional[str],
+    model_name: Optional[str],
+):
+    """Run a bumps fit and export the full refl1d output directory.
+
+    We deliberately do NOT pass ``export=`` to ``bumps.fitters.fit``. In
+    bumps 1.0.4 that code path calls
+    ``export_fit(export, problem, result.state, ...)`` — forwarding the bare
+    ``MCMCDraw`` as the ``fit`` argument. ``export_fit`` then does
+    ``getattr(fit, "fit_state", getattr(fit, "state", None))``, which an
+    ``MCMCDraw`` does not satisfy, so it resolves to ``None`` and the entire
+    uncertainty/MCMC block is silently skipped. The result is that dream runs
+    only emit the model files (``-profile.dat``, ``-refl.dat``, ``-expt.json``,
+    ``-model*.png``, ``.out``, ``.par``) and lose the uncertainty summary
+    (``-err.json``), the MCMC chain (``-chain.mc.gz`` / ``-point.mc.gz`` /
+    ``-stats.mc.gz``), and the dream diagnostic plots (corr/trace/logp/vars).
+
+    Instead we call ``export_fit`` ourselves with the ``OptimizeResult`` — the
+    documented usage (see ``bumps.fitters`` help: ``bp.export_fit(dir, problem,
+    fitresult)``) — which correctly recovers ``result.state`` and writes the
+    complete output, including uncertainties and chains for dream.
+    """
+    from bumps.fitters import fit as bumps_fit
+
+    result = bumps_fit(problem, **fit_options)
+
+    if export_dir:
+        try:
+            from bumps.webview.server.api import export_fit
+
+            # basename=None lets export_fit fall back to problem.name (set by
+            # _name_problem), preserving the existing "<model_name>-*" naming.
+            export_fit(export_dir, problem, result, basename=model_name)
+            logger.info(f"[FITTING] Exported full refl1d output to {export_dir}")
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning(f"[FITTING] Output export to {export_dir} failed: {e}")
+
+    return result
 
 
 def _extract_bumps_results(
