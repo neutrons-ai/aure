@@ -38,10 +38,14 @@ This skill is used in two places:
   are active, produce a ranked list of *structural hypotheses* — plausible
   structural changes that would be worth trying if parameter tuning fails to
   reach the acceptance threshold. Each hypothesis is motivated by one of the
-  other active skills.
+  other active skills. The user's stated hypothesis is folded in as one or
+  more high-priority entries (`origin: "user"`) ranked at the top.
 - **During evaluation and refinement**, consult that list. If the χ²/BIC
   trajectory shows that parameter tweaks are not making meaningful progress,
   propose the top unused hypothesis instead of another parameter change.
+  Evaluation may also propose *new* hypotheses and re-rank the list when fit
+  evidence (residual fringes, pinned parameters, unexpected contrast) warrants
+  it — re-selecting domain skills from that evidence first.
 
 ## Producing the Ranked List (at intake)
 
@@ -142,14 +146,30 @@ number. If after the next fit χ² improves and BIC does not regress, mark
 `confirmed`. If BIC regressed and the guardrail reverted the change,
 mark `rejected` with a short note about why.
 
-Always return the complete updated hypothesis list — do not drop entries.
-Do not re-order or re-rank existing entries; only add new hypotheses at the
-end, and change the `status` of existing ones.
+Membership and identity are guarded by the workflow, so the rules differ by
+node:
 
-### When to add a new hypothesis mid-run
+- **Modeling (status-only).** When realizing a hypothesis, return the list
+  with that hypothesis marked `tried`; you may change only `status`,
+  `tried_in_iteration`, and `notes` of existing entries. Any entry you add,
+  drop, or rename is discarded by the merge guard — modeling cannot grow the
+  backlog.
+- **Evaluation (revision).** Only the evaluation-time revision step may add
+  new hypotheses and re-rank the list (see below). `id`s are stable —
+  re-ranking changes list order, never ids — and `rejected` hypotheses are
+  never resurrected. Provenance is recorded in `origin`: `"user"` (seeded
+  from the user's hypothesis, top rank), `"skill"` (enumerated at intake),
+  `"evaluation"` (proposed mid-run from fit evidence).
 
-A new hypothesis may appear once data is available that was not present at
-intake — most commonly, residual fringe analysis reveals a characteristic
-thickness. In that case append a new hypothesis with `status: "pending"`
-describing the missing layer (thickness from the residual analysis, SLD and
-roughness guesses from the relevant domain skill).
+### When to add a new hypothesis mid-run (evaluation only)
+
+New hypotheses are proposed by the **evaluation** node once data reveals
+something not visible at intake — residual fringes of a characteristic
+thickness, a parameter pinned at a bound, or an artifact pointing to a
+phenomenon whose skill was not obvious from the static description. At that
+point the evaluator re-selects skills from the observed evidence (so a skill
+like `sei-layer-analysis` can activate mid-run) and proposes new
+`status: "pending"` hypotheses describing the missing structure — thickness
+from the residual analysis, SLD and roughness from the now-relevant domain
+skill — then re-ranks the whole list by current expected value. Propose only
+genuinely new ideas; do not duplicate an existing entry.

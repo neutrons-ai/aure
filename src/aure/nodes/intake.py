@@ -309,12 +309,15 @@ def generate_structural_hypotheses_with_llm(
     sample_description: str,
     parsed_sample: Dict[str, Any],
     skill_context: str,
+    hypothesis: str | None = None,
 ) -> list[Dict[str, Any]]:
     """Ask the LLM for a ranked list of candidate structural changes.
 
     Uses the ``structural-hypothesis-ranking`` skill plus all other active
     skill bodies to enumerate plausible modifications to the baseline model
-    (e.g. adding a native oxide, splitting a layer, etc.). Each entry is
+    (e.g. adding a native oxide, splitting a layer, etc.). The user's stated
+    ``hypothesis`` is folded in as one or more high-priority entries
+    (``origin="user"``) ranked above the skill-derived ones. Each entry is
     stamped with a sequential ``id`` and ``status: "pending"``.
 
     Returns an empty list if the LLM is unavailable or returns nothing
@@ -329,6 +332,7 @@ def generate_structural_hypotheses_with_llm(
         sample_description=sample_description,
         parsed_sample=parsed_sample,
         skill_context=skill_context,
+        hypothesis=hypothesis,
     )
     llm = get_llm(temperature=0)
     try:
@@ -357,24 +361,40 @@ def generate_structural_hypotheses_with_llm(
     if not isinstance(raw, list):
         return []
 
-    hypotheses: list[Dict[str, Any]] = []
-    for i, item in enumerate(raw, start=1):
+    # Build entries (without ids yet), tagging provenance from skill_source.
+    parsed_items: list[Dict[str, Any]] = []
+    for item in raw:
         if not isinstance(item, dict):
             continue
+        skill_source = str(item.get("skill_source", "")).strip()
+        origin = "user" if skill_source.lower() == "user" else "skill"
         h = {
-            "id": i,
             "title": str(item.get("title", "")).strip(),
             "rationale": str(item.get("rationale", "")).strip(),
             "change": str(item.get("change", "")).strip(),
-            "skill_source": str(item.get("skill_source", "")).strip(),
+            "skill_source": skill_source,
+            "origin": origin,
             "status": "pending",
             "tried_in_iteration": None,
+            "created_in_iteration": None,
             "notes": "",
         }
         if h["title"]:
-            hypotheses.append(h)
+            parsed_items.append(h)
 
-    logger.info("[INTAKE] Generated %d structural hypotheses", len(hypotheses))
+    # User-derived hypotheses outrank skill-derived ones; preserve the LLM's
+    # relative order within each group, then assign stable ids in rank order.
+    user_items = [h for h in parsed_items if h["origin"] == "user"]
+    skill_items = [h for h in parsed_items if h["origin"] != "user"]
+    hypotheses = [
+        {"id": i, **h} for i, h in enumerate(user_items + skill_items, start=1)
+    ]
+
+    logger.info(
+        "[INTAKE] Generated %d structural hypotheses (%d from user)",
+        len(hypotheses),
+        len(user_items),
+    )
     return hypotheses
 
 
@@ -653,6 +673,7 @@ def intake_node(state: ReflectivityState) -> Dict[str, Any]:
                     sample_description=state["sample_description"],
                     parsed_sample=parsed,
                     skill_context=skill_context_full,
+                    hypothesis=state.get("hypothesis"),
                 )
                 updates["structural_hypotheses"] = hypotheses
                 updates["llm_calls"].append(

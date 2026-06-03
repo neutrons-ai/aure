@@ -25,6 +25,7 @@ from ..database import get_sld
 from ..llm import llm_available, get_llm
 from ..config import format_user_constraints
 from ..skills import SkillRegistry, load_skill_context
+from .hypotheses import merge_structural_hypotheses
 from .prompts import format_model_refinement_prompt
 
 logger = logging.getLogger(__name__)
@@ -310,25 +311,39 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
             }
         ]
 
-        # Extract updated structural-hypothesis list from the LLM response
-        # (optional top-level field). Fall back to the existing state value.
+        # Extract the updated structural-hypothesis list from the LLM response
+        # (optional top-level field).
         hypotheses_out = new_model.pop("structural_hypotheses", None)
         if (
             hypotheses_out is None
             and proposed_hid is not None
             and next_action == "structural_change"
         ):
-            # LLM didn't return an updated list but we expected it to realize a
-            # hypothesis — mark that hypothesis as `tried` ourselves so the
-            # next evaluation turn can reason about it.
-            hypotheses_out = [dict(h) for h in hypotheses_in]
-            for h in hypotheses_out:
-                if h.get("id") == proposed_hid and h.get("status") == "pending":
-                    h["status"] = "tried"
-                    h["tried_in_iteration"] = iteration
-                    break
+            # LLM didn't echo the list but we expected it to realize a
+            # hypothesis — mark that (still-pending) hypothesis as `tried`
+            # ourselves so the next evaluation turn can reason about it.
+            current = next(
+                (h for h in hypotheses_in if h.get("id") == proposed_hid), None
+            )
+            if current is not None and current.get("status") == "pending":
+                hypotheses_out = [
+                    {
+                        "id": proposed_hid,
+                        "status": "tried",
+                        "tried_in_iteration": iteration,
+                    }
+                ]
         if hypotheses_out is not None:
-            updates["structural_hypotheses"] = hypotheses_out
+            # Guarded merge: the modeling node may only update the STATUS of
+            # existing hypotheses. It can never add, drop, or rename entries —
+            # those are the responsibility of intake and evaluation. A
+            # misbehaving LLM that fabricates entries has them dropped + logged.
+            updates["structural_hypotheses"] = merge_structural_hypotheses(
+                prior=hypotheses_in,
+                llm_returned=hypotheses_out,
+                allow_new=False,
+                current_iteration=iteration,
+            )
 
         # Format explanation message
         changes = _summarize_definition_changes(current_model, new_model)
@@ -1153,7 +1168,6 @@ def _validate_model_json(obj: dict) -> bool:
 
 def _widen_all_bounds_json(model: dict) -> dict:
     """Fallback: widen all layer bounds by 50% in a ModelDefinition."""
-    import copy
 
     widened = copy.deepcopy(model)
     for layer in widened.get("layers", []):

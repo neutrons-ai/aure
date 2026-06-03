@@ -162,13 +162,19 @@ The **intake** node does three jobs:
    constraints the user mentioned (e.g. *"the Cu layer is pinhole-free"*).
    SLDs are looked up from the `periodictable` library when the material is
    a simple formula; otherwise the LLM supplies a literature value and
-   plausible bounds.
+   plausible bounds. The baseline layer list contains only layers the user
+   states are *present*; tentative or "expected" layers (*"there may be an
+   oxide on top"*) are deliberately **kept out of the baseline** and instead
+   become high-priority entries in the hypothesis list below.
 3. **Generate a ranked list of structural hypotheses** (see §6). This is a
    second LLM call, guided by an always-on skill called
    [`structural-hypothesis-ranking`](../src/aure/skills/structural-hypothesis-ranking/SKILL.md).
    The output is a list of candidate structural changes that the refinement
    loop should consider if the initial model does not fit well — for
-   example, *"add a 10–30 Å native CuO between the Cu and the D₂O"*.
+   example, *"add a 10–30 Å native CuO between the Cu and the D₂O"*. The
+   user's own hypothesis (the `-h` flag) is folded into this list as one or
+   more **top-ranked** entries tagged `origin="user"`, reworded to fit the
+   hypothesis shape; skill-enumerated entries are tagged `origin="skill"`.
 
 The result of intake is stored as `parsed_sample`, the initial
 `current_model`, and `structural_hypotheses` in the workflow state.
@@ -256,6 +262,19 @@ The **evaluation** node is the decision-maker. It does four things:
      worth it. The node reverts to the best-BIC model and marks the
      hypothesis that was just tried as `rejected`.
 
+5. **Revise the hypotheses when the evidence demands it (gated).** When
+   the fit is not acceptable *and* there is a concrete signal that the
+   intake-time hypothesis list may be incomplete — residual fringes
+   pointing to a missing layer, χ² stalled for two or more iterations, or
+   no `pending` hypotheses left — the node runs a second LLM call. It first
+   re-selects skills using the *observed artifacts* (so a skill that was
+   not obvious from the static description — say `sei-layer-analysis` — can
+   activate mid-run), then asks the LLM to propose genuinely new hypotheses
+   and re-rank the whole list. New entries are tagged `origin="evaluation"`.
+   This is the only place besides intake that may *grow* the list, and the
+   trigger is a cost-gate — it decides only whether the call is worth
+   making, never what the answer should be (see §6.5).
+
 The evaluator's LLM may *suggest* a revert, but the guardrails *enforce*
 it deterministically. This is a deliberate division of labour: the LLM
 reasons about the shape of the fit, and code enforces the statistical
@@ -303,6 +322,13 @@ model is given the list of available skills and the user's sample
 description, and asked which ones apply. Always-on skills are added
 automatically regardless of the LLM's answer. When the selector LLM is
 unavailable or returns an empty list, the always-on skills alone remain.
+
+Skill selection is **not** frozen at intake. When the evaluation node
+revises the hypotheses (§6.5), it re-runs the selector with the observed
+fit artifacts passed as extra context, so a skill that only becomes
+relevant once an artifact appears — an SEI signature in the residuals, an
+unexpected contrast step — can activate mid-run. Skills are only ever
+*added* this way, never removed.
 
 **Why skills and not just one giant prompt?** Three reasons:
 
@@ -367,10 +393,14 @@ sample and right for others; every time we add one, we have to debug it
 later. The LLM, properly prompted with the trajectory and the available
 hypotheses, can make the call much better than any fixed threshold can.
 
-The fix is therefore *prompt-engineering*, *state-shape*, and *skill
-content*. Only two pieces of code were added: an optimisation for
-bound-only iterations (§6.4) and some bookkeeping around hypothesis
-status (§6.3).
+The fix is therefore mostly *prompt-engineering*, *state-shape*, and
+*skill content*. The code that was added is deliberately confined to
+*enforcing invariants* and *gating cost* — never to deciding the science:
+a guarded merge that keeps the hypothesis list coherent (§6.5), some
+bookkeeping around hypothesis status (§6.3), and two cost-gates — the
+bound-only shortcut (§6.4) and the trigger that decides *when* it is worth
+spending an LLM call to reconsider the hypotheses (§6.5). The *what* —
+which hypotheses, which skills, which ranking — stays in the LLM.
 
 ### 6.3 Ranked structural hypotheses
 
@@ -387,8 +417,10 @@ copper example above, that list would contain an entry like:
   "rationale": "metal-oxide-interfaces: Cu exposed to D2O forms a 10–50 Å CuO with SLD ≈ 5.0",
   "change": "insert a 10–30 Å CuO layer (SLD 4.5–5.5) between Cu and D2O, σ 3–15 Å",
   "skill_source": "metal-oxide-interfaces",
+  "origin": "skill",
   "status": "pending",
   "tried_in_iteration": null,
+  "created_in_iteration": null,
   "notes": ""
 }
 ```
@@ -412,6 +444,10 @@ entry carries a `status` field with one of four values:
 - `confirmed` — was realized and the fit improved materially.
 - `rejected` — was realized and the BIC guardrail reverted it.
 
+Each entry also carries an `origin`: `user` (seeded from the `-h`
+hypothesis, ranked at the top), `skill` (enumerated at intake), or
+`evaluation` (proposed mid-run from fit evidence; see §6.5).
+
 The statuses drive the agent's behaviour through prompts, not through
 code. The evaluator's prompt says, in essence: *"here is the trajectory
 of χ² and BIC across every iteration; here is the list of hypotheses and
@@ -419,7 +455,9 @@ their statuses; decide whether the next refinement should be a
 parameter-tweak or a structural change, and if structural, cite the
 hypothesis id."* The modeling prompt says: *"here is the hypothesis list;
 if the evaluator picked one, realise it in the model and stamp its status
-as `tried`; otherwise leave the list unchanged."*
+as `tried`; otherwise leave the list unchanged."* *Which* entry is realised
+and *how* the list is ranked are LLM decisions; the **membership** of the
+list, however, is protected by code (§6.5).
 
 This makes the loop *explicit and auditable*. After a run you can open
 the final checkpoint and see exactly which hypotheses were considered,
@@ -444,7 +482,43 @@ optimisation — the bound has *already* been expanded deterministically
 before this check runs; the skipped modeling call would have been a
 no-op.
 
-### 6.5 Skill revisions
+### 6.5 Guarding the list — and growing it when the data demands
+
+Two things make the hypothesis list trustworthy as it evolves.
+
+**A single guarded merge.** The `structural_hypotheses` field is replaced
+wholesale on every node return (it has no append-reducer), so every write
+goes through one function, `merge_structural_hypotheses`
+([`nodes/hypotheses.py`](../src/aure/nodes/hypotheses.py)). It treats the
+prior list as the source of truth for *identity*: an entry's
+`id`/`title`/`change`/`skill_source`/`origin` are immutable once created,
+and only `status`/`tried_in_iteration`/`notes` can change. The **modeling**
+node calls it with `allow_new=False`, so when modeling realises a hypothesis
+it can update statuses but can never silently add, drop, or rename an entry —
+a misbehaving LLM that fabricates entries simply has them discarded and
+logged. (Before this guard, the modeling write-back was unvalidated and the
+list could drift run-to-run.)
+
+**Adaptive revision at evaluation.** The intake list is a good plan, but
+fitting sometimes reveals something nobody anticipated — residual fringes at
+a characteristic thickness, an unexpected contrast step, a parameter that
+will not leave its bound. When that happens (and *only* then — see the
+cost-gate in §4.5), the evaluation node calls `merge_structural_hypotheses`
+with `allow_new=True` to append LLM-proposed entries (tagged
+`origin="evaluation"`) and then re-ranks the whole list. To propose well it
+first re-selects skills from the *observed evidence* via
+`select_skills(extra_context=…)` — the one channel by which fit artifacts,
+not just the static description, can pull a domain skill into play. That
+skill's knowledge then informs the proposed hypotheses. This is what lets the
+agent bring prior knowledge to bear that the description alone did not
+surface: see a ~40 Å fringe in a cycled battery cell, `sei-layer-analysis`
+activates, and an SEI-layer hypothesis re-ranks to the top.
+
+The split is deliberate: **intake** seeds the list (including the user's
+hypotheses), **evaluation** grows and re-ranks it, **modeling** only updates
+status.
+
+### 6.6 Skill revisions
 
 Alongside the code changes, two existing skills were rewritten to remove
 prompt-level biases:
@@ -461,8 +535,13 @@ prompt-level biases:
   automatic guardrail and that the LLM does not need to be conservative
   about trying a hypothesis — if it was a bad idea, the guardrail will
   revert it and mark it `rejected`.
+- In [`structural-hypothesis-ranking`](../src/aure/skills/structural-hypothesis-ranking/SKILL.md),
+  the rule *"do not re-order entries; only append at the end"* was relaxed:
+  the evaluation node may now re-rank the list and add entries, and the
+  skill documents the `origin` provenance and the status-only restriction
+  on the modeling node (§6.5).
 
-### 6.6 Division of labour between LLM and code
+### 6.7 Division of labour between LLM and code
 
 The table below summarises who decides what.
 
@@ -470,13 +549,18 @@ The table below summarises who decides what.
 |---|---|---|
 | Parse the sample into a layer stack | LLM | `format_sample_parsing_prompt` |
 | Generate ranked hypothesis list | LLM | `structural-hypothesis-ranking` skill |
+| Seed the user's hypothesis as top-ranked entries | LLM | structural-hypothesis prompt (`origin="user"`) |
 | Choose which skills apply | LLM | Skill selector prompt |
+| Re-select skills from fit evidence (mid-run) | LLM | `select_skills(extra_context=…)` |
 | Propose refinement direction (tweak vs structural) | LLM | Evaluation prompt with trajectory + hypotheses |
+| Propose new hypotheses + re-rank (mid-run) | LLM | Evaluation revision prompt (`origin="evaluation"`) |
 | Realize a structural change | LLM | Modeling refinement prompt |
 | Update hypothesis status after realising a change | LLM | Modeling refinement prompt |
 | Auto-expand stuck bounds | Code | `_expand_model_bounds` in `evaluation.py` |
 | Revert on χ² regression | Code | χ² regression guardrail |
 | Revert on BIC regression + mark hypothesis `rejected` | Code | BIC regression guardrail |
+| Enforce list membership (modeling = status-only) | Code | `merge_structural_hypotheses` guard |
+| Decide *when* revision is worth an LLM call | Code | `_should_revise_hypotheses` (cost-gate) |
 | Route to fitting on bounds-only iterations | Code | `route_after_evaluation` |
 
 The pattern is: the LLM *proposes* and *explains*; code *enforces
@@ -500,7 +584,10 @@ the full workflow state. The files you will typically want to inspect are:
 - **`fitting_iter*.json`** — the best-fit parameters and χ² per iteration.
 - **`evaluation_iter*.json`** — the LLM's judgement, including
   `next_action` and `proposed_hypothesis_id`; plus the updated
-  `structural_hypotheses` with statuses.
+  `structural_hypotheses` with statuses. On iterations where the revision
+  step fired (§6.5), this also shows any newly-added `origin="evaluation"`
+  hypotheses, the re-ranked order, and any skills that were activated from
+  the observed artifacts.
 
 For multi-state co-refinement runs (`states:` block in the user config),
 each fit iteration also produces a per-state `profile.dat` under

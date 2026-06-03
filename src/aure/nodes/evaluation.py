@@ -22,8 +22,9 @@ from langchain_core.messages import HumanMessage
 from ..state import ReflectivityState, FitResult, Message, LLMCallRecord
 from ..llm import llm_available, get_llm
 from ..config import format_user_criteria
-from ..skills import SkillRegistry, load_skill_context
-from .prompts import format_fit_evaluation_prompt
+from ..skills import SkillRegistry, load_skill_context, select_skills
+from .hypotheses import merge_structural_hypotheses, rerank_hypotheses
+from .prompts import format_fit_evaluation_prompt, format_hypothesis_revision_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -366,6 +367,71 @@ def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
                 best_chi2=best_chi2,
                 bic_reverted=bic_reverted,
             )
+
+        # ========== Hypothesis revision (gated) ==========
+        # When the fit evidence warrants it, re-select skills from the
+        # observed artifacts and ask the LLM to propose genuinely new
+        # hypotheses and re-rank the list. This is the only place besides
+        # intake that may grow the backlog (the modeling node is status-only).
+        if _should_revise_hypotheses(latest_fit, hypotheses, fit_results):
+            try:
+                rev = _revise_hypotheses(
+                    state=state,
+                    latest_fit=latest_fit,
+                    hypotheses=hypotheses,
+                    iteration=iteration,
+                    bic=bic,
+                    boundary_hits=boundary_hits,
+                    analysis=analysis,
+                    fit_history=fit_results,
+                    registry=registry,
+                    active_skills=active_skills,
+                )
+                hypotheses = rev["hypotheses"]
+                if rev["active_skills"] != list(active_skills):
+                    updates["active_skills"] = rev["active_skills"]
+                updates["llm_calls"].append(
+                    LLMCallRecord(
+                        node="evaluation",
+                        timestamp=datetime.now(timezone.utc).isoformat(),
+                        success=True,
+                        used_fallback=False,
+                        fallback_reason=None,
+                        error=None,
+                    )
+                )
+                if rev["changed"]:
+                    bits = []
+                    if rev["n_new"]:
+                        bits.append(
+                            f"added {rev['n_new']} new hypothesis(es) from fit evidence"
+                        )
+                    if rev["added_skills"]:
+                        bits.append(
+                            f"activated skill(s): {', '.join(rev['added_skills'])}"
+                        )
+                    bits.append("re-ranked the hypothesis list")
+                    updates["messages"].append(
+                        Message(
+                            role="assistant",
+                            content="**Hypothesis revision:** " + "; ".join(bits) + ".",
+                            timestamp=None,
+                        )
+                    )
+            except Exception as e:
+                logger.warning("[EVALUATION] Hypothesis revision failed: %s", e)
+                updates["llm_calls"].append(
+                    LLMCallRecord(
+                        node="evaluation",
+                        timestamp=datetime.now(timezone.utc).isoformat(),
+                        success=False,
+                        used_fallback=True,
+                        fallback_reason="Hypothesis revision failed; keeping existing list",
+                        error=str(e)[:200],
+                    )
+                )
+
+        if hypotheses:
             updates["structural_hypotheses"] = hypotheses
 
         # ========== Bounds-only refinement shortcut ==========
@@ -395,13 +461,13 @@ def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
             updates["bounds_only_refinement"] = False
 
         logger.info("[EVALUATION] ✗ Fit not acceptable - proceeding to refinement")
-        updates["messages"] = [
+        updates["messages"].append(
             Message(
                 role="assistant",
                 content=_format_evaluation(latest_fit, analysis, iteration=iteration),
                 timestamp=None,
             )
-        ]
+        )
 
     return updates
 
@@ -445,6 +511,222 @@ def _update_hypothesis_outcomes(
                 (h.get("notes", "") + " ") if h.get("notes") else ""
             ) + f"χ²={chi2:.2f} at iter {current_iteration}."
     return updated
+
+
+def _chi2_series(fit_history: Optional[list]) -> list:
+    """Extract finite χ² values from the fit history, in order."""
+    out = []
+    for fr in fit_history or []:
+        c = fr.get("chi_squared")
+        if isinstance(c, (int, float)) and c != float("inf"):
+            out.append(float(c))
+    return out
+
+
+def _should_revise_hypotheses(
+    latest_fit: FitResult,
+    hypotheses: list,
+    fit_history: Optional[list],
+) -> bool:
+    """Gate the (LLM-backed) hypothesis-revision step.
+
+    Only worth an extra LLM call when there is a concrete signal that the
+    intake-time hypothesis list may be incomplete:
+
+    * residual fringes point to an unmodeled layer, or
+    * no ``pending`` hypotheses remain (including an empty list), or
+    * χ² has stalled (<5% improvement across the last two iterations).
+    """
+    ra = latest_fit.get("residual_analysis") or {}
+    if ra.get("has_residual_fringes"):
+        return True
+    per_state = latest_fit.get("per_state_residual_analysis") or {}
+    if any((v or {}).get("has_residual_fringes") for v in per_state.values()):
+        return True
+
+    if not any(h.get("status") == "pending" for h in (hypotheses or [])):
+        return True
+
+    chi2s = _chi2_series(fit_history)
+    if len(chi2s) >= 3 and chi2s[-3] > 0:
+        if (chi2s[-3] - chi2s[-1]) / chi2s[-3] < 0.05:
+            return True
+    return False
+
+
+def _format_observations(
+    latest_fit: FitResult,
+    analysis: Dict[str, Any],
+    boundary_hits: Optional[list],
+    fit_history: Optional[list],
+    bic: float | None,
+) -> str:
+    """Summarize fit evidence for the skill re-selection ``extra_context``."""
+    lines = []
+    chi2 = latest_fit.get("chi_squared")
+    if isinstance(chi2, (int, float)):
+        head = f"- Current χ²={chi2:.3f}"
+        if bic is not None:
+            head += f", BIC={bic:.1f}"
+        lines.append(head)
+    chi2s = _chi2_series(fit_history)
+    if len(chi2s) >= 2:
+        lines.append("- χ² trajectory: " + " → ".join(f"{c:.2f}" for c in chi2s[-4:]))
+
+    ra = latest_fit.get("residual_analysis") or {}
+    if ra.get("has_residual_fringes"):
+        for t in ra.get("unmodeled_thicknesses", []):
+            lines.append(
+                f"- Residual fringe implies an unmodeled layer "
+                f"~{t.get('thickness', 0):.0f} Å ({t.get('confidence', '?')} confidence)"
+            )
+    for bh in boundary_hits or []:
+        lines.append(
+            f"- Parameter '{bh['name']}' pinned at its {bh['bound_hit']} bound"
+        )
+    for c in analysis.get("physical_concerns") or []:
+        lines.append(f"- Physical concern: {c}")
+    for issue in (analysis.get("issues") or [])[:4]:
+        lines.append(f"- Issue: {issue}")
+    return "\n".join(lines) if lines else "(no specific artifacts)"
+
+
+def propose_hypothesis_revision_with_llm(
+    state: ReflectivityState,
+    latest_fit: FitResult,
+    hypotheses: list,
+    bic: float | None,
+    boundary_hits: Optional[list],
+    analysis: Dict[str, Any],
+    fit_history: Optional[list],
+    skill_context: str,
+) -> Dict[str, Any]:
+    """Ask the LLM for new hypotheses + a re-ranking. Never raises.
+
+    Returns ``{"new_hypotheses": [...], "ranking": [...]}`` (empty on any
+    failure). New hypotheses carry no id; the ranking references existing
+    hypotheses by integer id and new ones by ``"new1"``/``"new2"``/….
+    """
+    llm = get_llm(temperature=0)
+    prompt = format_hypothesis_revision_prompt(
+        sample_description=state.get("sample_description") or "",
+        current_model=state.get("current_model") or {},
+        skill_context=skill_context,
+        structural_hypotheses=hypotheses,
+        fit_history=fit_history,
+        chi_squared=latest_fit.get("chi_squared", float("inf")),
+        bic=bic,
+        residual_analysis=latest_fit.get("residual_analysis"),
+        boundary_hits=boundary_hits,
+        concerns=(analysis.get("physical_concerns") or [])
+        + (analysis.get("issues") or []),
+    )
+    response = llm.invoke([HumanMessage(content=prompt)])
+    match = re.search(r"\{[\s\S]*\}", response.content)
+    if not match:
+        return {"new_hypotheses": [], "ranking": []}
+    try:
+        obj = json.loads(match.group())
+    except json.JSONDecodeError:
+        logger.warning("[EVALUATION] Could not parse hypothesis-revision JSON")
+        return {"new_hypotheses": [], "ranking": []}
+    new_h = obj.get("new_hypotheses")
+    ranking = obj.get("ranking")
+    return {
+        "new_hypotheses": new_h if isinstance(new_h, list) else [],
+        "ranking": ranking if isinstance(ranking, list) else [],
+    }
+
+
+def _resolve_ranking(ranking_raw: list, new_ids: list) -> list:
+    """Resolve a mixed ranking (ints + ``newK`` refs) to concrete ids."""
+    ranked_ids = []
+    for ref in ranking_raw:
+        if isinstance(ref, bool):
+            continue
+        if isinstance(ref, int):
+            ranked_ids.append(ref)
+        elif isinstance(ref, str):
+            m = re.match(r"\s*new\s*[:#-]?\s*(\d+)\s*$", ref, re.IGNORECASE)
+            if m:
+                k = int(m.group(1)) - 1
+                if 0 <= k < len(new_ids):
+                    ranked_ids.append(new_ids[k])
+            else:
+                try:
+                    ranked_ids.append(int(ref.strip()))
+                except (ValueError, AttributeError):
+                    pass
+    return ranked_ids
+
+
+def _revise_hypotheses(
+    *,
+    state: ReflectivityState,
+    latest_fit: FitResult,
+    hypotheses: list,
+    iteration: int,
+    bic: float | None,
+    boundary_hits: Optional[list],
+    analysis: Dict[str, Any],
+    fit_history: Optional[list],
+    registry,
+    active_skills: list,
+) -> Dict[str, Any]:
+    """Re-select skills from fit evidence, propose new hypotheses, and re-rank.
+
+    Returns ``{hypotheses, active_skills, changed, n_new, added_skills}``.
+    """
+    observations = _format_observations(
+        latest_fit, analysis, boundary_hits, fit_history, bic
+    )
+    try:
+        reselected = select_skills(
+            state.get("sample_description") or "",
+            parsed_sample=state.get("parsed_sample"),
+            registry=registry,
+            extra_context=observations,
+        )
+    except Exception as e:  # never let re-selection break evaluation
+        logger.warning("[EVALUATION] Skill re-selection failed: %s", e)
+        reselected = []
+    # Union only — never drop a skill that intake activated.
+    new_active_skills = sorted(set(active_skills) | set(reselected))
+    skill_context = load_skill_context(new_active_skills, registry)
+
+    revision = propose_hypothesis_revision_with_llm(
+        state=state,
+        latest_fit=latest_fit,
+        hypotheses=hypotheses,
+        bic=bic,
+        boundary_hits=boundary_hits,
+        analysis=analysis,
+        fit_history=fit_history,
+        skill_context=skill_context,
+    )
+
+    prior_ids = {h.get("id") for h in hypotheses}
+    merged = merge_structural_hypotheses(
+        prior=hypotheses,
+        llm_returned=revision["new_hypotheses"],
+        allow_new=True,
+        current_iteration=iteration,
+        default_origin="evaluation",
+    )
+    new_ids = [h["id"] for h in merged if h.get("id") not in prior_ids]
+    ranked_ids = _resolve_ranking(revision["ranking"], new_ids)
+    reranked = rerank_hypotheses(merged, ranked_ids)
+
+    added_skills = sorted(set(new_active_skills) - set(active_skills))
+    order_changed = [h.get("id") for h in reranked] != [h.get("id") for h in hypotheses]
+    changed = bool(new_ids) or bool(added_skills) or order_changed
+    return {
+        "hypotheses": reranked,
+        "active_skills": new_active_skills,
+        "changed": changed,
+        "n_new": len(new_ids),
+        "added_skills": added_skills,
+    }
 
 
 def analyze_fit_quality_with_llm(

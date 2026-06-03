@@ -42,11 +42,11 @@ START → intake → analysis → modeling → fitting → evaluation ─┐
 
 Each node lives in [src/aure/nodes/](src/aure/nodes/) and returns a state-delta dict:
 
-- `intake` — load probe, LLM-parse the sample description into `ParsedSample` (substrate / layers / ambient / hypothesis); a second LLM call from the `structural-hypothesis-ranking` skill produces a ranked list of candidate structural modifications the refinement loop may try.
+- `intake` — load probe, LLM-parse the sample description into `ParsedSample` (substrate / layers / ambient / hypothesis); a second LLM call from the `structural-hypothesis-ranking` skill produces a ranked list of candidate structural modifications the refinement loop may try. The user's `-h` hypothesis is folded into that list as top-ranked `origin="user"` entries (and is **not** baked into the baseline structure); skill-enumerated entries are `origin="skill"`.
 - `analysis` — deterministic feature extraction (critical edge → substrate SLD, Kiessig fringe spacing → total thickness, etc.). No LLM.
 - `modeling` — LLM generates / refines a `ModelDefinition` JSON. When entered from `evaluation`, the LLM is told whether to do a parameter tweak or realize a specific structural hypothesis.
 - `fitting` — builds a `bumps` `FitProblem` via `nodes.model_builder.build_problem()` and runs refl1d's optimizer (`lm` / `de` / `dream`).
-- `evaluation` — LLM judges fit quality (χ², BIC, residual structure, parameter sanity) and chooses next route. Has **deterministic regression guardrails**: if χ² or BIC got worse after a refinement, the previous model is restored and the attempted hypothesis is marked rejected.
+- `evaluation` — LLM judges fit quality (χ², BIC, residual structure, parameter sanity) and chooses next route. Has **deterministic regression guardrails**: if χ² or BIC got worse after a refinement, the previous model is restored and the attempted hypothesis is marked rejected. When the fit isn't acceptable **and** there's a signal worth it (residual fringes, χ² stalled ≥2 iters, or no `pending` hypotheses left), it runs a **gated revision step**: re-selects skills from the observed artifacts (`select_skills(..., extra_context=…)`), proposes new `origin="evaluation"` hypotheses, and re-ranks the list.
 - `routing.*` — pure functions returning the edge name; no state mutation.
 
 Conditional edges are wired in `create_workflow()`. `include_fitting=False` truncates the graph after `modeling` (used by the `prepare` command and the `aure batch` `prepare` mode, which writes a `problem.json` consumable directly by refl1d).
@@ -78,7 +78,7 @@ State is serialized to JSON after every node into `output_dir/checkpoints/NNN_<n
 
 ### Agent Skills ([src/aure/skills/](src/aure/skills/))
 
-Each skill is a directory containing a `SKILL.md` (Agent Skills spec format). `selector.select_skills(...)` chooses which to inject into LLM prompts based on the parsed sample (e.g. `polymer-films`, `metal-oxide-interfaces`, `solvent-contrast-matching`, `sei-layer-analysis`, `neutron-reflectometry`). The `structural-hypothesis-ranking` skill is special — it drives the initial hypothesis list used by the refinement loop, not the modeling prompt directly. Skills are loaded via `SkillRegistry` and rendered into prompts in `nodes/prompts.py`.
+Each skill is a directory containing a `SKILL.md` (Agent Skills spec format). `selector.select_skills(...)` chooses which to inject into LLM prompts based on the parsed sample (e.g. `polymer-films`, `metal-oxide-interfaces`, `solvent-contrast-matching`, `sei-layer-analysis`, `neutron-reflectometry`). The `structural-hypothesis-ranking` skill is special — it drives the initial hypothesis list used by the refinement loop, not the modeling prompt directly. That list is then mutated through a single guarded merge in [nodes/hypotheses.py](src/aure/nodes/hypotheses.py): `modeling` may only change entry *status* (membership-frozen), while `evaluation` may append new entries and re-rank. Skills are loaded via `SkillRegistry` and rendered into prompts in `nodes/prompts.py`.
 
 ### LLM layer ([src/aure/llm/](src/aure/llm/))
 

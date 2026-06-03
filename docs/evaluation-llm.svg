@@ -1,0 +1,306 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1660 1188" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <!-- Background -->
+  <rect width="1660" height="1188" fill="#ffffff"/>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"/>
+    </marker>
+    <marker id="arrow-light" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/>
+    </marker>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0f172a" flood-opacity="0.12"/>
+    </filter>
+  </defs>
+
+  <!-- Title -->
+  <text x="830" y="48" text-anchor="middle" font-size="30" font-weight="700" fill="#0f172a">evaluation · how the LLM judges the fit and chooses the route</text>
+  <text x="830" y="78" text-anchor="middle" font-size="16" fill="#475569">Deterministic guardrails (BIC, boundary hits, residual fringes) run first; then one LLM call fills <tspan font-family="ui-monospace, 'SF Mono', Menlo, monospace" fill="#0f172a">FIT_EVALUATION_PROMPT</tspan> → a JSON verdict that selects the next edge</text>
+
+  <!-- ============================================================ -->
+  <!-- Column 1: PROMPT SLOTS                                        -->
+  <!-- ============================================================ -->
+  <text x="50" y="128" font-size="14" font-weight="700" fill="#64748b" letter-spacing="2">PROMPT SLOTS  (computed inside evaluation_node)</text>
+
+  <!-- latest fit result -->
+  <g transform="translate(50, 140)">
+    <rect width="340" height="120" rx="10" fill="#eff6ff" stroke="#3b82f6" stroke-width="2" filter="url(#shadow)"/>
+    <rect width="340" height="32" rx="10" fill="#3b82f6"/>
+    <rect y="22" width="340" height="10" fill="#3b82f6"/>
+    <text x="16" y="22" font-size="13" font-weight="700" fill="#ffffff">latest fit  ·  fit_results[-1]</text>
+    <text x="16" y="54" font-size="11" fill="#334155">from the fitting node's FitResult:</text>
+    <text x="16" y="72" font-size="11" font-family="ui-monospace, 'SF Mono', Menlo, monospace" fill="#0f172a">chi_squared, method, converged</text>
+    <text x="16" y="88" font-size="11" font-family="ui-monospace, 'SF Mono', Menlo, monospace" fill="#0f172a">parameters, bounds</text>
+    <text x="16" y="104" font-size="11" font-family="ui-monospace, 'SF Mono', Menlo, monospace" fill="#0f172a">per_file_results, residual_ratio</text>
+  </g>
+
+  <!-- sample + hypothesis -->
+  <g transform="translate(50, 270)">
+    <rect width="340" height="76" rx="10" fill="#fdf2f8" stroke="#db2777" stroke-width="2" filter="url(#shadow)"/>
+    <rect width="340" height="32" rx="10" fill="#db2777"/>
+    <rect y="22" width="340" height="10" fill="#db2777"/>
+    <text x="16" y="22" font-size="13" font-weight="700" fill="#ffffff">sample_description  ·  hypothesis</text>
+    <text x="16" y="54" font-size="11" font-family="ui-monospace, 'SF Mono', Menlo, monospace" fill="#0f172a">state.sample_description</text>
+    <text x="16" y="70" font-size="11" font-family="ui-monospace, 'SF Mono', Menlo, monospace" fill="#0f172a">state.hypothesis</text>
+  </g>
+
+  <!-- skill_context -->
+  <g transform="translate(50, 356)">
+    <rect width="340" height="70" rx="10" fill="#fffbeb" stroke="#d97706" stroke-width="2" filter="url(#shadow)"/>
+    <rect width="340" height="32" rx="10" fill="#d97706"/>
+    <rect y="22" width="340" height="10" fill="#d97706"/>
+    <text x="16" y="22" font-size="13" font-weight="700" fill="#ffffff">skill_context  (domain knowledge)</text>
+    <text x="16" y="54" font-size="11" fill="#334155">load_skill_context(active_skills) —</text>
+    <text x="16" y="70" font-size="11" fill="#334155">BIC rules, structural-change rules</text>
+  </g>
+
+  <!-- derived analyses -->
+  <g transform="translate(50, 436)">
+    <rect width="340" height="158" rx="10" fill="#f0fdf4" stroke="#16a34a" stroke-width="2" filter="url(#shadow)"/>
+    <rect width="340" height="32" rx="10" fill="#16a34a"/>
+    <rect y="22" width="340" height="10" fill="#16a34a"/>
+    <text x="16" y="22" font-size="13" font-weight="700" fill="#ffffff">DERIVED ANALYSES  (deterministic)</text>
+    <text x="16" y="54" font-size="11" font-family="ui-monospace, 'SF Mono', Menlo, monospace" fill="#0f172a">_check_boundary_hits(fit)</text>
+    <text x="16" y="68" font-size="10" fill="#64748b">  → params pinned at min/max; then</text>
+    <text x="16" y="82" font-size="10" fill="#64748b">    _expand_model_bounds() widens them</text>
+    <text x="16" y="100" font-size="11" font-family="ui-monospace, 'SF Mono', Menlo, monospace" fill="#0f172a">analyze_residual_fringes(Q, ratio)</text>
+    <text x="16" y="114" font-size="10" fill="#64748b">  → unmodeled-layer thickness hints</text>
+    <text x="16" y="132" font-size="11" font-family="ui-monospace, 'SF Mono', Menlo, monospace" fill="#0f172a">state.extracted_features</text>
+    <text x="16" y="146" font-size="10" fill="#64748b">  → est. thickness, roughness, Qc edges</text>
+  </g>
+
+  <!-- iteration / complexity -->
+  <g transform="translate(50, 604)">
+    <rect width="340" height="190" rx="10" fill="#f5f3ff" stroke="#7c3aed" stroke-width="2" filter="url(#shadow)"/>
+    <rect width="340" height="32" rx="10" fill="#7c3aed"/>
+    <rect y="22" width="340" height="10" fill="#7c3aed"/>
+    <text x="16" y="22" font-size="13" font-weight="700" fill="#ffffff">ITERATION / COMPLEXITY CONTEXT</text>
+    <text x="16" y="54" font-size="11" font-family="ui-monospace, 'SF Mono', Menlo, monospace" fill="#0f172a">_compute_bic = n·ln(χ²) + k·ln(n)</text>
+    <text x="16" y="68" font-size="10" fill="#64748b">  → BIC, with k = _count_free_params()</text>
+    <text x="16" y="86" font-size="11" font-family="ui-monospace, 'SF Mono', Menlo, monospace" fill="#0f172a">best_bic, n_params, n_layers</text>
+    <text x="16" y="104" font-size="11" font-family="ui-monospace, 'SF Mono', Menlo, monospace" fill="#0f172a">_format_trajectory(fit_results)</text>
+    <text x="16" y="118" font-size="10" fill="#64748b">  → χ²/BIC per past iteration</text>
+    <text x="16" y="136" font-size="11" font-family="ui-monospace, 'SF Mono', Menlo, monospace" fill="#0f172a">structural_hypotheses</text>
+    <text x="16" y="150" font-size="10" fill="#64748b">  → pending / tried / rejected list</text>
+    <text x="16" y="168" font-size="11" font-family="ui-monospace, 'SF Mono', Menlo, monospace" fill="#0f172a">CHI2_MAX  (env)</text>
+    <text x="16" y="182" font-size="10" fill="#64748b">  → acceptance threshold χ² ≤ chi2_max</text>
+  </g>
+
+  <!-- arrows: slots -> prompt -->
+  <g stroke="#94a3b8" stroke-width="1.5" fill="none">
+    <line x1="390" y1="200" x2="540" y2="300" marker-end="url(#arrow-light)"/>
+    <line x1="390" y1="308" x2="540" y2="380" marker-end="url(#arrow-light)"/>
+    <line x1="390" y1="391" x2="540" y2="460" marker-end="url(#arrow-light)"/>
+    <line x1="390" y1="515" x2="540" y2="560" marker-end="url(#arrow-light)"/>
+    <line x1="390" y1="699" x2="540" y2="660" marker-end="url(#arrow-light)"/>
+  </g>
+
+  <!-- ============================================================ -->
+  <!-- Column 2: PROMPT TEMPLATE                                     -->
+  <!-- ============================================================ -->
+  <text x="550" y="128" font-size="14" font-weight="700" fill="#64748b" letter-spacing="2">FIT_EVALUATION_PROMPT  (format_fit_evaluation_prompt)</text>
+
+  <g transform="translate(550, 140)">
+    <rect width="560" height="736" rx="10" fill="#f8fafc" stroke="#334155" stroke-width="2" filter="url(#shadow)"/>
+    <rect width="560" height="32" rx="10" fill="#334155"/>
+    <rect y="22" width="560" height="10" fill="#334155"/>
+    <text x="16" y="22" font-size="13" font-weight="700" fill="#ffffff">HumanMessage  (single message, no SystemMessage)</text>
+
+    <g font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11">
+      <text x="16" y="54" fill="#0f172a">"You are evaluating the results of a</text>
+      <text x="16" y="68" fill="#0f172a"> neutron reflectivity fit."</text>
+
+      <text x="16" y="92" fill="#334155">## Domain Knowledge</text>
+      <text x="26" y="106" fill="#d97706">{skill_context}</text>
+
+      <text x="16" y="128" fill="#334155">## Sample Description  /  ## User's Hypothesis</text>
+      <text x="26" y="142" fill="#db2777">{sample_description}   {hypothesis}</text>
+
+      <text x="16" y="164" fill="#334155">## Fit Results</text>
+      <text x="26" y="178" fill="#3b82f6">- χ²: {chi_squared:.3f}   Method: {method}</text>
+      <text x="26" y="192" fill="#3b82f6">- Converged: {converged}</text>
+
+      <text x="16" y="214" fill="#334155">## χ² / BIC Trajectory  (iterations in order)</text>
+      <text x="26" y="228" fill="#7c3aed">{trajectory}</text>
+
+      <text x="16" y="250" fill="#334155">## Per-File Fit Quality  (co-refinement)</text>
+      <text x="26" y="264" fill="#3b82f6">{per_file_chi2}</text>
+
+      <text x="16" y="286" fill="#334155">## Best-fit Parameters</text>
+      <text x="26" y="300" fill="#3b82f6">{parameters}</text>
+
+      <text x="16" y="322" fill="#334155">## Extracted Data Features</text>
+      <text x="26" y="336" fill="#16a34a">{features}</text>
+
+      <text x="16" y="358" fill="#334155">## Residual Fringe Analysis</text>
+      <text x="26" y="372" fill="#16a34a">{residual_analysis}</text>
+
+      <text x="16" y="394" fill="#334155">## Parameters at Range Boundaries</text>
+      <text x="26" y="408" fill="#16a34a">{boundary_hits}</text>
+
+      <text x="16" y="430" fill="#334155">## Model Complexity</text>
+      <text x="26" y="444" fill="#7c3aed">{complexity_assessment}</text>
+
+      <text x="16" y="466" fill="#334155">## Ranked Structural Hypotheses</text>
+      <text x="26" y="480" fill="#7c3aed">{structural_hypotheses}</text>
+
+      <text x="16" y="504" fill="#334155">## Task</text>
+      <text x="26" y="518" fill="#475569">acceptable? physical? issues? next action?</text>
+      <text x="26" y="532" fill="#475569">cite a pending hypothesis if tweaks stalled;</text>
+      <text x="26" y="546" fill="#475569">do not re-propose a BIC-rejected one.</text>
+
+      <text x="16" y="570" fill="#334155">Respond in JSON format:</text>
+      <text x="16" y="584" fill="#475569">{ "acceptable": bool, "quality_assessment": "..",</text>
+      <text x="16" y="598" fill="#475569">  "issues": [..], "suggestions": [..],</text>
+      <text x="16" y="612" fill="#475569">  "physical_concerns": [..],</text>
+      <text x="16" y="626" fill="#475569">  "hypothesis_addressed": "..",</text>
+      <text x="16" y="640" fill="#475569">  "needs_user_guidance": bool,</text>
+      <text x="16" y="654" fill="#475569">  "next_action": "parameter_tweak |</text>
+      <text x="26" y="668" fill="#475569">    structural_change | accept",</text>
+      <text x="16" y="682" fill="#475569">  "proposed_hypothesis_id": int | null }</text>
+
+      <text x="16" y="706" fill="#0f172a">**Acceptance threshold: χ² ≤ {chi2_max}.**</text>
+      <text x="16" y="722" fill="#854d0e">{user_criteria}   (optional, from user_config)</text>
+    </g>
+  </g>
+
+  <text x="830" y="900" text-anchor="middle" font-size="10" fill="#64748b">aure/nodes/prompts.py:210 FIT_EVALUATION_PROMPT · aure/nodes/evaluation.py:450 analyze_fit_quality_with_llm</text>
+
+  <!-- Arrow: prompt -> LLM -->
+  <g stroke="#334155" stroke-width="2" fill="none">
+    <path d="M 1110 220 L 1170 220" marker-end="url(#arrow)"/>
+  </g>
+
+  <!-- ============================================================ -->
+  <!-- Column 3: LLM + OUTPUT                                        -->
+  <!-- ============================================================ -->
+  <text x="1180" y="128" font-size="14" font-weight="700" fill="#64748b" letter-spacing="2">LLM CALL  &amp;  ROUTING</text>
+
+  <!-- LLM box -->
+  <g transform="translate(1180, 140)">
+    <rect width="430" height="150" rx="12" fill="#fef3c7" stroke="#d97706" stroke-width="2.5" filter="url(#shadow)"/>
+    <rect width="430" height="36" rx="12" fill="#d97706"/>
+    <rect y="24" width="430" height="12" fill="#d97706"/>
+    <text x="20" y="24" font-size="14" font-weight="700" fill="#ffffff">analyze_fit_quality_with_llm()</text>
+    <text x="20" y="64" font-size="12" fill="#1c1917">via <tspan font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-weight="700">aure.llm.get_llm(temperature=0)</tspan></text>
+    <text x="20" y="88" font-size="11" font-family="ui-monospace, 'SF Mono', Menlo, monospace" fill="#44403c">llm.invoke([HumanMessage(content=prompt)])</text>
+    <text x="20" y="112" font-size="11" fill="#78716c">on JSON parse failure → falls back to</text>
+    <text x="20" y="128" font-size="11" font-family="ui-monospace, 'SF Mono', Menlo, monospace" fill="#78716c">_simple_evaluation()</text>
+    <text x="20" y="144" font-size="11" fill="#78716c">(heuristic verdict from χ² vs CHI2_MAX)</text>
+  </g>
+
+  <!-- arrow LLM -> JSON -->
+  <line x1="1395" y1="290" x2="1395" y2="320" stroke="#334155" stroke-width="2" marker-end="url(#arrow)" fill="none"/>
+
+  <!-- Raw JSON reply -->
+  <g transform="translate(1180, 320)">
+    <rect width="430" height="270" rx="10" fill="#f8fafc" stroke="#334155" stroke-width="2" filter="url(#shadow)"/>
+    <rect width="430" height="32" rx="10" fill="#334155"/>
+    <rect y="22" width="430" height="10" fill="#334155"/>
+    <text x="16" y="22" font-size="13" font-weight="700" fill="#ffffff">JSON verdict</text>
+    <g font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#0f172a">
+      <text x="16" y="54">{</text>
+      <text x="26" y="70" fill="#0369a1">"acceptable": false,</text>
+      <text x="26" y="86" fill="#0369a1">"quality_assessment": "marginal",</text>
+      <text x="26" y="102" fill="#0369a1">"issues": [</text>
+      <text x="36" y="118" fill="#16a34a">"Cu thickness near upper bound"</text>
+      <text x="26" y="134" fill="#0369a1">],</text>
+      <text x="26" y="150" fill="#0369a1">"suggestions": [ "Add native CuO layer" ],</text>
+      <text x="26" y="166" fill="#0369a1">"physical_concerns": [],</text>
+      <text x="26" y="182" fill="#0369a1">"hypothesis_addressed": "...",</text>
+      <text x="26" y="198" fill="#0369a1">"needs_user_guidance": false,</text>
+      <text x="26" y="214" fill="#0369a1">"next_action": "structural_change",</text>
+      <text x="26" y="230" fill="#0369a1">"proposed_hypothesis_id": 1</text>
+      <text x="16" y="246">}</text>
+    </g>
+  </g>
+
+  <!-- arrow JSON -> routing -->
+  <line x1="1395" y1="590" x2="1395" y2="620" stroke="#334155" stroke-width="2" marker-end="url(#arrow)" fill="none"/>
+
+  <!-- Routing / state update -->
+  <g transform="translate(1180, 620)">
+    <rect width="430" height="220" rx="10" fill="#ecfdf5" stroke="#059669" stroke-width="2" filter="url(#shadow)"/>
+    <rect width="430" height="32" rx="10" fill="#059669"/>
+    <rect y="22" width="430" height="10" fill="#059669"/>
+    <text x="16" y="22" font-size="13" font-weight="700" fill="#ffffff">state update  +  next edge (route_*)</text>
+    <text x="16" y="52" font-size="11" fill="#334155">writes onto fit_results[-1]:</text>
+    <text x="16" y="68" font-size="11" font-family="ui-monospace, 'SF Mono', Menlo, monospace" fill="#0f172a">issues, suggestions, next_action,</text>
+    <text x="16" y="82" font-size="11" font-family="ui-monospace, 'SF Mono', Menlo, monospace" fill="#0f172a">proposed_hypothesis_id</text>
+    <text x="16" y="104" font-size="11" fill="#334155">guardrails (deterministic):</text>
+    <text x="26" y="120" font-size="10" fill="#64748b">• χ² regressed &gt; 5% → revert best_model</text>
+    <text x="26" y="134" font-size="10" fill="#64748b">• BIC regressed → revert best_bic_model,</text>
+    <text x="36" y="148" font-size="10" fill="#64748b">  mark hypothesis "rejected"</text>
+    <text x="16" y="170" font-size="11" fill="#334155">routes:</text>
+    <text x="26" y="186" font-size="10" fill="#059669">• acceptable → workflow_complete → END</text>
+    <text x="26" y="200" font-size="10" fill="#059669">• bounds_only → fitting (skip modeling)</text>
+    <text x="26" y="214" font-size="10" fill="#059669">• tweak / structural_change → modeling</text>
+  </g>
+
+  <!-- connector: evaluation logic → revision band -->
+  <line x1="1395" y1="846" x2="1395" y2="912" stroke="#7c3aed" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#arrow)" fill="none"/>
+
+  <!-- ============================================================ -->
+  <!-- GATED HYPOTHESIS REVISION  (2nd LLM call)                     -->
+  <!-- ============================================================ -->
+  <g transform="translate(50, 916)">
+    <rect width="1560" height="212" rx="12" fill="#faf5ff" stroke="#7c3aed" stroke-width="2" filter="url(#shadow)"/>
+    <text x="20" y="28" font-size="14" font-weight="700" fill="#6d28d9" letter-spacing="1">GATED HYPOTHESIS REVISION  ·  2nd LLM call  ·  the only path besides intake that may GROW the list</text>
+    <text x="20" y="48" font-size="12" fill="#7c3aed">runs only when NOT acceptable AND (residual fringes ∨ χ² stalled ≥2 iters ∨ no `pending` hypothesis left) — _should_revise_hypotheses()</text>
+
+    <!-- step 1: observations -->
+    <g transform="translate(20, 64)">
+      <rect width="350" height="130" rx="8" fill="#f5f3ff" stroke="#7c3aed"/>
+      <text x="12" y="22" font-size="12" font-weight="700" fill="#6d28d9">1 · observations</text>
+      <text x="12" y="44" font-size="10.5" font-family="ui-monospace, 'SF Mono', Menlo, monospace" fill="#0f172a">_format_observations()</text>
+      <text x="12" y="64" font-size="10" fill="#475569">χ²/BIC trajectory, residual</text>
+      <text x="12" y="78" font-size="10" fill="#475569">unmodeled thicknesses,</text>
+      <text x="12" y="92" font-size="10" fill="#475569">boundary hits, evaluator's</text>
+      <text x="12" y="106" font-size="10" fill="#475569">issues + physical_concerns</text>
+    </g>
+    <!-- step 2: re-select skills -->
+    <g transform="translate(410, 64)">
+      <rect width="350" height="130" rx="8" fill="#eff6ff" stroke="#3b82f6"/>
+      <text x="12" y="22" font-size="12" font-weight="700" fill="#1e40af">2 · re-select skills</text>
+      <text x="12" y="44" font-size="10.5" font-family="ui-monospace, 'SF Mono', Menlo, monospace" fill="#0f172a">select_skills(extra_context)</text>
+      <text x="12" y="64" font-size="10" fill="#475569">an artifact can now activate a</text>
+      <text x="12" y="78" font-size="10" fill="#475569">skill missed at intake (e.g.</text>
+      <text x="12" y="92" font-size="10" fill="#475569">sei-layer-analysis)</text>
+      <text x="12" y="110" font-size="10" fill="#1d4ed8">UNION with active_skills — never drops</text>
+    </g>
+    <!-- step 3: propose (LLM) -->
+    <g transform="translate(800, 64)">
+      <rect width="350" height="130" rx="8" fill="#fef3c7" stroke="#d97706"/>
+      <text x="12" y="22" font-size="12" font-weight="700" fill="#b45309">3 · propose  (LLM)</text>
+      <text x="12" y="42" font-size="10" font-family="ui-monospace, 'SF Mono', Menlo, monospace" fill="#1c1917">propose_hypothesis_revision_with_llm</text>
+      <text x="12" y="60" font-size="10" fill="#44403c">HYPOTHESIS_REVISION_PROMPT</text>
+      <text x="12" y="78" font-size="10" fill="#44403c">→ { new_hypotheses[], ranking }</text>
+      <text x="12" y="96" font-size="10" fill="#78716c">propose only uncovered ideas;</text>
+      <text x="12" y="110" font-size="10" fill="#78716c">never raises → {} on failure</text>
+    </g>
+    <!-- step 4: merge + re-rank -->
+    <g transform="translate(1190, 64)">
+      <rect width="350" height="130" rx="8" fill="#ecfdf5" stroke="#059669"/>
+      <text x="12" y="22" font-size="12" font-weight="700" fill="#047857">4 · merge + re-rank</text>
+      <text x="12" y="42" font-size="10" font-family="ui-monospace, 'SF Mono', Menlo, monospace" fill="#0f172a">merge_structural_hypotheses(</text>
+      <text x="22" y="56" font-size="10" font-family="ui-monospace, 'SF Mono', Menlo, monospace" fill="#0f172a">allow_new=True)</text>
+      <text x="12" y="72" font-size="10" font-family="ui-monospace, 'SF Mono', Menlo, monospace" fill="#0f172a">rerank_hypotheses(ranking)</text>
+      <text x="12" y="92" font-size="10" fill="#047857">new entries: origin="evaluation"</text>
+      <text x="12" y="108" font-size="10" fill="#047857">→ structural_hypotheses + active_skills</text>
+    </g>
+
+    <!-- step arrows -->
+    <g stroke="#7c3aed" stroke-width="1.6" fill="none">
+      <line x1="370" y1="129" x2="410" y2="129" marker-end="url(#arrow)"/>
+      <line x1="760" y1="129" x2="800" y2="129" marker-end="url(#arrow)"/>
+      <line x1="1150" y1="129" x2="1190" y2="129" marker-end="url(#arrow)"/>
+    </g>
+  </g>
+
+  <!-- Footer -->
+  <text x="830" y="1156" text-anchor="middle" font-size="12" fill="#94a3b8">
+    source: aure/nodes/evaluation.py (analyze_fit_quality_with_llm · _should_revise_hypotheses · _revise_hypotheses · propose_hypothesis_revision_with_llm) · prompts.py · merge guard in nodes/hypotheses.py
+  </text>
+</svg>

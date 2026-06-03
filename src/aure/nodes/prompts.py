@@ -67,14 +67,16 @@ Intensity normalization:
 - If user says "data is perfectly normalized" or similar, set fixed=true
 - If user says "data needs large normalization correction" or similar, expand the range (e.g., 0.5 to 1.3)
 
-HYPOTHESIZED / EXPECTED LAYERS:
-- If the description mentions expected, hypothesized, or likely layers (e.g., "we expect
-  lithium plating", "likely to form an SEI layer", "oxide should reduce away"), you MUST
-  include these as layers in the output with reasonable initial guesses.
-- Mark hypothesized layers by appending "(hypothetical)" to their name.
-- Place them in the physically correct position in the layer stack.
-- These layers are initial starting guesses — the fitter will optimise them.
-- Do NOT omit hypothesized layers just because their thickness or composition is uncertain.
+EXPECTED / TENTATIVE LAYERS (keep these OUT of the baseline):
+- The "layers" list is the BASELINE structure — include ONLY layers the user
+  states are actually present.
+- If the description or hypothesis merely suggests a layer MIGHT be present
+  (e.g., "we expect lithium plating", "there may be a native oxide", "likely
+  to form an SEI layer", "oxide should reduce away"), do NOT add it to
+  "layers". Tentative layers are handled separately as ranked structural
+  hypotheses and are tested only if the baseline fit needs them.
+- When unsure whether a layer is confirmed-present or merely expected, leave
+  it OUT of the baseline.
 
 IMPORTANT:
 - If thickness is given in nm, convert to Å (1 nm = 10 Å).
@@ -133,17 +135,26 @@ parameter-only refinement fails to reach the χ² acceptance threshold.
 - Ambient: {ambient}
 - Back-reflection geometry: {back_reflection}
 
+## User's Stated Hypothesis
+{user_hypothesis}
+
 ## Task
 
 Follow the `structural-hypothesis-ranking` skill. Enumerate plausible
 structural changes to this baseline model, ranked by expected value.
 
+If the user stated a hypothesis or a tentative ("may be", "expected",
+"likely to form") layer above, you MUST turn it into one (or more)
+hypotheses and rank it at the TOP of the list (highest expected value),
+reformatted into the standard fields below, with `skill_source` set to
+"user". Reword it to align with the workflow but preserve the user's intent.
+
 For each hypothesis, produce:
 - `title`: one short line
-- `rationale`: one sentence citing an active skill by name
+- `rationale`: one sentence citing an active skill by name (or the user)
 - `change`: concrete structural edit in neutral terms (insertion point,
   thickness range Å, SLD range 10⁻⁶ Å⁻², roughness range Å)
-- `skill_source`: name of the skill motivating the hypothesis
+- `skill_source`: name of the skill motivating the hypothesis, or "user"
 
 Return 2–6 hypotheses in rank order. If no structural change is plausible
 (e.g. the user has specified a complete model and all relevant skills are
@@ -175,6 +186,7 @@ def format_structural_hypothesis_prompt(
     sample_description: str,
     parsed_sample: dict,
     skill_context: str,
+    hypothesis: str | None = None,
 ) -> str:
     """Format the prompt that asks the LLM to produce ranked structural
     hypotheses from the parsed sample and active skill bodies.
@@ -182,6 +194,10 @@ def format_structural_hypothesis_prompt(
     The prompt is intentionally decoupled from the initial sample parse so
     that the LLM sees the concrete baseline model (not a free-form
     description) when reasoning about what might be missing.
+
+    The user's stated ``hypothesis`` (if any) is surfaced as its own section
+    so the LLM turns it into one or more top-ranked candidate changes rather
+    than baking it into the baseline.
     """
     sub = parsed_sample.get("substrate", {}) or {}
     amb = parsed_sample.get("ambient", {}) or {}
@@ -200,6 +216,7 @@ def format_structural_hypothesis_prompt(
         layers=layer_str,
         ambient=f"{amb.get('name', '?')} (SLD {amb.get('sld', '?')})",
         back_reflection=parsed_sample.get("back_reflection", False),
+        user_hypothesis=(hypothesis or "").strip() or "(none stated)",
     )
 
 
@@ -523,6 +540,125 @@ def format_fit_evaluation_prompt(
         skill_context=skill_context or "(no additional domain knowledge)",
         per_file_chi2=_format_per_file_chi2(per_file_results),
         trajectory=_format_trajectory(fit_history, chi_squared, bic),
+        structural_hypotheses=_format_structural_hypotheses(structural_hypotheses),
+    )
+
+
+# ============================================================================
+# HYPOTHESIS REVISION (evaluation proposes new hypotheses + re-ranks)
+# ============================================================================
+
+HYPOTHESIS_REVISION_PROMPT = """You are revising the ranked list of candidate structural changes for a neutron reflectivity fit, partway through the refinement loop.
+
+The baseline fit has not yet reached the acceptance threshold. New evidence has
+accumulated since the hypotheses were first enumerated at intake — residual
+structure, parameters pinned at bounds, the χ²/BIC trajectory, and the
+evaluator's concerns. Reconsider the list in light of that evidence and the
+(possibly newly-activated) domain skills below.
+
+## Domain Knowledge (active skills, refreshed)
+{skill_context}
+
+## Sample Description
+{sample_description}
+
+## Current Model (JSON)
+```json
+{current_model_json}
+```
+
+## χ² / BIC Trajectory (iterations in order)
+{trajectory}
+
+## Residual Fringe Analysis
+{residual_analysis}
+
+## Parameters at Range Boundaries
+{boundary_hits}
+
+## Evaluator's Concerns
+{concerns}
+
+## Existing Ranked Hypotheses
+{structural_hypotheses}
+
+## Task
+Following the `structural-hypothesis-ranking` skill:
+
+1. Propose any NEW structural hypotheses that the accumulated evidence now
+   justifies and that are NOT already covered by an existing entry above. For
+   example: residual fringes of a characteristic thickness imply a missing
+   layer; an artifact in the data may point to a phenomenon whose skill only
+   became relevant once observed. Cite the motivating skill in `rationale` and
+   give a concrete `change` (insertion point, thickness/SLD/roughness ranges).
+   Do NOT duplicate an existing hypothesis. Return an empty list if nothing new
+   is warranted.
+
+2. Re-rank ALL live hypotheses — the existing `pending`/`tried` ones plus your
+   new ones — by current expected value, best first. Do NOT resurrect or list
+   `rejected` hypotheses. Reference existing hypotheses by their integer `id`;
+   reference your new hypotheses by `"new1"`, `"new2"`, … matching their
+   1-based position in `new_hypotheses`.
+
+Respond with ONLY a JSON object:
+
+```json
+{{
+  "new_hypotheses": [
+    {{
+      "title": "Add SEI layer on Li",
+      "rationale": "sei-layer-analysis: residual fringes at ~40 Å in a cycled cell imply a solid-electrolyte interphase",
+      "change": "insert a 30-60 Å SEI layer (SLD 0.5-2.0) between Li and electrolyte, roughness 5-20 Å",
+      "skill_source": "sei-layer-analysis"
+    }}
+  ],
+  "ranking": ["new1", 3, 1, 2]
+}}
+```
+
+Output ONLY the JSON object, no markdown fences, no other text.
+"""
+
+
+def format_hypothesis_revision_prompt(
+    sample_description: str,
+    current_model: dict,
+    skill_context: str,
+    structural_hypotheses: list,
+    fit_history: list,
+    chi_squared: float,
+    bic: float | None = None,
+    residual_analysis: Dict[str, Any] | None = None,
+    boundary_hits: list | None = None,
+    concerns: list | None = None,
+) -> str:
+    """Format the prompt that asks the LLM to propose new hypotheses and re-rank.
+
+    Reuses the same section formatters as the fit-evaluation prompt so the
+    trajectory, residual, boundary, and hypothesis-list views are consistent
+    across the two evaluation-time LLM calls.
+    """
+    import json
+
+    model_for_prompt = {
+        k: v
+        for k, v in (current_model or {}).items()
+        if k not in ("fitted_parameters", "fitted_uncertainties")
+    }
+    current_model_json = json.dumps(model_for_prompt, indent=2)
+
+    concerns_str = (
+        "\n".join(f"  - {c}" for c in concerns) if concerns else "  (none reported)"
+    )
+
+    return HYPOTHESIS_REVISION_PROMPT.format(
+        skill_context=skill_context or "(no additional domain knowledge)",
+        sample_description=sample_description or "(not provided)",
+        current_model_json=current_model_json,
+        trajectory=_format_trajectory(fit_history, chi_squared, bic),
+        residual_analysis=_format_residual_analysis(residual_analysis),
+        boundary_hits=_format_boundary_hits(boundary_hits),
+        concerns=concerns_str,
         structural_hypotheses=_format_structural_hypotheses(structural_hypotheses),
     )
 

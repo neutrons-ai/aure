@@ -36,6 +36,12 @@ skills whose domain knowledge is relevant to this sample.  Do NOT include \
 a skill just because a keyword appears — the skill must actually provide \
 useful guidance for the analysis.
 
+If observations from fitting are provided, treat them as strong evidence: an \
+artifact seen in the data (e.g. an unexpected contrast step, residual fringes \
+of a characteristic thickness, a parameter pinned at a bound) may point to a \
+phenomenon whose skill was not obvious from the static description.  Include \
+such a skill when the observation makes its guidance relevant.
+
 <available_skills>
 {catalog}
 </available_skills>
@@ -66,6 +72,7 @@ def _build_catalog(registry: SkillRegistry) -> str:
 def _build_sample_info(
     sample_description: str,
     parsed_sample: Optional[Dict[str, Any]] = None,
+    extra_context: Optional[str] = None,
 ) -> str:
     """Build a sample information block for the LLM prompt."""
     parts = [f"Description: {sample_description}"]
@@ -80,6 +87,8 @@ def _build_sample_info(
         amb = parsed_sample.get("ambient", {})
         if amb.get("name"):
             parts.append(f"Ambient: {amb['name']}")
+    if extra_context and extra_context.strip():
+        parts.append(f"\nObservations from fitting so far:\n{extra_context.strip()}")
     return "\n".join(parts)
 
 
@@ -87,6 +96,7 @@ def select_skills(
     sample_description: str,
     parsed_sample: Optional[Dict[str, Any]] = None,
     registry: Optional[SkillRegistry] = None,
+    extra_context: Optional[str] = None,
 ) -> list[str]:
     """Select skills to activate based on sample context.
 
@@ -101,6 +111,12 @@ def select_skills(
         Parsed sample dict (substrate, layers, ambient, etc.), if available.
     registry
         Skill registry to validate names against.
+    extra_context
+        Optional free-form observations from fitting (residual artifacts,
+        boundary hits, χ²/BIC trajectory, the evaluator's concerns). When
+        provided, lets the selector activate a skill that only became
+        relevant once the data revealed an artifact. Backward-compatible:
+        ``None`` reproduces the intake-time selection behavior.
 
     Returns
     -------
@@ -114,7 +130,9 @@ def select_skills(
 
     if llm_available():
         try:
-            selected = _select_skills_llm(sample_description, parsed_sample, registry)
+            selected = _select_skills_llm(
+                sample_description, parsed_sample, registry, extra_context
+            )
             logger.info("LLM-selected skills: %s", selected)
             return selected
         except Exception as e:
@@ -129,13 +147,14 @@ def _select_skills_llm(
     sample_description: str,
     parsed_sample: Optional[Dict[str, Any]],
     registry: SkillRegistry,
+    extra_context: Optional[str] = None,
 ) -> list[str]:
     """Use the LLM to select relevant skills from the catalog."""
     from langchain_core.messages import HumanMessage
     from .. import llm as _llm
 
     catalog = _build_catalog(registry)
-    sample_info = _build_sample_info(sample_description, parsed_sample)
+    sample_info = _build_sample_info(sample_description, parsed_sample, extra_context)
     prompt = _SKILL_SELECTION_PROMPT.format(catalog=catalog, sample_info=sample_info)
 
     model = _llm.get_llm(temperature=0)

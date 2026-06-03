@@ -228,14 +228,24 @@ class FitResult(TypedDict):
 class StructuralHypothesis(TypedDict, total=False):
     """A candidate structural change to the model, ranked at intake time.
 
-    Produced during intake by an LLM reasoning over the active skills, this
-    is a ranked list of structural changes (adding, removing, splitting, or
-    reshaping layers) that the workflow should consider when parameter-only
-    refinement stalls. Each hypothesis carries a rationale sourced from the
-    active skills so the evaluator and refiner can reason about it.
+    The initial list is produced during intake by an LLM reasoning over the
+    active skills (and the user's stated hypothesis). It is a ranked list of
+    structural changes (adding, removing, splitting, or reshaping layers) that
+    the workflow should consider when parameter-only refinement stalls. Each
+    hypothesis carries a rationale sourced from the active skills (or the user)
+    so the evaluator and refiner can reason about it.
 
-    The list is updated in-place (fully replaced) by the modeling and
-    evaluation nodes as hypotheses are tried and confirmed or rejected.
+    The list evolves through a single guarded merge (``nodes.hypotheses``):
+
+    * **modeling** may only update the *status* of existing entries.
+    * **evaluation** may, when fit evidence warrants, append *new* entries
+      (``origin="evaluation"``) and re-rank the list.
+    * **intake** seeds the list, including the user's hypothesis as
+      ``origin="user"`` entries ranked at the top.
+
+    Identity fields (``id``/``title``/``rationale``/``change``/``skill_source``/
+    ``origin``) are immutable once created; only ``status``/``tried_in_iteration``/
+    ``notes`` are mutable.
 
     Fields
     ------
@@ -244,16 +254,24 @@ class StructuralHypothesis(TypedDict, total=False):
     title : str
         One-line description, e.g. "Add native CuO on top of Cu".
     rationale : str
-        Why this hypothesis is plausible — cite the active skill.
+        Why this hypothesis is plausible — cite the active skill (or "user").
     change : str
         Concrete structural edit in neutral terms, e.g.
         "insert a 10-30 Å CuO layer (SLD ~5.0) between Cu and D2O".
     skill_source : str
-        Name of the skill that motivates this hypothesis.
+        Name of the skill that motivates this hypothesis, or "user" when it
+        was derived from the user's stated hypothesis.
+    origin : str
+        Provenance of the entry. One of: 'user' (from the user's hypothesis),
+        'skill' (enumerated at intake from the active skills), 'evaluation'
+        (proposed mid-run from fit evidence).
     status : str
         One of: 'pending', 'tried', 'confirmed', 'rejected'.
     tried_in_iteration : int | None
         Iteration number when the hypothesis was realized.
+    created_in_iteration : int | None
+        Iteration number when the hypothesis was added (None for intake-time
+        entries; set for hypotheses proposed later by the evaluation node).
     notes : str
         Free-form notes (e.g., outcome after trial).
     """
@@ -263,8 +281,10 @@ class StructuralHypothesis(TypedDict, total=False):
     rationale: str
     change: str
     skill_source: str
+    origin: str
     status: str
     tried_in_iteration: Optional[int]
+    created_in_iteration: Optional[int]
     notes: str
 
 

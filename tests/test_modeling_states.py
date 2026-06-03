@@ -356,3 +356,54 @@ def test_refine_single_state_unchanged(monkeypatch):
     assert "error" not in out, out.get("error")
     new_model = out["current_model"]
     assert "states" not in new_model or not new_model["states"]
+
+
+def test_refine_hypothesis_writeback_is_status_only(monkeypatch):
+    """Modeling may only update statuses — it cannot rename or add entries."""
+    import json
+    from unittest.mock import MagicMock
+
+    from aure.nodes import modeling
+
+    monkeypatch.setattr(modeling, "llm_available", lambda: True)
+
+    current = _multi_state_current_model()
+    llm_return = dict(current)
+    # The LLM tries to (a) mark existing #1 tried but RENAME it, and
+    # (b) fabricate a brand-new hypothesis #2. The merge guard must keep
+    # the original identity and drop the fabricated entry.
+    llm_return["structural_hypotheses"] = [
+        {"id": 1, "title": "HIJACKED", "status": "tried", "tried_in_iteration": 1},
+        {
+            "id": 2,
+            "title": "fabricated by modeling",
+            "change": "x",
+            "status": "pending",
+        },
+    ]
+    fake_llm = MagicMock()
+    fake_llm.invoke.return_value = MagicMock(content=json.dumps(llm_return))
+    monkeypatch.setattr(modeling, "get_llm", lambda temperature=0: fake_llm)
+
+    state = _refine_state(current)
+    state["structural_hypotheses"] = [
+        {
+            "id": 1,
+            "title": "Add CuO",
+            "rationale": "r",
+            "change": "c",
+            "skill_source": "metal-oxide-interfaces",
+            "origin": "skill",
+            "status": "pending",
+            "tried_in_iteration": None,
+            "created_in_iteration": None,
+            "notes": "",
+        }
+    ]
+
+    out = modeling._refine_model(state)
+    assert "error" not in out, out.get("error")
+    hyps = out["structural_hypotheses"]
+    assert len(hyps) == 1  # fabricated #2 dropped
+    assert hyps[0]["title"] == "Add CuO"  # identity preserved (not HIJACKED)
+    assert hyps[0]["status"] == "tried"  # status update applied
