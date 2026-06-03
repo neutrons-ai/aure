@@ -13,6 +13,16 @@ to go from a raw data file and a plain-English sample description to a fitted
 
 ## What's new
 
+- **Adaptive, skill-driven hypothesis loop** — your stated hypothesis
+  (`-h "there may be an oxide on top"`) is turned into top-ranked candidate
+  structural changes at intake, and when a fit reveals an unexpected artifact
+  (residual fringes, a parameter pinned at a bound, χ² stalling) the
+  evaluation step re-selects domain skills from that evidence, proposes new
+  hypotheses, and re-ranks the list — so the agent can bring in prior
+  knowledge the sample description alone never surfaced. The candidate list
+  is also membership-guarded: the refinement step may only update hypothesis
+  statuses, never silently add or rename them. See
+  [docs/approach.md](docs/approach.md) §6.
 - **Multi-state co-refinement** — when one sample is measured under
   several physical conditions (solvent contrast, anneal step, swelling
   series, applied potential, ...), declare a `states:` block in your
@@ -53,7 +63,9 @@ flowchart LR
    LLM call, guided by the `structural-hypothesis-ranking` skill, produces
    a **ranked list of candidate structural changes** (e.g. "add native CuO
    on top of Cu") that the refinement loop will consider if the initial
-   model does not fit well.
+   model does not fit well. Your `-h` hypothesis is folded into this list as
+   top-ranked entries, and tentative "maybe" layers stay out of the baseline
+   model — they are tested as hypotheses instead.
 2. **Analysis** — Extracts physics features from the data: critical edge,
    total thickness from Kiessig fringes, estimated roughness, and layer count.
 3. **Modeling** — The LLM generates or refines a Refl1D model, informed by
@@ -65,7 +77,10 @@ flowchart LR
    widened bounds only (a shortcut that saves one LLM call), or loop back
    to modeling for a real refinement. Automatic χ² and BIC *regression
    guardrails* revert the model if a refinement made things worse and mark
-   the tried hypothesis as rejected.
+   the tried hypothesis as rejected. When the fit stalls or the residuals
+   reveal an unmodeled layer, it also **re-selects skills from the observed
+   evidence and proposes/re-ranks new hypotheses** — the only place besides
+   intake that grows the candidate list.
 6. **Refinement** — When the evaluator decides a refinement is needed, it
    tells the modeling node whether to do a parameter tweak or to realize
    a specific structural hypothesis from the ranked list. The loop
@@ -77,7 +92,10 @@ or resume a run from any point.
 > For a complete, narrative introduction to the design — including a primer
 > on reflectometry and LLMs, the role of Agent Skills, the ranked-hypothesis
 > refinement loop, and the division of labour between the LLM and
-> deterministic code — see [docs/approach.md](docs/approach.md).
+> deterministic code — see [docs/approach.md](docs/approach.md). Diagrams of
+> how each LLM prompt is assembled, per node, live alongside it:
+> [intake](docs/intake-llm.svg), [modeling](docs/modeling-llm.svg), and
+> [evaluation](docs/evaluation-llm.svg).
 
 ## Installation
 
@@ -309,7 +327,7 @@ arguments and the setup file specify the same field, positionals win.
 |--------|-------------|
 | `-o, --output-dir PATH` | Save checkpoints and model scripts to this directory |
 | `-m, --max-refinements N` | Maximum refinement iterations (default: 5) |
-| `-h, --hypothesis TEXT` | Optional hypothesis to test |
+| `-h, --hypothesis TEXT` | Optional hypothesis to test — seeded as top-ranked candidate structural changes at intake |
 | `-d, --extra-data PATH` | Extra data file (single-state co-refinement; ad-hoc only) |
 | `-c, --config PATH` | Setup YAML file (states, evaluation criteria, model constraints, …) |
 | `-v, --verbose` | Stream workflow progress to stderr |
