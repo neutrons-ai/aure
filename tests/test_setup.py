@@ -377,6 +377,189 @@ def test_load_manifest_job_with_legacy_data_file_errors(tmp_path, data_file):
 
 
 # ----------------------------------------------------------------------
+# data_dir resolution override (CLI flag + YAML key + cwd fallback)
+# ----------------------------------------------------------------------
+
+
+def _data_file_in(d: Path, name: str = "run.txt") -> Path:
+    """Write a tiny reflectivity file inside ``d`` and return its path."""
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / name
+    p.write_text("# Q R dR dQ\n0.01 1.0 0.05 1e-4\n")
+    return p
+
+
+def test_load_setup_data_dir_arg_takes_priority(tmp_path):
+    from aure.setup import load_setup
+
+    plan_dir = tmp_path / "plan"
+    data_dir = tmp_path / "data"
+    _data_file_in(plan_dir)  # also next to the YAML
+    override = _data_file_in(data_dir)
+    p = _write_yaml(
+        plan_dir,
+        "setup.yaml",
+        {"states": [{"name": "state0", "data_files": [{"file": "run.txt"}]}]},
+    )
+    setup = load_setup(p, data_dir=data_dir)
+    assert setup["states"][0]["data_files"][0]["file"] == str(override.resolve())
+
+
+def test_load_setup_falls_back_to_yaml_dir_when_data_dir_missing(tmp_path):
+    from aure.setup import load_setup
+
+    plan_dir = tmp_path / "plan"
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    beside = _data_file_in(plan_dir)
+    p = _write_yaml(
+        plan_dir,
+        "setup.yaml",
+        {"states": [{"name": "state0", "data_files": [{"file": "run.txt"}]}]},
+    )
+    setup = load_setup(p, data_dir=empty)
+    assert setup["states"][0]["data_files"][0]["file"] == str(beside.resolve())
+
+
+def test_data_dir_yaml_key_resolves(tmp_path):
+    from aure.setup import load_setup
+
+    plan_dir = tmp_path / "plan"
+    plan_dir.mkdir()
+    target = _data_file_in(tmp_path / "data")
+    p = _write_yaml(
+        plan_dir,
+        "setup.yaml",
+        {
+            "data_dir": "../data",  # relative -> resolved against the YAML dir
+            "states": [{"name": "state0", "data_files": [{"file": "run.txt"}]}],
+        },
+    )
+    setup = load_setup(p)
+    assert setup["states"][0]["data_files"][0]["file"] == str(target.resolve())
+
+
+def test_data_dir_yaml_key_not_a_dir_errors(tmp_path):
+    from aure.config import ConfigError
+    from aure.setup import load_setup
+
+    _data_file_in(tmp_path)
+    p = _write_yaml(
+        tmp_path,
+        "setup.yaml",
+        {
+            "data_dir": "nope_not_here",
+            "states": [{"name": "state0", "data_files": [{"file": "run.txt"}]}],
+        },
+    )
+    with pytest.raises(ConfigError, match="not an existing directory"):
+        load_setup(p)
+
+
+def test_data_dir_arg_beats_yaml_key(tmp_path):
+    from aure.setup import load_setup
+
+    plan_dir = tmp_path / "plan"
+    plan_dir.mkdir()
+    arg_dir = tmp_path / "argdir"
+    key_dir = tmp_path / "keydir"
+    arg_file = _data_file_in(arg_dir)
+    _data_file_in(key_dir)
+    p = _write_yaml(
+        plan_dir,
+        "setup.yaml",
+        {
+            "data_dir": "../keydir",
+            "states": [{"name": "state0", "data_files": [{"file": "run.txt"}]}],
+        },
+    )
+    setup = load_setup(p, data_dir=arg_dir)  # CLI/programmatic arg wins
+    assert setup["states"][0]["data_files"][0]["file"] == str(arg_file.resolve())
+
+
+def test_data_dir_not_dumped(tmp_path):
+    from aure.setup import dump_setup, load_setup
+
+    plan_dir = tmp_path / "plan"
+    plan_dir.mkdir()
+    target = _data_file_in(tmp_path / "data")
+    p = _write_yaml(
+        plan_dir,
+        "setup.yaml",
+        {
+            "data_dir": "../data",
+            "states": [{"name": "state0", "data_files": [{"file": "run.txt"}]}],
+        },
+    )
+    setup = load_setup(p)
+    text = dump_setup(setup)
+    # data_dir is a load-time-only hint and must not be re-emitted.
+    assert "data_dir:" not in text
+    # The dumped file path is absolute, so the dump is self-contained.
+    assert str(target.resolve()) in text
+    # Round-trips without needing data_dir (paths are already absolute).
+    out = tmp_path / "roundtrip.yaml"
+    out.write_text(text)
+    reloaded = load_setup(out)
+    assert reloaded["states"][0]["data_files"][0]["file"] == str(target.resolve())
+
+
+def test_manifest_per_job_data_dir_overrides_defaults(tmp_path):
+    from aure.setup import load_manifest
+
+    def_file = _data_file_in(tmp_path / "def_data")
+    job_file = _data_file_in(tmp_path / "job_data")
+    p = _write_yaml(
+        tmp_path,
+        "manifest.yaml",
+        {
+            "defaults": {"data_dir": "./def_data"},
+            "jobs": [
+                {
+                    "name": "with_override",
+                    "sample_description": "x",
+                    "data_dir": "./job_data",  # per-job key wins over defaults
+                    "states": [{"name": "state0", "data_files": [{"file": "run.txt"}]}],
+                },
+                {
+                    "name": "uses_default",
+                    "sample_description": "y",
+                    "states": [{"name": "state0", "data_files": [{"file": "run.txt"}]}],
+                },
+            ],
+        },
+    )
+    m = load_manifest(p)
+    assert m["jobs"][0]["states"][0]["data_files"][0]["file"] == str(job_file.resolve())
+    assert m["jobs"][1]["states"][0]["data_files"][0]["file"] == str(def_file.resolve())
+
+
+def test_manifest_cli_data_dir_overrides_yaml(tmp_path):
+    from aure.setup import load_manifest
+
+    _data_file_in(tmp_path / "def_data")
+    override_file = _data_file_in(tmp_path / "override")
+    p = _write_yaml(
+        tmp_path,
+        "manifest.yaml",
+        {
+            "defaults": {"data_dir": "./def_data"},
+            "jobs": [
+                {
+                    "name": "j",
+                    "sample_description": "x",
+                    "states": [{"name": "state0", "data_files": [{"file": "run.txt"}]}],
+                },
+            ],
+        },
+    )
+    m = load_manifest(p, data_dir=tmp_path / "override")
+    assert m["jobs"][0]["states"][0]["data_files"][0]["file"] == str(
+        override_file.resolve()
+    )
+
+
+# ----------------------------------------------------------------------
 # setup_to_user_config
 # ----------------------------------------------------------------------
 

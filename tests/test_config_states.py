@@ -105,7 +105,10 @@ def test_partials_state_with_theta_offset(tmp_path: Path) -> None:
 # ----------------------------------------------------------------------
 
 
-def test_missing_file_raises(tmp_path: Path) -> None:
+def test_missing_file_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # chdir into the (clean) config dir so the cwd fallback can't pick up a
+    # stray same-named file from the repo root.
+    monkeypatch.chdir(tmp_path)
     cfg_path = _write_yaml(
         tmp_path,
         """
@@ -245,3 +248,60 @@ def test_missing_config_returns_empty_states(tmp_path: Path) -> None:
     cfg = load_user_config(tmp_path / "nope.yaml")
     assert cfg["states"] == []
     assert cfg["evaluation_criteria"] == []
+
+
+# ----------------------------------------------------------------------
+# Data-file path resolution (candidate-root search)
+# ----------------------------------------------------------------------
+
+
+def test_falls_back_to_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # YAML lives in plan/, data lives in data/, the file is referenced by bare
+    # name and is NOT next to the YAML. Running from the data dir should resolve
+    # it via the cwd fallback.
+    plan_dir = tmp_path / "plan"
+    data_dir = tmp_path / "data"
+    plan_dir.mkdir()
+    data_dir.mkdir()
+    data_file = data_dir / "REFL_1_combined_data_auto.txt"
+    data_file.write_text("data\n")
+    cfg_path = plan_dir / "config.yaml"
+    cfg_path.write_text(
+        textwrap.dedent(
+            f"""
+            states:
+              - name: A
+                data_files: [{data_file.name}]
+            """
+        )
+    )
+    monkeypatch.chdir(data_dir)
+    cfg = load_user_config(cfg_path)
+    resolved = Path(cfg["states"][0]["data_files"][0]["file"])
+    assert resolved == data_file.resolve()
+
+
+def test_not_found_error_lists_roots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan_dir = tmp_path / "plan"
+    plan_dir.mkdir()
+    monkeypatch.chdir(tmp_path)
+    cfg_path = plan_dir / "config.yaml"
+    cfg_path.write_text(
+        textwrap.dedent(
+            """
+            states:
+              - name: A
+                data_files: [nowhere.txt]
+            """
+        )
+    )
+    with pytest.raises(ConfigError) as excinfo:
+        load_user_config(cfg_path)
+    msg = str(excinfo.value)
+    assert "data file not found" in msg
+    assert "Searched (in priority order)" in msg
+    # both the YAML dir and the cwd should be listed
+    assert str(plan_dir.resolve()) in msg
+    assert str(tmp_path.resolve()) in msg

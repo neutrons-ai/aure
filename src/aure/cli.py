@@ -436,6 +436,14 @@ def check_llm(output_json: bool, no_test: bool, fix: bool):
     type=click.Path(exists=True),
     help="Setup YAML file (states, evaluation criteria, model constraints, …)",
 )
+@click.option(
+    "--data-dir",
+    "data_dir",
+    type=click.Path(exists=True, file_okay=False),
+    default=None,
+    help="Directory to resolve relative data_files against (highest priority). "
+    "Search order: this dir → the config file's dir → the current directory.",
+)
 def analyze(
     data_file: Optional[str],
     sample_description: Optional[str],
@@ -446,6 +454,7 @@ def analyze(
     output_json: bool,
     verbose: bool,
     config_file: Optional[str],
+    data_dir: Optional[str],
 ):
     """
     Analyze a reflectivity data file with fitting and refinement.
@@ -489,10 +498,17 @@ def analyze(
     setup: SetupConfig = {}  # type: ignore[assignment]
     if config_file:
         try:
-            setup = load_setup(config_file)
+            setup = load_setup(config_file, data_dir=data_dir)
         except Exception as e:
             click.echo(click.style(f"  Setup error: {e}", fg="red"))
             sys.exit(2)
+    elif data_dir:
+        click.echo(
+            click.style(
+                "  --data-dir has no effect without --config; ignoring.",
+                fg="yellow",
+            )
+        )
 
     # ── Merge positional overrides into the setup ─────────────────
     # Rule: positional args win over setup values, but warn if both supplied.
@@ -851,6 +867,14 @@ def _print_analysis_results(result: dict, output_dir: Optional[str] = None):
     help="Setup YAML file (states, model constraints, …)",
 )
 @click.option(
+    "--data-dir",
+    "data_dir",
+    type=click.Path(exists=True, file_okay=False),
+    default=None,
+    help="Directory to resolve relative data_files against (highest priority). "
+    "Search order: this dir → the config file's dir → the current directory.",
+)
+@click.option(
     "--json",
     "output_json",
     is_flag=True,
@@ -870,6 +894,7 @@ def prepare(
     output_dir: Optional[str],
     model_name: Optional[str],
     config_file: Optional[str],
+    data_dir: Optional[str],
     output_json: bool,
     verbose: bool,
 ):
@@ -911,10 +936,17 @@ def prepare(
     setup: SetupConfig = {}  # type: ignore[assignment]
     if config_file:
         try:
-            setup = load_setup(config_file)
+            setup = load_setup(config_file, data_dir=data_dir)
         except Exception as e:
             click.echo(click.style(f"  Setup error: {e}", fg="red"))
             sys.exit(2)
+    elif data_dir:
+        click.echo(
+            click.style(
+                "  --data-dir has no effect without --config; ignoring.",
+                fg="yellow",
+            )
+        )
 
     # ── Merge positional overrides ────────────────────────────────
     if sample_description:
@@ -1148,7 +1180,16 @@ def prepare(
     is_flag=True,
     help="Validate the manifest and print the job plan without running anything.",
 )
-def batch(manifest: str, job: tuple, dry_run: bool):
+@click.option(
+    "--data-dir",
+    "data_dir",
+    type=click.Path(exists=True, file_okay=False),
+    default=None,
+    help="Directory to resolve relative data_files against, applied to every "
+    "job (overrides per-job and defaults `data_dir:` keys). Search order: "
+    "this dir → the manifest's dir → the current directory.",
+)
+def batch(manifest: str, job: tuple, dry_run: bool, data_dir: Optional[str]):
     """
     Run one or more jobs from a YAML manifest file.
 
@@ -1180,7 +1221,7 @@ def batch(manifest: str, job: tuple, dry_run: bool):
 
     # ── Load manifest (also accepts a flat setup file) ────────────
     try:
-        loaded = load_manifest(manifest_path)
+        loaded = load_manifest(manifest_path, data_dir=data_dir)
     except Exception as exc:
         raise click.BadParameter(str(exc)) from exc
 

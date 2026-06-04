@@ -103,6 +103,7 @@ _KNOWN_TOP_LEVEL = {
     "description",  # synonym
     "hypothesis",
     "model_name",
+    "data_dir",
     "states",
     "shared_parameters",
     "unshared_parameters",
@@ -293,8 +294,26 @@ def _setup_from_dict(
     out["shared_parameters"] = shared
     out["unshared_parameters"] = unshared
 
+    # Resolve the effective data-file resolution override. A programmatic
+    # / CLI ``data_dir`` argument wins over a top-level ``data_dir:`` YAML
+    # key. A relative YAML key is resolved against the YAML's own
+    # directory (``base_dir``), mirroring how relative ``data_files`` are
+    # resolved. Validation lives here (not only in ``load_setup``) so the
+    # manifest loader — which calls this function directly — is guarded too.
+    effective_data_dir = data_dir
+    if effective_data_dir is None and raw.get("data_dir"):
+        dd = Path(str(raw["data_dir"]))
+        if not dd.is_absolute():
+            dd = base_dir / dd
+        dd = dd.resolve()
+        if not dd.is_dir():
+            raise ConfigError(
+                f"{source}: `data_dir` is not an existing directory: {dd}"
+            )
+        effective_data_dir = dd
+
     out["states"] = _parse_states(
-        raw.get("states"), base_dir=base_dir, data_dir=data_dir
+        raw.get("states"), base_dir=base_dir, data_dir=effective_data_dir
     )
     if not out["states"]:
         raise ConfigError(
@@ -315,6 +334,9 @@ def _setup_from_dict(
 
 
 # Field render order — drives the YAML output for readability.
+# Note: ``data_dir`` is deliberately NOT dumped. It is a load-time-only
+# resolution hint; dumped ``data_files`` already carry absolute paths, so a
+# re-emitted ``data_dir:`` would be inert and potentially misleading.
 _DUMP_ORDER: tuple[str, ...] = (
     "name",
     "sample_description",
@@ -472,7 +494,9 @@ class Manifest(TypedDict):
     jobs: List[SetupConfig]
 
 
-def load_manifest(path: str | Path) -> Manifest:
+def load_manifest(
+    path: str | Path, *, data_dir: Optional[str | Path] = None
+) -> Manifest:
     """Load a batch manifest.
 
     Two shapes are accepted:
@@ -484,10 +508,23 @@ def load_manifest(path: str | Path) -> Manifest:
 
     File paths inside each state are resolved relative to the manifest
     file's directory.
+
+    ``data_dir`` is an optional override (``aure batch --data-dir``) applied
+    to **every** job, taking priority over any per-job or ``defaults:``
+    ``data_dir:`` key. Relative ``data_files`` then resolve against this
+    directory first, then the manifest directory, then the cwd.
     """
     p = Path(path).resolve()
     if not p.exists():
         raise ConfigError(f"manifest file not found: {p}")
+
+    resolved_data_dir: Optional[Path] = None
+    if data_dir is not None:
+        resolved_data_dir = Path(data_dir).resolve()
+        if not resolved_data_dir.is_dir():
+            raise ConfigError(
+                f"data_dir override is not a directory: {resolved_data_dir}"
+            )
 
     import yaml
 
@@ -523,7 +560,10 @@ def load_manifest(path: str | Path) -> Manifest:
             try:
                 jobs.append(
                     _setup_from_dict(
-                        merged, base_dir=base_dir, source=f"{p}#jobs[{i}]"
+                        merged,
+                        base_dir=base_dir,
+                        source=f"{p}#jobs[{i}]",
+                        data_dir=resolved_data_dir,
                     )
                 )
             except ConfigError:
@@ -531,5 +571,7 @@ def load_manifest(path: str | Path) -> Manifest:
         return {"defaults": defaults, "jobs": jobs}
 
     # Flat shape — treat the whole file as a single-job manifest.
-    single = _setup_from_dict(raw, base_dir=base_dir, source=str(p))
+    single = _setup_from_dict(
+        raw, base_dir=base_dir, source=str(p), data_dir=resolved_data_dir
+    )
     return {"defaults": {}, "jobs": [single]}

@@ -158,13 +158,30 @@ def _parse_states(
     re-validates from headers).
 
     Path resolution: relative paths inside ``data_files`` are resolved
-    against ``data_dir`` when given, otherwise against ``base_dir``
-    (the directory holding the YAML file). Use ``data_dir`` when the
-    YAML references files by name only but the actual data sits in a
-    different directory (e.g. analyzer's ``plan-data`` output stored
-    in ``plan/`` while the data lives in the parent directory).
+    against a prioritized list of candidate directories, taking the first
+    match that exists:
+
+    1. ``data_dir`` (the explicit override — CLI ``--data-dir`` flag or a
+       top-level ``data_dir:`` YAML key), when given.
+    2. ``base_dir`` (the directory holding the YAML / manifest file).
+    3. the current working directory.
+
+    Use ``data_dir`` when the YAML references files by name only but the
+    actual data sits in a different directory (e.g. analyzer's
+    ``plan-data`` output stored in ``plan/`` while the data lives in the
+    parent directory). The cwd fallback lets a run launched from the data
+    directory resolve bare filenames without an explicit override. The
+    directory portion of a relative path is always honored (no
+    same-basename fallback), and a file missing from every candidate root
+    still raises a hard error listing the directories searched.
     """
-    resolution_root = data_dir or base_dir
+    candidate_roots: List[Path] = []
+    for root in (data_dir, base_dir, Path.cwd()):
+        if root is None:
+            continue
+        resolved_root = Path(root).resolve()
+        if resolved_root not in candidate_roots:
+            candidate_roots.append(resolved_root)
     if not raw:
         return []
     if not isinstance(raw, list):
@@ -210,13 +227,26 @@ def _parse_states(
                     f"State {name!r} data_files[{j}] must be a path or mapping."
                 )
 
-            resolved = Path(file_path)
-            if not resolved.is_absolute():
-                resolved = (resolution_root / resolved).resolve()
+            candidate = Path(file_path)
+            if candidate.is_absolute():
+                resolved = candidate.resolve()
+                if not resolved.exists():
+                    raise ConfigError(
+                        f"State {name!r}: data file not found: {resolved}"
+                    )
             else:
-                resolved = resolved.resolve()
-            if not resolved.exists():
-                raise ConfigError(f"State {name!r}: data file not found: {resolved}")
+                resolved = None
+                for root in candidate_roots:
+                    trial = (root / candidate).resolve()
+                    if trial.exists():
+                        resolved = trial
+                        break
+                if resolved is None:
+                    searched = ", ".join(str(r) for r in candidate_roots)
+                    raise ConfigError(
+                        f"State {name!r}: data file not found: {file_path!r}. "
+                        f"Searched (in priority order): {searched}"
+                    )
 
             data_files.append(
                 {
