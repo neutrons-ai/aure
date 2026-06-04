@@ -309,7 +309,7 @@ def build_multi_problem(definition: dict, data_files: list[dict]):
     shared_offset = None
 
     experiments = []
-    for probe in sorted_probes:
+    for probe, ds in zip(sorted_probes, sorted_data_files):
         # Each probe gets its own independent intensity parameter
         if not intensity.get("fixed", False):
             int_val = intensity.get("value", 1.0)
@@ -317,6 +317,16 @@ def build_multi_problem(definition: dict, data_files: list[dict]):
             int_max = intensity.get("max", 1.1)
             probe.intensity.value = int_val
             probe.intensity.range(int_min, int_max)
+
+        # Give each probe's intensity a unique, stable name keyed by the
+        # file label so it round-trips with the fit-result parameter names
+        # produced by ``_extract_multi_bumps_results`` ("intensity <label>").
+        # Without this, every probe's intensity is named "intensity", so
+        # ``apply_parameters`` cannot match the per-file values sent by the
+        # Results-page sliders and intensity overrides are silently dropped.
+        label = ds.get("label") or ""
+        if label and hasattr(probe, "intensity"):
+            probe.intensity.name = f"intensity {label}"
 
         # sample_broadening / theta_offset only exist on NeutronProbe
         # (angle-based), not on QProbe (Q-based from load4).  Tie them

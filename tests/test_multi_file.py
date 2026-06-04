@@ -207,6 +207,61 @@ class TestModelBuilderMultiFile:
         # Verify it's also the same object in the second experiment
         assert experiments[1].sample[1].thickness is layer_thickness
 
+    def test_intensity_parameters_have_unique_per_file_names(self):
+        """Each probe's intensity is named ``"intensity <label>"``.
+
+        Regression: when every probe's intensity kept refl1d's default
+        ``"intensity"`` name, the names collided and the Results-page
+        sliders (which send the ``"intensity <label>"`` keys produced by
+        ``_extract_multi_bumps_results``) could not be matched back, so
+        intensity overrides were silently dropped.
+        """
+        from aure.nodes.model_builder import build_multi_problem
+
+        defn = self._make_definition()
+        data_files = [
+            {"file": self.files[0], "label": "low-Q"},
+            {"file": self.files[1], "label": "mid-Q"},
+            {"file": self.files[2], "label": "high-Q"},
+        ]
+        problem, _, _ = build_multi_problem(defn, data_files)
+
+        intensity_names = {
+            str(p.name) for p in problem._parameters if "intensity" in str(p.name)
+        }
+        assert intensity_names == {
+            "intensity low-Q",
+            "intensity mid-Q",
+            "intensity high-Q",
+        }
+
+    def test_apply_parameters_sets_distinct_intensities(self):
+        """``apply_parameters`` resolves the per-file intensity keys and
+        sets a *distinct* value on each probe (the Results-page path)."""
+        from aure.nodes.model_builder import apply_parameters, build_multi_problem
+
+        defn = self._make_definition()
+        data_files = [
+            {"file": self.files[0], "label": "low-Q"},
+            {"file": self.files[1], "label": "mid-Q"},
+            {"file": self.files[2], "label": "high-Q"},
+        ]
+        problem, _, _ = build_multi_problem(defn, data_files)
+
+        wanted = {
+            "intensity low-Q": 0.80,
+            "intensity mid-Q": 0.95,
+            "intensity high-Q": 1.05,
+        }
+        apply_parameters(problem, wanted)
+
+        applied = {
+            str(p.name): float(p.value)
+            for p in problem._parameters
+            if "intensity" in str(p.name)
+        }
+        assert applied == pytest.approx(wanted)
+
 
 # ============================================================================
 # Prompt Formatting Tests
