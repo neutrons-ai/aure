@@ -1,0 +1,162 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="1180" viewBox="0 0 1240 1180" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#475569"/>
+    </marker>
+    <marker id="arrowViolet" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#7c3aed"/>
+    </marker>
+    <style>
+      .title  { font-size: 24px; font-weight: 700; fill: #0f172a; }
+      .sub    { font-size: 13px; fill: #475569; }
+      .lane   { font-size: 15px; font-weight: 700; }
+      .box-t  { font-size: 13.5px; font-weight: 700; fill: #0f172a; }
+      .box-s  { font-size: 11.5px; fill: #334155; }
+      .mono   { font-family: 'SF Mono', Menlo, Consolas, monospace; font-size: 11px; fill: #1e293b; }
+      .badge  { font-size: 9.5px; font-weight: 700; letter-spacing: .5px; }
+      .note   { font-size: 11.5px; fill: #475569; }
+      .ann    { font-size: 11px; fill: #64748b; }
+    </style>
+  </defs>
+
+  <rect width="1240" height="1180" fill="#ffffff"/>
+
+  <!-- Title -->
+  <text x="40" y="46" class="title">AuRE — LLM calls when generating the FIRST model</text>
+  <text x="40" y="70" class="sub">Path through the workflow before any refinement loop:  START &#8594; intake &#8594; analysis &#8594; modeling &#8594; fitting.</text>
+  <text x="40" y="90" class="sub">Every LLM call for the first model lives in <tspan font-weight="700" fill="#7c3aed">intake</tspan>. Analysis and the initial modeling step are deterministic.</text>
+
+  <!-- ============ USER INPUTS ============ -->
+  <rect x="40" y="120" width="230" height="170" rx="10" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="56" y="146" class="box-t">User / file inputs</text>
+  <text x="56" y="170" class="box-s">&#8226; sample_description (free text)</text>
+  <text x="56" y="190" class="box-s">&#8226; hypothesis  (-h, optional)</text>
+  <text x="56" y="210" class="box-s">&#8226; data_file (Q, R, dR)</text>
+  <text x="56" y="230" class="box-s">&#8226; user_config / constraints</text>
+  <line x1="56" y1="244" x2="254" y2="244" stroke="#f59e0b" stroke-dasharray="3 3"/>
+  <text x="56" y="264" class="ann">Feed the intake LLM prompts</text>
+  <text x="56" y="280" class="ann">(data_file load is deterministic)</text>
+
+  <!-- ============ INTAKE LANE ============ -->
+  <rect x="330" y="120" width="560" height="560" rx="14" fill="#faf5ff" stroke="#7c3aed" stroke-width="2"/>
+  <rect x="330" y="120" width="560" height="34" rx="14" fill="#7c3aed"/>
+  <rect x="330" y="140" width="560" height="14" fill="#7c3aed"/>
+  <text x="350" y="143" class="lane" fill="#ffffff">intake node</text>
+  <text x="640" y="143" class="badge" fill="#ddd6fe">src/aure/nodes/intake.py</text>
+
+  <text x="350" y="178" class="note" font-style="italic">Up to 4 LLM calls, each via  invoke_with_timeout( get_llm(temperature=0), [HumanMessage(prompt)] )</text>
+
+  <!-- step 0: skill selection -->
+  <rect x="352" y="192" width="516" height="78" rx="9" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.5"/>
+  <rect x="352" y="192" width="46" height="78" rx="9" fill="#7c3aed"/>
+  <text x="375" y="237" class="badge" fill="#ffffff" transform="rotate(-90 375 237)">LLM</text>
+  <text x="412" y="214" class="box-t">1 &#183; Skill selection</text>
+  <text x="412" y="233" class="mono">select_skills(description)  &#8594;  active_skills</text>
+  <text x="412" y="251" class="box-s">Picks skills to inject; always adds neutron-reflectometry</text>
+  <text x="412" y="265" class="box-s">+ structural-hypothesis-ranking.  selector.py:_SKILL_SELECTION_PROMPT</text>
+
+  <!-- step 1: header metadata -->
+  <rect x="352" y="282" width="516" height="78" rx="9" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.5"/>
+  <rect x="352" y="282" width="46" height="78" rx="9" fill="#7c3aed"/>
+  <text x="375" y="327" class="badge" fill="#ffffff" transform="rotate(-90 375 327)">LLM</text>
+  <text x="412" y="304" class="box-t">2 &#183; File-header metadata  <tspan class="badge" fill="#7c3aed">OPTIONAL</tspan></text>
+  <text x="412" y="323" class="mono">parse_file_header(first 40 lines)  &#8594;  dq_is_fwhm</text>
+  <text x="412" y="341" class="box-s">{dq_is_fwhm, num_segments, theta, instrument}</text>
+  <text x="412" y="355" class="box-s">Falls back to deterministic parse if LLM unavailable</text>
+
+  <!-- step 2: sample parse -->
+  <rect x="352" y="372" width="516" height="88" rx="9" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.5"/>
+  <rect x="352" y="372" width="46" height="88" rx="9" fill="#7c3aed"/>
+  <text x="375" y="422" class="badge" fill="#ffffff" transform="rotate(-90 375 422)">LLM</text>
+  <text x="412" y="394" class="box-t">3 &#183; Parse sample description  <tspan class="badge" fill="#16a34a">REQUIRED</tspan></text>
+  <text x="412" y="413" class="mono">parse_sample_with_llm()  &#8594;  ParsedSample</text>
+  <text x="412" y="431" class="box-s">prompt = format_sample_parse_prompt( description, hypothesis,</text>
+  <text x="412" y="445" class="box-s">skill_context ).  Output: substrate / layers / ambient / intensity / ...</text>
+
+  <!-- step 3: hypothesis ranking -->
+  <rect x="352" y="472" width="516" height="92" rx="9" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.5"/>
+  <rect x="352" y="472" width="46" height="92" rx="9" fill="#7c3aed"/>
+  <text x="375" y="525" class="badge" fill="#ffffff" transform="rotate(-90 375 525)">LLM</text>
+  <text x="412" y="494" class="box-t">4 &#183; Rank structural hypotheses</text>
+  <text x="412" y="513" class="mono">generate_structural_hypotheses_with_llm()</text>
+  <text x="412" y="529" class="box-s">prompt = format_structural_hypothesis_prompt( description,</text>
+  <text x="412" y="543" class="box-s">parsed_sample, skill_context, hypothesis )  &#8594;  structural_hypotheses</text>
+  <text x="412" y="557" class="box-s">User -h folded in first as origin="user"; skill entries origin="skill"</text>
+
+  <!-- intake outputs -->
+  <line x1="352" y1="582" x2="868" y2="582" stroke="#7c3aed" stroke-dasharray="3 3"/>
+  <text x="352" y="602" class="note">State written:  <tspan class="mono">active_skills, dq_is_fwhm, parsed_sample, structural_hypotheses</tspan></text>
+  <text x="352" y="624" class="ann">load_skill_context(active_skills) renders selected SKILL.md bodies into the prompts above (steps 3 &amp; 4).</text>
+  <text x="352" y="644" class="ann">Each call appended to state as an LLMCallRecord. Temperature 0 throughout.</text>
+  <text x="352" y="664" class="ann">Calls 2&#8211;4 are skipped gracefully (deterministic fallbacks) when no LLM is configured; call 3 is the only hard requirement.</text>
+
+  <!-- ============ ANALYSIS LANE ============ -->
+  <rect x="330" y="720" width="560" height="120" rx="14" fill="#f1f5f9" stroke="#475569" stroke-width="2"/>
+  <rect x="330" y="720" width="560" height="34" rx="14" fill="#475569"/>
+  <rect x="330" y="740" width="560" height="14" fill="#475569"/>
+  <text x="350" y="743" class="lane" fill="#ffffff">analysis node</text>
+  <text x="660" y="743" class="badge" fill="#cbd5e1">src/aure/nodes/analysis.py</text>
+  <rect x="352" y="772" width="516" height="50" rx="9" fill="#e2e8f0" stroke="#94a3b8" stroke-width="1.5"/>
+  <rect x="352" y="772" width="86" height="50" rx="9" fill="#94a3b8"/>
+  <text x="395" y="802" class="badge" fill="#ffffff" text-anchor="middle">NO LLM</text>
+  <text x="452" y="792" class="box-s"><tspan font-weight="700">extract_all_features(Q,R,dR)</tspan> &#8212; critical edge &#8594; SLD, Kiessig</text>
+  <text x="452" y="810" class="box-s">spacing &#8594; thickness, roughness, layer count.  Cross-checks parsed_sample.</text>
+
+  <!-- ============ MODELING LANE ============ -->
+  <rect x="330" y="880" width="560" height="140" rx="14" fill="#f1f5f9" stroke="#475569" stroke-width="2"/>
+  <rect x="330" y="880" width="560" height="34" rx="14" fill="#475569"/>
+  <rect x="330" y="900" width="560" height="14" fill="#475569"/>
+  <text x="350" y="903" class="lane" fill="#ffffff">modeling node  (first call)</text>
+  <text x="660" y="903" class="badge" fill="#cbd5e1">src/aure/nodes/modeling.py</text>
+  <rect x="352" y="932" width="516" height="70" rx="9" fill="#e2e8f0" stroke="#94a3b8" stroke-width="1.5"/>
+  <rect x="352" y="932" width="86" height="70" rx="9" fill="#94a3b8"/>
+  <text x="395" y="972" class="badge" fill="#ffffff" text-anchor="middle">NO LLM</text>
+  <text x="452" y="954" class="box-s"><tspan font-weight="700">_build_initial_model()</tspan> &#8212; assembles ModelDefinition JSON</text>
+  <text x="452" y="972" class="box-s">deterministically from parsed_sample + extracted_features.</text>
+  <text x="452" y="990" class="box-s">LLM (_refine_model) runs only on later iterations  (modeling.py:113).</text>
+
+  <!-- ============ FITTING (faded) ============ -->
+  <rect x="455" y="1062" width="310" height="50" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5" stroke-dasharray="5 4"/>
+  <text x="610" y="1085" class="box-t" fill="#94a3b8" text-anchor="middle">fitting node</text>
+  <text x="610" y="1102" class="ann" text-anchor="middle">builds bumps FitProblem &#183; runs optimizer (no LLM)</text>
+
+  <!-- ============ ARROWS ============ -->
+  <!-- inputs -> intake -->
+  <line x1="270" y1="205" x2="324" y2="205" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <!-- vertical chain inside intake -->
+  <line x1="610" y1="270" x2="610" y2="282" stroke="#7c3aed" stroke-width="2" marker-end="url(#arrowViolet)"/>
+  <line x1="610" y1="360" x2="610" y2="372" stroke="#7c3aed" stroke-width="2" marker-end="url(#arrowViolet)"/>
+  <line x1="610" y1="460" x2="610" y2="472" stroke="#7c3aed" stroke-width="2" marker-end="url(#arrowViolet)"/>
+  <!-- intake -> analysis -->
+  <line x1="610" y1="680" x2="610" y2="720" stroke="#475569" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <!-- analysis -> modeling -->
+  <line x1="610" y1="840" x2="610" y2="880" stroke="#475569" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <!-- modeling -> fitting -->
+  <line x1="610" y1="1020" x2="610" y2="1062" stroke="#475569" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <!-- ============ LEGEND ============ -->
+  <rect x="940" y="120" width="260" height="200" rx="10" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.5"/>
+  <text x="958" y="146" class="box-t">Legend</text>
+  <rect x="958" y="160" width="26" height="18" rx="4" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="994" y="174" class="box-s">LLM call (invoke_with_timeout)</text>
+  <rect x="958" y="186" width="26" height="18" rx="4" fill="#e2e8f0" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="994" y="200" class="box-s">Deterministic step (no LLM)</text>
+  <rect x="958" y="212" width="26" height="18" rx="4" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="994" y="226" class="box-s">User / file input</text>
+  <line x1="958" y1="244" x2="1182" y2="244" stroke="#e2e8f0"/>
+  <text x="958" y="266" class="ann">All calls: temperature = 0,</text>
+  <text x="958" y="282" class="ann">single HumanMessage, JSON out,</text>
+  <text x="958" y="298" class="ann">parsed into typed state dicts.</text>
+
+  <!-- takeaway -->
+  <rect x="940" y="340" width="260" height="170" rx="10" fill="#f0fdf4" stroke="#16a34a" stroke-width="1.5"/>
+  <text x="958" y="366" class="box-t" fill="#15803d">Key takeaway</text>
+  <text x="958" y="390" class="box-s">The first model is <tspan font-weight="700">not</tspan> drafted by</text>
+  <text x="958" y="406" class="box-s">the LLM directly. It is built</text>
+  <text x="958" y="422" class="box-s">deterministically from:</text>
+  <text x="958" y="442" class="box-s">&#8226; the LLM-parsed sample (intake)</text>
+  <text x="958" y="458" class="box-s">&#8226; deterministic features (analysis)</text>
+  <text x="958" y="482" class="box-s">The LLM's job for model #1 is to</text>
+  <text x="958" y="498" class="box-s"><tspan font-weight="700">interpret the description</tspan>, not write</text>
+  <text x="958" y="514" class="box-s">the model.</text>
+</svg>
