@@ -802,11 +802,38 @@ def api_setup_export():
     from ..setup import _setup_from_dict, dump_setup
 
     body = request.get_json(silent=True) or {}
-    if "data_file" in body or "data_files" in body:
-        # The web form sends the legacy flat keys alongside states for
-        # back-compat with /api/start-analysis. We drop them here — the
-        # exported YAML is states-only by design.
-        body = {k: v for k, v in body.items() if k not in ("data_file", "data_files")}
+
+    # The web form posts the same body as /api/start-analysis, which carries
+    # runtime-only keys not part of the states-only setup schema. Translate:
+    #   * max_iterations -> max_refinements (the setup-file field name)
+    #   * synthesize a single `state0` from the flat data_file/data_files when
+    #     no explicit `states` block is present (mirrors `aure analyze
+    #     DATA_FILE`), so an ad-hoc save still produces a valid setup
+    #   * drop the flat data keys and the runtime keys (output_dir, interactive)
+    if "max_iterations" in body and "max_refinements" not in body:
+        body = {**body, "max_refinements": body["max_iterations"]}
+
+    if not body.get("states"):
+        flat = body.get("data_files")
+        if not flat and body.get("data_file"):
+            flat = [{"file": body["data_file"]}]
+        synthesized: list[dict] = []
+        for df in flat or []:
+            if isinstance(df, dict) and df.get("file"):
+                synthesized.append({"file": df["file"], "label": df.get("label", "")})
+            elif isinstance(df, str) and df:
+                synthesized.append({"file": df})
+        if synthesized:
+            body = {**body, "states": [{"name": "state0", "data_files": synthesized}]}
+
+    _runtime_only = (
+        "data_file",
+        "data_files",
+        "output_dir",
+        "interactive",
+        "max_iterations",
+    )
+    body = {k: v for k, v in body.items() if k not in _runtime_only}
 
     if not body.get("states"):
         return jsonify(

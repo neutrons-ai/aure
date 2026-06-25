@@ -19,6 +19,7 @@ defaults:
   command: analyze            # analyze | prepare
   max_refinements: 5          # max refinement iterations per job
   output_root: ./output       # each job writes to <output_root>/<job name>
+  # data_dir: ./Rawdata       # default dir for relative data_files; per-job data_dir: or --data-dir overrides
   verbose: true               # stream progress to stderr
   json: false                 # emit results as JSON instead of pretty output
 

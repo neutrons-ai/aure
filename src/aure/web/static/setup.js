@@ -905,6 +905,31 @@ function _ensureOverride(name) {
   return stateOverrides[name];
 }
 
+const SINGLE_STATE_DEFAULT = "state0";
+
+function _singleStateName() {
+  // Canonical name for the implicit single state: the one distinct state name
+  // carried by the files (e.g. from a loaded setup), else "state0".
+  const names = _collectStateNames();
+  return names.length === 1 ? names[0] : SINGLE_STATE_DEFAULT;
+}
+
+// Mirror the server's partials detection (config.py _PARTIAL_RE / _detect_kind):
+// theta_offset and sample_broadening are only valid for partial-data states.
+const _PARTIAL_FILE_RE = /_\d+_\d+_partial\.txt$/i;
+
+function _filesArePartials(files) {
+  return (files || []).some(function (f) {
+    return _PARTIAL_FILE_RE.test(_basename(f.path || f.file || ""));
+  });
+}
+
+function _fitFilesForState(name) {
+  return plottedFiles.filter(function (f) {
+    return f.isFit && (f.state || "").trim() === name;
+  });
+}
+
 function _triplet(name, key, ov) {
   // Render an {init, min, max} triplet of numeric inputs.
   const wrap = document.createElement("div");
@@ -948,115 +973,209 @@ function _validateTriplet(t) {
   return true;
 }
 
+function _renderOverrideFields(body, name, ov, isPartials) {
+  // Render the editable override widgets (ambient SLD; intensity / theta_offset
+  // / sample_broadening triplets; back-reflection; extra description) for one
+  // state into `body`. Shared by the multi-state accordion and the single-state
+  // panel. `ov` must be the stored stateOverrides[name] object so the change
+  // handlers mutate the persisted state. `isPartials` gates the partials-only
+  // θ-offset / sample-broadening fields.
+  const safeId = name.replace(/[^\w-]/g, "_");
+
+  // ambient (single number)
+  const ambWrap = document.createElement("div");
+  ambWrap.className = "mb-2";
+  ambWrap.innerHTML = '<label class="form-label small mb-0">Ambient SLD ' +
+    '<span class="text-muted">(10⁻⁶ Å⁻²)</span></label>';
+  const ambIn = document.createElement("input");
+  ambIn.type = "number";
+  ambIn.step = "any";
+  ambIn.className = "form-control form-control-sm";
+  ambIn.style.maxWidth = "200px";
+  ambIn.value = (ov.ambient != null) ? ov.ambient : "";
+  ambIn.addEventListener("change", function () {
+    const v = ambIn.value.trim();
+    if (v === "") delete ov.ambient;
+    else ov.ambient = parseFloat(v);
+    _saveFormValues();
+  });
+  ambWrap.appendChild(ambIn);
+  body.appendChild(ambWrap);
+
+  // intensity (any state) + theta_offset / sample_broadening (partials only)
+  const tripletDefs = [["intensity", "Intensity"]];
+  if (isPartials) {
+    tripletDefs.push(
+      ["theta_offset", "θ offset"],
+      ["sample_broadening", "Sample broadening"],
+    );
+  }
+  tripletDefs.forEach(function (pair) {
+    const wrap = document.createElement("div");
+    wrap.className = "mb-1";
+    const lbl = document.createElement("div");
+    lbl.className = "form-label small mb-0";
+    lbl.textContent = pair[1];
+    wrap.appendChild(lbl);
+    wrap.appendChild(_triplet(name, pair[0], ov));
+    body.appendChild(wrap);
+  });
+  if (!isPartials) {
+    const hint = document.createElement("div");
+    hint.className = "form-text mb-2";
+    hint.textContent =
+      "θ-offset and sample broadening apply to partial-data states only.";
+    body.appendChild(hint);
+  }
+
+  // back_reflection checkbox
+  const brWrap = document.createElement("div");
+  brWrap.className = "form-check form-switch mb-2";
+  brWrap.innerHTML =
+    '<input class="form-check-input" type="checkbox" id="ov-br-' + safeId + '">' +
+    '<label class="form-check-label" for="ov-br-' + safeId + '">' +
+    'Back reflection</label>';
+  const brIn = brWrap.querySelector("input");
+  brIn.checked = !!ov.back_reflection;
+  brIn.addEventListener("change", function () {
+    if (brIn.checked) ov.back_reflection = true;
+    else delete ov.back_reflection;
+    _saveFormValues();
+  });
+  body.appendChild(brWrap);
+
+  // extra_description textarea
+  const descWrap = document.createElement("div");
+  descWrap.className = "mb-1";
+  descWrap.innerHTML = '<label class="form-label small mb-0">Extra description</label>';
+  const descIn = document.createElement("textarea");
+  descIn.className = "form-control form-control-sm";
+  descIn.rows = 2;
+  descIn.value = ov.extra_description || "";
+  descIn.addEventListener("change", function () {
+    const v = descIn.value.trim();
+    if (v) ov.extra_description = v;
+    else delete ov.extra_description;
+    _saveFormValues();
+  });
+  descWrap.appendChild(descIn);
+  body.appendChild(descWrap);
+}
+
 function _renderOverridesPanel() {
   const card = document.getElementById("overrides-card");
   const acc = document.getElementById("overrides-accordion");
+  const single = document.getElementById("overrides-single");
   if (!card || !acc) return;
 
   const stateNames = _collectStateNames();
-  const visible = groupIntoStates && stateNames.length >= 2;
-  card.style.display = visible ? "" : "none";
-  if (!visible) { acc.innerHTML = ""; return; }
+  const multi = groupIntoStates && stateNames.length >= 2;
+  const hasFitFiles = plottedFiles.some(function (f) { return f.isFit; });
 
-  // Drop stale overrides for renamed/removed states.
-  Object.keys(stateOverrides).forEach(function (n) {
-    if (stateNames.indexOf(n) < 0) delete stateOverrides[n];
-  });
+  // The card shows in multi-state mode, or whenever there are fit files to
+  // attach single-state overrides to.
+  card.style.display = (multi || hasFitFiles) ? "" : "none";
+  if (!multi && !hasFitFiles) {
+    acc.innerHTML = "";
+    if (single) single.innerHTML = "";
+    return;
+  }
 
+  if (multi) {
+    // Multi-state: one collapsible accordion item per state.
+    if (single) single.innerHTML = "";
+    acc.style.display = "";
+
+    // Drop stale overrides for renamed/removed states.
+    Object.keys(stateOverrides).forEach(function (n) {
+      if (stateNames.indexOf(n) < 0) delete stateOverrides[n];
+    });
+
+    acc.innerHTML = "";
+    stateNames.forEach(function (name, idx) {
+      const ov = _ensureOverride(name);
+      const item = document.createElement("div");
+      item.className = "accordion-item";
+      const hid = "ov-h-" + idx;
+      const cid = "ov-c-" + idx;
+      item.innerHTML =
+        '<h2 class="accordion-header" id="' + hid + '">' +
+          '<button class="accordion-button collapsed" type="button" ' +
+          'data-bs-toggle="collapse" data-bs-target="#' + cid + '">' +
+          '<span class="badge me-2" style="background-color:' +
+            _colorForState(name) + ';color:#fff">' + name + '</span>' +
+          '<span class="small text-muted">overrides</span>' +
+          '</button>' +
+        '</h2>' +
+        '<div id="' + cid + '" class="accordion-collapse collapse" ' +
+          'data-bs-parent="#overrides-accordion"><div class="accordion-body small"></div></div>';
+      const body = item.querySelector(".accordion-body");
+      _renderOverrideFields(body, name, ov, _filesArePartials(_fitFilesForState(name)));
+      acc.appendChild(item);
+    });
+    return;
+  }
+
+  // Single-state: one flat panel keyed by the implicit single state. Lets a
+  // single (ungrouped) state carry ambient / intensity / theta_offset /
+  // sample_broadening / back_reflection / extra_description without faking a
+  // second state — and round-trips a single-state setup loaded from YAML.
   acc.innerHTML = "";
-  stateNames.forEach(function (name, idx) {
-    const ov = _ensureOverride(name);
-    const item = document.createElement("div");
-    item.className = "accordion-item";
-    const hid = "ov-h-" + idx;
-    const cid = "ov-c-" + idx;
-    item.innerHTML =
-      '<h2 class="accordion-header" id="' + hid + '">' +
-        '<button class="accordion-button collapsed" type="button" ' +
-        'data-bs-toggle="collapse" data-bs-target="#' + cid + '">' +
-        '<span class="badge me-2" style="background-color:' +
-          _colorForState(name) + ';color:#fff">' + name + '</span>' +
-        '<span class="small text-muted">overrides</span>' +
-        '</button>' +
-      '</h2>' +
-      '<div id="' + cid + '" class="accordion-collapse collapse" ' +
-        'data-bs-parent="#overrides-accordion"><div class="accordion-body small"></div></div>';
-    const body = item.querySelector(".accordion-body");
-
-    // ambient (single number)
-    const ambWrap = document.createElement("div");
-    ambWrap.className = "mb-2";
-    ambWrap.innerHTML = '<label class="form-label small mb-0">Ambient SLD ' +
-      '<span class="text-muted">(10⁻⁶ Å⁻²)</span></label>';
-    const ambIn = document.createElement("input");
-    ambIn.type = "number";
-    ambIn.step = "any";
-    ambIn.className = "form-control form-control-sm";
-    ambIn.style.maxWidth = "200px";
-    ambIn.value = (ov.ambient != null) ? ov.ambient : "";
-    ambIn.addEventListener("change", function () {
-      const v = ambIn.value.trim();
-      if (v === "") delete ov.ambient;
-      else ov.ambient = parseFloat(v);
-      _saveFormValues();
-    });
-    ambWrap.appendChild(ambIn);
-    body.appendChild(ambWrap);
-
-    // intensity / theta_offset / sample_broadening triplets
-    [
-      ["intensity", "Intensity"],
-      ["theta_offset", "θ offset"],
-      ["sample_broadening", "Sample broadening"],
-    ].forEach(function (pair) {
-      const wrap = document.createElement("div");
-      wrap.className = "mb-1";
-      const lbl = document.createElement("div");
-      lbl.className = "form-label small mb-0";
-      lbl.textContent = pair[1];
-      wrap.appendChild(lbl);
-      wrap.appendChild(_triplet(name, pair[0], ov));
-      body.appendChild(wrap);
-    });
-
-    // back_reflection checkbox
-    const brWrap = document.createElement("div");
-    brWrap.className = "form-check form-switch mb-2";
-    brWrap.innerHTML =
-      '<input class="form-check-input" type="checkbox" id="ov-br-' + idx + '">' +
-      '<label class="form-check-label" for="ov-br-' + idx + '">' +
-      'Back reflection</label>';
-    const brIn = brWrap.querySelector("input");
-    brIn.checked = !!ov.back_reflection;
-    brIn.addEventListener("change", function () {
-      if (brIn.checked) ov.back_reflection = true;
-      else delete ov.back_reflection;
-      _saveFormValues();
-    });
-    body.appendChild(brWrap);
-
-    // extra_description textarea
-    const descWrap = document.createElement("div");
-    descWrap.className = "mb-1";
-    descWrap.innerHTML = '<label class="form-label small mb-0">Extra description</label>';
-    const descIn = document.createElement("textarea");
-    descIn.className = "form-control form-control-sm";
-    descIn.rows = 2;
-    descIn.value = ov.extra_description || "";
-    descIn.addEventListener("change", function () {
-      const v = descIn.value.trim();
-      if (v) ov.extra_description = v;
-      else delete ov.extra_description;
-      _saveFormValues();
-    });
-    descWrap.appendChild(descIn);
-    body.appendChild(descWrap);
-
-    acc.appendChild(item);
-  });
+  if (!single) return;
+  const name = _singleStateName();
+  const ov = _ensureOverride(name);
+  single.innerHTML = "";
+  const hdr = document.createElement("div");
+  hdr.className = "small text-muted mb-2";
+  const badge = document.createElement("span");
+  badge.className = "badge";
+  badge.style.backgroundColor = _colorForState(name);
+  badge.style.color = "#fff";
+  badge.textContent = name;
+  hdr.appendChild(document.createTextNode("State "));
+  hdr.appendChild(badge);
+  single.appendChild(hdr);
+  const fitFiles = plottedFiles.filter(function (f) { return f.isFit; });
+  _renderOverrideFields(single, name, ov, _filesArePartials(fitFiles));
 }
 
 /* ---- analysis launch ----------------------------------------- */
+
+function _buildStateEntry(name, files, errors) {
+  // Build one `states[]` entry from a state name + its files, applying any
+  // per-state overrides tracked in `stateOverrides`. Shared by the multi-state
+  // path and the single-state path so a loaded setup (ambient / intensity /
+  // theta_offset / sample_broadening / back_reflection / extra_description)
+  // round-trips faithfully on Save Setup and carries into Start Analysis.
+  const dataFiles = files.map(function (f) {
+    const stem = _basename(f.path).replace(/\.[^.]+$/, "");
+    return { file: f.path, label: stem };
+  });
+  const entry = { name: name, data_files: dataFiles };
+  const ov = stateOverrides[name] || {};
+  if (ov.ambient != null && !Number.isNaN(ov.ambient)) {
+    entry.ambient = { rho: ov.ambient };
+  }
+  // theta_offset / sample_broadening are partials-only (the server rejects
+  // them on combined states); intensity applies to any state.
+  const tripletKeys = _filesArePartials(files)
+    ? ["intensity", "theta_offset", "sample_broadening"]
+    : ["intensity"];
+  tripletKeys.forEach(function (k) {
+    if (ov[k] && Object.keys(ov[k]).length) {
+      if (!_validateTriplet(ov[k])) {
+        errors.push(
+          "State '" + name + "' " + k +
+          ": init/min/max must satisfy min ≤ init ≤ max."
+        );
+      }
+      entry[k] = Object.assign({}, ov[k]);
+    }
+  });
+  if (ov.back_reflection === true) entry.back_reflection = true;
+  if (ov.extra_description) entry.extra_description = ov.extra_description;
+  return entry;
+}
 
 function _buildAnalysisBody(opts) {
   // Compose the JSON body for /api/start-analysis (or /api/preview-structure).
@@ -1115,33 +1234,9 @@ function _buildAnalysisBody(opts) {
       return { body: body, errors: errors };
     }
 
-    const states = order.map(function (name) {
-      const files = byState[name].map(function (f) {
-        const stem = _basename(f.path).replace(/\.[^.]+$/, "");
-        return { file: f.path, label: stem };
-      });
-      const entry = { name: name, data_files: files };
-      const ov = stateOverrides[name] || {};
-      if (ov.ambient != null && !Number.isNaN(ov.ambient)) {
-        entry.ambient = { rho: ov.ambient };
-      }
-      ["intensity", "theta_offset", "sample_broadening"].forEach(function (k) {
-        if (ov[k] && Object.keys(ov[k]).length) {
-          if (!_validateTriplet(ov[k])) {
-            errors.push(
-              "State '" + name + "' " + k +
-              ": init/min/max must satisfy min ≤ init ≤ max."
-            );
-          }
-          entry[k] = Object.assign({}, ov[k]);
-        }
-      });
-      if (ov.back_reflection === true) entry.back_reflection = true;
-      if (ov.extra_description) entry.extra_description = ov.extra_description;
-      return entry;
+    body.states = order.map(function (name) {
+      return _buildStateEntry(name, byState[name], errors);
     });
-
-    body.states = states;
 
     const tieParams = _parseTiesText(tiesText);
     if (tiesMode === "shared" && tieParams.length) {
@@ -1157,12 +1252,25 @@ function _buildAnalysisBody(opts) {
     }
     // Multi-state path drops top-level data_files.
   } else {
-    // Legacy single-state / multi-file co-refinement.
-    const dataFiles = fitFiles.map(function (f) {
-      const stem = _basename(f.path).replace(/\.[^.]+$/, "");
-      return { file: f.path, label: stem };
-    });
-    if (dataFiles.length > 1) body.data_files = dataFiles;
+    // Single-state or ad-hoc multi-file co-refinement. Emit a one-entry
+    // `states:` array when the fit files carry a named state (e.g. a
+    // single-state setup loaded from YAML) OR the user set any single-state
+    // overrides, so the state name and its per-state overrides survive Save
+    // Setup / Start Analysis. Otherwise fall back to the flat data_files shape
+    // for truly ad-hoc runs (the server synthesizes a state0 on export).
+    const distinct = _collectStateNames();
+    const singleName = distinct.length === 1 ? distinct[0] : SINGLE_STATE_DEFAULT;
+    const ov = stateOverrides[singleName];
+    const hasOverrides = ov && Object.keys(ov).length > 0;
+    if (distinct.length === 1 || hasOverrides) {
+      body.states = [_buildStateEntry(singleName, fitFiles, errors)];
+    } else {
+      const dataFiles = fitFiles.map(function (f) {
+        const stem = _basename(f.path).replace(/\.[^.]+$/, "");
+        return { file: f.path, label: stem };
+      });
+      if (dataFiles.length > 1) body.data_files = dataFiles;
+    }
   }
 
   return { body: body, errors: errors };

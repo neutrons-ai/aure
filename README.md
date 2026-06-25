@@ -206,6 +206,42 @@ Multi-state: declare multiple states. The default tied set
 (when neither `shared_parameters` nor `unshared_parameters` is supplied) ties
 thickness, SLD, and interface for every layer plus the substrate interface.
 
+#### Locating data files
+
+Relative `data_files` paths are resolved against the first directory that
+contains the file, searched in this order:
+
+1. an **explicit override** — the `--data-dir` CLI flag, or a top-level
+   `data_dir:` key in the setup YAML (the flag wins over the key);
+2. the directory holding the setup / manifest file;
+3. the current working directory.
+
+This lets a setup file reference data by bare filename while the actual
+files live somewhere else — for example analyzer's `plan-data` output kept
+in a `plan/` subfolder while the data sits one level up:
+
+```yaml
+# plan/job.yaml
+data_dir: ../Rawdata          # resolved relative to plan/
+states:
+  - name: state0
+    data_files:
+      - file: REFL_226642_combined_data_auto.txt
+```
+
+Or override it on the command line (highest priority; for `aure batch` it
+applies to every job, overriding any per-job or `defaults:` `data_dir:`):
+
+```bash
+aure analyze -c plan/job.yaml --data-dir ./Rawdata -o ./output
+aure batch manifest.yaml --data-dir ./Rawdata
+```
+
+Absolute paths are used as-is. A file found in none of the candidate
+directories raises an error that lists the directories searched. `data_dir:`
+is a load-time resolution hint only — saved setups always carry the
+fully-resolved absolute paths, so it is never written back out.
+
 ### Manifest (batch)
 
 A batch manifest is a list of setups under `jobs:` plus an optional
@@ -330,6 +366,7 @@ arguments and the setup file specify the same field, positionals win.
 | `-h, --hypothesis TEXT` | Optional hypothesis to test — seeded as top-ranked candidate structural changes at intake |
 | `-d, --extra-data PATH` | Extra data file (single-state co-refinement; ad-hoc only) |
 | `-c, --config PATH` | Setup YAML file (states, evaluation criteria, model constraints, …) |
+| `--data-dir PATH` | Directory to resolve relative `data_files` against (highest priority; requires `-c`). Search order: this dir → config file's dir → cwd |
 | `-v, --verbose` | Stream workflow progress to stderr |
 | `--json` | Emit results as JSON |
 
@@ -349,6 +386,49 @@ aure analyze low-Q.dat "multilayer" -d mid-Q.dat -d high-Q.dat -o ./output
 aure analyze -c setup.yaml -o ./output
 ```
 
+### `aure prepare`
+
+Run intake → analysis → modeling **only** and emit a refl1d-ready
+`problem.json` — no fitting. Use it to hand a model off to a standalone
+refl1d run or a remote fit service. This is the standalone equivalent of the
+`prepare` *command* in a batch manifest (see [`aure batch`](#aure-batch)).
+
+```bash
+aure prepare [DATA_FILE] [SAMPLE_DESCRIPTION] [OPTIONS]
+```
+
+As with `analyze`, `DATA_FILE` / `SAMPLE_DESCRIPTION` are optional when
+`-c setup.yaml` supplies them.
+
+| Option | Description |
+|--------|-------------|
+| `-o, --output-dir PATH` | Output directory for checkpoints, models, and `problem.json` (default: `./output/<model-name>`) |
+| `-n, --model-name TEXT` | Base name for artifacts and the generated `problem.json` (default: derived from the data file stem) |
+| `-h, --hypothesis TEXT` | Optional hypothesis to test |
+| `-d, --extra-data PATH` | Additional data file (single-state co-refinement; ad-hoc only) |
+| `-c, --config PATH` | Setup YAML file (states, model constraints, …) |
+| `--data-dir PATH` | Directory to resolve relative `data_files` against (highest priority; requires `-c`). Search order: this dir → config file's dir → cwd |
+| `-v, --verbose` | Verbose logging |
+| `--json` | Emit results as JSON |
+
+**Examples:**
+
+```bash
+aure prepare data.dat "100 nm polystyrene on silicon"
+aure prepare data.dat "multilayer" -o ./out -n my_model
+aure prepare low-Q.dat "multilayer" -d mid-Q.dat -d high-Q.dat
+aure prepare -c setup.yaml -n my_model
+```
+
+This writes `<output-dir>/<model-name>.json` (the bumps-serialised problem)
+and a `<model-name>_definition.json` sidecar (the raw `ModelDefinition`). The
+problem file loads directly into refl1d:
+
+```bash
+aure prepare data.dat "100 nm polystyrene on silicon" -n my_model
+refl1d output/my_model/my_model.json
+```
+
 ### `aure batch`
 
 Run one or more jobs from a YAML manifest file.
@@ -362,6 +442,7 @@ aure batch MANIFEST [OPTIONS]
 | Option | Description |
 |--------|-------------|
 | `-j, --job NAME` | Run only the named job(s). Repeatable. Default: all |
+| `--data-dir PATH` | Resolve relative `data_files` against this dir for **every** job (overrides per-job / `defaults:` `data_dir:`). Search order: this dir → manifest's dir → cwd |
 | `--dry-run` | Validate the manifest and print the plan without running |
 
 The manifest is a YAML file with an optional `defaults` section and a
@@ -503,6 +584,46 @@ aure evaluate output/refl1d_output/fit_iter1_dream \
 aure evaluate output/refl1d_output/ --json
 ```
 
+### `aure import-refl1d`
+
+Ingest a hand-run refl1d `problem.json` into an AuRE output directory so it
+can be opened with `aure serve`, judged with `aure evaluate`, or extended
+with `aure resume`. `REFL1D_DIR` may be a specific `fit_iter*_*` directory or
+its parent (the latest iteration is then picked automatically).
+
+```bash
+aure import-refl1d REFL1D_DIR [OPTIONS]
+```
+
+| Option | Description |
+|--------|-------------|
+| `-o, --output-dir PATH` | Target AuRE output directory (default: a sibling named `<REFL1D_DIR>_aure_import`) |
+| `-c, --context TEXT` | Sample description recorded on the imported run |
+| `-h, --hypothesis TEXT` | Optional hypothesis to attach to the imported run |
+| `--state-name TEXT` | Override a recovered state name (repeatable, one per distinct sample; not combinable with `--setup`) |
+| `--setup PATH` | Setup YAML describing the original problem (e.g. analyzer `plan-data` output) — the authoritative source for sample description, state names, and original data paths |
+| `--data-dir PATH` | Directory holding the data files referenced by name in `--setup`, when the YAML lists bare filenames but the data lives elsewhere |
+| `--back-reflection / --no-back-reflection` | Force stack orientation (default: auto-detect from material names) |
+| `--force` | Overwrite `OUTPUT_DIR` if it exists |
+| `-v, --verbose` | Verbose logging |
+| `--json` | Machine-readable summary |
+
+**Examples:**
+
+```bash
+# Auto-detect everything from the deserialised problem
+aure import-refl1d ./refl1d_output/fit_iter0_dream -o ./imported
+
+# Add sample context for downstream evaluation
+aure import-refl1d ./refl1d_output -o ./imported -c "Cu/Ti on Si in D2O"
+
+# Name the recovered states of a multi-state fit
+aure import-refl1d ./fit_iter0_dream -o ./imported --state-name D2O --state-name H2O
+
+# Use the original setup YAML as the source of truth
+aure import-refl1d ./Cu-D2O-226642 --setup ./plan/job_Cu-D2O-226642.yaml
+```
+
 ### `aure plot-results`
 
 Plot R(Q) curves and SLD profiles from a completed run.
@@ -516,7 +637,6 @@ aure plot-results OUTPUT_DIR [OPTIONS]
 | `-s, --save PATH` | Save the figure (PNG, PDF, SVG) |
 | `-f, --offset N` | Vertical offset between curves (default: 10) |
 | `--no-show` | Don't open the interactive plot window |
-| `-w, --workspace PATH` | Working directory for resolving data file paths |
 
 ### `aure extract-features`
 
@@ -545,7 +665,7 @@ aure lookup-sld SiO2 polystyrene PMMA
 List known materials in the built-in database.
 
 ```bash
-aure list-materials [-c CATEGORY] [--json]
+aure list-materials [-c CATEGORY]
 ```
 
 Categories: `polymers`, `metals`, `substrates`, `solvents`, `all` (default).
@@ -579,7 +699,7 @@ from a completed run.  When omitted it starts in **interactive setup mode**
 where you can load data files, describe the sample, and launch an analysis
 from the browser.
 
-The viewer has three tabs:
+The web UI has three tabs:
 
 - **Setup** — load data files, enter sample description, and start a new
   analysis.  When viewing results from a previous run the form is
@@ -623,7 +743,7 @@ aure serve ./output --port 8080 --no-browser
 Alias for `aure serve` in interactive setup mode (no output directory).
 
 ```bash
-aure interactive [--port N] [--host HOST]
+aure interactive [DATA_FILE] [--port N] [--host HOST]
 ```
 
 ## Python API

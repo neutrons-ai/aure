@@ -442,3 +442,219 @@ def test_known_shared_params_empty_when_no_history(tmp_path: Path) -> None:
     resp = client.get("/api/known-shared-params")
     assert resp.status_code == 200
     assert resp.get_json()["parameters"] == []
+
+
+# ---------------------------------------------------------------------------
+# Save Setup (/api/setup/export)
+# ---------------------------------------------------------------------------
+
+
+def _write_partial_files(tmp_path: Path) -> list[str]:
+    """Three partial files sharing one set_id (one physical state)."""
+    rows = "0.01 1.0 0.01\n0.02 0.5 0.01\n0.03 0.1 0.01\n"
+    names = [
+        "REFL_230536_1_230536_partial.txt",
+        "REFL_230536_2_230537_partial.txt",
+        "REFL_230536_3_230538_partial.txt",
+    ]
+    paths = []
+    for n in names:
+        p = tmp_path / n
+        p.write_text(rows)
+        paths.append(str(p))
+    return paths
+
+
+def test_setup_export_single_state_with_overrides_round_trips(tmp_path: Path) -> None:
+    """A single named state (3 partial files + per-state nuisance params) must
+    export to a valid states-only YAML that load_setup can read back.
+
+    Regression: clicking "Save Setup" after loading a single-state setup
+    previously failed with "at least one state must be declared under
+    `states:`" because the form sent flat data_files, not `states`.
+    """
+    import yaml
+
+    from aure.setup import load_setup
+
+    files = _write_partial_files(tmp_path)
+    out = tmp_path / "out"
+    out.mkdir()
+    client = _make_ui_client(out)
+
+    # Mirror what setup.js _buildAnalysisBody now emits for a single named
+    # state loaded from job_230536.yaml.
+    # Mirror the real form body exactly, including the runtime-only keys the
+    # endpoint must translate/strip (output_dir, interactive, max_iterations).
+    body = {
+        "data_file": files[0],  # legacy positional still sent by the form
+        "sample_description": "air / CuOx / 50 nm Cu / 3 nm Ti on Si (back reflection)",
+        "hypothesis": None,
+        "output_dir": str(out),
+        "interactive": False,
+        "max_iterations": 7,
+        "states": [
+            {
+                "name": "run_230536",
+                "data_files": [{"file": f, "label": Path(f).stem} for f in files],
+                "theta_offset": {"init": 0.0, "min": -0.02, "max": 0.02},
+                "sample_broadening": {"init": 0.0, "min": 0.0, "max": 0.05},
+                "back_reflection": True,
+                "extra_description": "Measured in air with the cell empty.",
+            }
+        ],
+    }
+
+    resp = client.post("/api/setup/export", json=body)
+    assert resp.status_code == 200, resp.get_json()
+    yaml_text = resp.get_data(as_text=True)
+
+    # Parse the exported YAML and confirm the state + overrides survived, the
+    # runtime keys were stripped, and max_iterations mapped to max_refinements.
+    dumped = yaml.safe_load(yaml_text)
+    assert [s["name"] for s in dumped["states"]] == ["run_230536"]
+    assert dumped.get("max_refinements") == 7
+    assert "output_dir" not in dumped and "interactive" not in dumped
+    assert "max_iterations" not in dumped
+    st = dumped["states"][0]
+    assert st["back_reflection"] is True
+    assert st["theta_offset"] == {"init": 0.0, "min": -0.02, "max": 0.02}
+    assert "Measured in air" in st["extra_description"]
+
+    # And it must load back through the canonical loader without error.
+    setup_path = out / "exported.yaml"
+    setup_path.write_text(yaml_text)
+    reloaded = load_setup(setup_path)
+    assert [s["name"] for s in reloaded["states"]] == ["run_230536"]
+    assert len(reloaded["states"][0]["data_files"]) == 3
+
+
+def test_setup_export_synthesizes_state0_from_flat_data_files(tmp_path: Path) -> None:
+    """An ad-hoc save with only flat data_files (no `states`) should succeed by
+    synthesizing a single `state0` rather than 400-ing."""
+    import yaml
+
+    f1, f2 = _write_two_state_files(tmp_path)
+    out = tmp_path / "out"
+    out.mkdir()
+    client = _make_ui_client(out)
+
+    body = {
+        "data_file": f1,
+        "sample_description": "Cu film, two Q segments",
+        "data_files": [
+            {"file": f1, "label": "REFL_1_combined_data"},
+            {"file": f2, "label": "REFL_2_combined_data"},
+        ],
+    }
+    resp = client.post("/api/setup/export", json=body)
+    assert resp.status_code == 200, resp.get_json()
+    dumped = yaml.safe_load(resp.get_data(as_text=True))
+    assert [s["name"] for s in dumped["states"]] == ["state0"]
+    assert len(dumped["states"][0]["data_files"]) == 2
+
+
+def test_setup_export_synthesizes_state0_from_single_data_file(tmp_path: Path) -> None:
+    """The bare single-file ad-hoc case (only `data_file`) also exports."""
+    import yaml
+
+    f1, _ = _write_two_state_files(tmp_path)
+    out = tmp_path / "out"
+    out.mkdir()
+    client = _make_ui_client(out)
+
+    body = {"data_file": f1, "sample_description": "single file"}
+    resp = client.post("/api/setup/export", json=body)
+    assert resp.status_code == 200, resp.get_json()
+    dumped = yaml.safe_load(resp.get_data(as_text=True))
+    assert [s["name"] for s in dumped["states"]] == ["state0"]
+    assert dumped["states"][0]["data_files"][0]["file"] == f1
+
+
+def test_setup_export_still_400s_with_no_files_at_all(tmp_path: Path) -> None:
+    """No states and no data files -> the original validation error stands."""
+    out = tmp_path / "out"
+    out.mkdir()
+    client = _make_ui_client(out)
+
+    resp = client.post(
+        "/api/setup/export", json={"sample_description": "nothing to export"}
+    )
+    assert resp.status_code == 400
+    assert "states" in resp.get_json()["errors"][0]
+
+
+def test_setup_export_single_combined_state_with_ambient_and_back_reflection(
+    tmp_path: Path,
+) -> None:
+    """The single-state overrides editor lets an ungrouped (combined-file) state
+    carry ambient + back_reflection without faking a second state. The body it
+    emits must export and round-trip."""
+    import yaml
+
+    f1, _ = _write_two_state_files(tmp_path)
+    out = tmp_path / "out"
+    out.mkdir()
+    client = _make_ui_client(out)
+
+    body = {
+        "data_file": f1,
+        "sample_description": "single combined state in D2O, back reflection",
+        "output_dir": str(out),
+        "interactive": False,
+        "max_iterations": 3,
+        "states": [
+            {
+                "name": "state0",
+                "data_files": [{"file": f1, "label": "REFL_1_combined_data"}],
+                "ambient": {"rho": 6.4},
+                "back_reflection": True,
+                "extra_description": "measured in D2O",
+            }
+        ],
+    }
+    resp = client.post("/api/setup/export", json=body)
+    assert resp.status_code == 200, resp.get_json()
+
+    reloaded = load_setup_text(out, resp.get_data(as_text=True))
+    st = reloaded["states"][0]
+    assert st["name"] == "state0"
+    assert st["back_reflection"] is True
+    assert st["ambient"] == {"rho": 6.4}
+    assert reloaded.get("max_refinements") == 3
+    # sanity: it really is the loader's output, parseable as YAML too
+    assert yaml.safe_load(resp.get_data(as_text=True))["states"][0]["ambient"]
+
+
+def test_setup_export_rejects_theta_offset_on_combined_state(tmp_path: Path) -> None:
+    """theta_offset / sample_broadening are partials-only. The UI now hides
+    them for combined-file states; the server must still reject them if sent,
+    which is the contract that gating mirrors."""
+    f1, _ = _write_two_state_files(tmp_path)  # *_combined_data.txt
+    out = tmp_path / "out"
+    out.mkdir()
+    client = _make_ui_client(out)
+
+    body = {
+        "data_file": f1,
+        "sample_description": "combined file, invalid theta_offset",
+        "states": [
+            {
+                "name": "state0",
+                "data_files": [{"file": f1, "label": "REFL_1_combined_data"}],
+                "theta_offset": {"init": 0.0, "min": -0.02, "max": 0.02},
+            }
+        ],
+    }
+    resp = client.post("/api/setup/export", json=body)
+    assert resp.status_code == 400
+    assert "partials" in resp.get_json()["errors"][0].lower()
+
+
+def load_setup_text(out_dir: Path, yaml_text: str):
+    """Write exported YAML to disk and load it back through the canonical loader."""
+    from aure.setup import load_setup
+
+    p = out_dir / "roundtrip.yaml"
+    p.write_text(yaml_text)
+    return load_setup(p)

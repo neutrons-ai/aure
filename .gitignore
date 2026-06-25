@@ -1,5 +1,6 @@
 output/
 validation/
+.claude/settings.json
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -211,3 +212,5 @@ __marimo__/
 
 
 .idea
+.DS_Store
+.claude/settings.json

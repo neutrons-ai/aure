@@ -39,6 +39,15 @@ sample_description: |
 # --------------------------------------------------------------------------
 # Data (required, always via states)
 # --------------------------------------------------------------------------
+# Optional: the directory that relative `data_files` paths below resolve
+# against. Search order: this directory -> this file's directory -> the
+# current directory. Use it when the YAML lists bare filenames but the data
+# lives elsewhere (e.g. analyzer `plan-data` output kept in plan/ with the
+# data one level up). A relative value resolves against this file's directory;
+# the CLI `--data-dir` flag overrides it. Load-time hint only -- never written
+# back when a setup is saved.
+# data_dir: ../Rawdata
+#
 # Each state groups data files that share one physical sample / Sample.
 # A single-file analysis is one state with one file. A multi-Q-segment
 # co-refinement is one state with N files. A solvent-contrast / anneal /
@@ -67,6 +76,14 @@ states:
 #     extra_description: ambient is H2O (SLD ~-0.56)
 #     data_files:
 #       - file: Rawdata/REFL_226660_combined_data_auto.txt
+#
+# # Optional per-state overrides — add any of these under a state, alongside
+# # `extra_description` (all optional):
+# #   ambient: {rho: 6.4}            # ambient SLD for this state
+# #   back_reflection: true          # neutrons enter from the substrate side
+# #   intensity: {init: 1.0, min: 0.9, max: 1.1}
+# #   theta_offset: true             # partials-only; true => init 0, range +/-0.02
+# #   sample_broadening: true        # partials-only; true => init 0, max 0.05
 #
 # # All states must share the same orientation — mixing normal and back-
 # # reflecting states in one run would silently mis-alias substrate.interface.

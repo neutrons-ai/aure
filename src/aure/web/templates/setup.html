@@ -140,7 +140,7 @@
               </div>
             </div>
 
-            {# Per-state overrides accordion (multi-state only) #}
+            {# Per-state overrides (single-state panel or multi-state accordion) #}
             <div id="overrides-card" class="mb-3" style="display:none">
               <div class="card border-secondary">
                 <div class="card-header bg-light fw-semibold">
@@ -151,10 +151,12 @@
                   <div class="form-text mb-2">
                     Optional: override ambient SLD, intensity, theta_offset,
                     sample broadening, back-reflection geometry, or add a
-                    free-text description for any individual state. Leave fields
-                    blank to use the workflow defaults.
+                    free-text description. Applies to your single state, or to
+                    each state once files are grouped. Leave fields blank to use
+                    the workflow defaults.
                   </div>
                   <div class="accordion" id="overrides-accordion"></div>
+                  <div id="overrides-single"></div>
                 </div>
               </div>
             </div>
