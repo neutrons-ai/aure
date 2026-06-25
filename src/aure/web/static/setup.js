@@ -1003,8 +1003,9 @@ function _renderOverrideFields(body, name, ov, isPartials) {
   ambWrap.appendChild(ambIn);
   body.appendChild(ambWrap);
 
-  // intensity (any state) + theta_offset / sample_broadening (partials only)
-  const tripletDefs = [["intensity", "Intensity"]];
+  // intensity + background apply to any state; theta_offset /
+  // sample_broadening are partials-only.
+  const tripletDefs = [["intensity", "Intensity"], ["background", "Background"]];
   if (isPartials) {
     tripletDefs.push(
       ["theta_offset", "θ offset"],
@@ -1158,10 +1159,10 @@ function _buildStateEntry(name, files, errors) {
     entry.ambient = { rho: ov.ambient };
   }
   // theta_offset / sample_broadening are partials-only (the server rejects
-  // them on combined states); intensity applies to any state.
+  // them on combined states); intensity and background apply to any state.
   const tripletKeys = _filesArePartials(files)
-    ? ["intensity", "theta_offset", "sample_broadening"]
-    : ["intensity"];
+    ? ["intensity", "background", "theta_offset", "sample_broadening"]
+    : ["intensity", "background"];
   tripletKeys.forEach(function (k) {
     if (ov[k] && Object.keys(ov[k]).length) {
       if (!_validateTriplet(ov[k])) {
@@ -1345,15 +1346,17 @@ function _applySetupPrefill(payload) {
   states.forEach(function (st) {
     var ov = {};
     if (st.ambient && typeof st.ambient.rho === "number") ov.ambient = st.ambient.rho;
-    ["intensity", "theta_offset", "sample_broadening"].forEach(function (k) {
-      if (st[k] && typeof st[k] === "object") {
-        ov[k] = {};
-        ["init", "min", "max"].forEach(function (sub) {
-          if (typeof st[k][sub] === "number") ov[k][sub] = st[k][sub];
-        });
-        if (!Object.keys(ov[k]).length) delete ov[k];
-      }
-    });
+    ["intensity", "background", "theta_offset", "sample_broadening"].forEach(
+      function (k) {
+        if (st[k] && typeof st[k] === "object") {
+          ov[k] = {};
+          ["init", "min", "max"].forEach(function (sub) {
+            if (typeof st[k][sub] === "number") ov[k][sub] = st[k][sub];
+          });
+          if (!Object.keys(ov[k]).length) delete ov[k];
+        }
+      },
+    );
     if (st.back_reflection === true) ov.back_reflection = true;
     if (st.extra_description) ov.extra_description = st.extra_description;
     if (Object.keys(ov).length) stateOverrides[st.name] = ov;

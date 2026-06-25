@@ -82,6 +82,8 @@ states:
 # #   ambient: {rho: 6.4}            # ambient SLD for this state
 # #   back_reflection: true          # neutrons enter from the substrate side
 # #   intensity: {init: 1.0, min: 0.9, max: 1.1}
+# #   background: true               # one fittable flat background tied across this
+# #                                  # state's data (true => init 1e-6, range 0..1e-5)
 # #   theta_offset: true             # partials-only; true => init 0, range +/-0.02
 # #   sample_broadening: true        # partials-only; true => init 0, max 0.05
 #

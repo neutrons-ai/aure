@@ -92,6 +92,37 @@ def _two_state_model(files: list[str], **extra) -> dict:
     return base
 
 
+def _single_model(data_file: str, **extra) -> dict:
+    base = {
+        "substrate": {
+            "name": "silicon",
+            "sld": 2.07,
+            "roughness": 3.0,
+            "roughness_max": 15.0,
+        },
+        "layers": [
+            {
+                "name": "Cu",
+                "sld": 6.5,
+                "sld_min": 4.0,
+                "sld_max": 8.0,
+                "thickness": 500.0,
+                "thickness_min": 250.0,
+                "thickness_max": 750.0,
+                "roughness": 5.0,
+                "roughness_max": 20.0,
+            },
+        ],
+        "ambient": {"name": "air", "sld": 0.0},
+        "back_reflection": False,
+        "intensity": {"value": 1.0, "min": 0.7, "max": 1.1, "fixed": True},
+        "data_file": data_file,
+        "dq_is_fwhm": True,
+    }
+    base.update(extra)
+    return base
+
+
 # ----------------------------------------------------------------------
 # Tests
 # ----------------------------------------------------------------------
@@ -326,3 +357,139 @@ def test_fitting_node_never_uses_none_basename(tmp_path, monkeypatch):
     assert captured["model_name"] not in (None, "None", "")
     # The resolved name is persisted onto the state for checkpoints / run_info.
     assert out["model_name"] == "230536"
+
+
+# ----------------------------------------------------------------------
+# Background parameter (per-state tied, fittable)
+# ----------------------------------------------------------------------
+
+
+def test_single_experiment_background_is_fittable():
+    from aure.nodes.model_builder import build_problem
+
+    model = _single_model(
+        _make_data_file(), background={"init": 2e-6, "min": 0.0, "max": 1e-5}
+    )
+    problem = build_problem(model)
+    free = [str(p.name) for p in problem._parameters]
+    assert any("background" in n for n in free), free
+
+
+def test_single_experiment_no_background_when_absent():
+    from aure.nodes.model_builder import build_problem
+
+    problem = build_problem(_single_model(_make_data_file()))
+    free = [str(p.name) for p in problem._parameters]
+    assert not any("background" in n for n in free), free
+
+
+def test_multi_problem_background_tied_across_segments():
+    from aure.nodes.model_builder import build_multi_problem
+
+    files = [
+        {"file": _make_data_file(), "label": "lo"},
+        {"file": _make_data_file(), "label": "hi"},
+    ]
+    model = _single_model(
+        files[0]["file"], background={"enabled": True, "min": 0.0, "max": 1e-5}
+    )
+    problem, _exps, _sorted = build_multi_problem(model, files)
+    free = [str(p.name) for p in problem._parameters]
+    # Tied -> exactly one shared background parameter across both segments.
+    assert free.count("background") == 1, free
+
+
+def test_states_background_tied_per_state_and_named():
+    from aure.nodes.model_builder import build_states_problem
+
+    d2o = [_make_data_file(), _make_data_file()]
+    h2o = [_make_data_file(), _make_data_file()]
+    model = {
+        "substrate": {
+            "name": "silicon",
+            "sld": 2.07,
+            "roughness": 3.0,
+            "roughness_max": 15.0,
+        },
+        "layers": [
+            {
+                "name": "Cu",
+                "sld": 6.5,
+                "sld_min": 4.0,
+                "sld_max": 8.0,
+                "thickness": 500.0,
+                "thickness_min": 250.0,
+                "thickness_max": 750.0,
+                "roughness": 5.0,
+                "roughness_max": 20.0,
+            },
+        ],
+        "ambient": {"name": "air", "sld": 0.0},
+        "states": [
+            {
+                "name": "D2O",
+                "data_files": [
+                    {"file": f, "label": f"d2o{i}"} for i, f in enumerate(d2o)
+                ],
+                "background": {"init": 2e-6, "min": 0.0, "max": 1e-5},
+            },
+            {
+                "name": "H2O",
+                "data_files": [
+                    {"file": f, "label": f"h2o{i}"} for i, f in enumerate(h2o)
+                ],
+                "background": {"init": 3e-6, "min": 0.0, "max": 1e-5},
+            },
+        ],
+    }
+    problem, _by_state, _sorted = build_states_problem(model)
+    free = [str(p.name) for p in problem._parameters]
+    bg = sorted(n for n in free if "background" in n)
+    # One tied background per state (not one per file), correctly named.
+    assert bg == ["D2O background", "H2O background"], free
+
+
+def test_states_no_spurious_background_when_absent():
+    from aure.nodes.model_builder import build_states_problem
+
+    files = [_make_data_file(), _make_data_file()]
+    problem, _by_state, _sorted = build_states_problem(_two_state_model(files))
+    free = [str(p.name) for p in problem._parameters]
+    assert not any("background" in n for n in free), free
+
+
+def test_needs_states_problem_triggers_on_single_state_background():
+    from aure.nodes.model_builder import needs_states_problem
+
+    model = {
+        "states": [
+            {
+                "name": "s0",
+                "data_files": [{"file": "x"}],
+                "background": {"min": 0.0, "max": 1e-5},
+            }
+        ]
+    }
+    assert needs_states_problem(model) is True
+
+
+def test_states_background_surfaces_in_fit_results():
+    """End-to-end: a per-state background is a free parameter that shows up in
+    the extracted fit results under '<state> background'."""
+    from aure.nodes.fitting import run_states_refl1d_fit
+
+    model = _two_state_model([_make_data_file(), _make_data_file()])
+    for st in model["states"]:
+        st["background"] = {"init": 2e-6, "min": 0.0, "max": 1e-5}
+
+    result = run_states_refl1d_fit(
+        model_definition=model,
+        method="lm",
+        iteration=0,
+        steps=1,
+        burn=1,
+        export_dir=None,
+    )
+    params = result["parameters"]
+    assert "D2O background" in params, list(params)
+    assert "H2O background" in params, list(params)

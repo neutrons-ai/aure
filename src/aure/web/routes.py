@@ -212,7 +212,7 @@ def _minimal_state_prefill(states: list[dict]) -> list[dict]:
         ambient = st.get("ambient")
         if isinstance(ambient, dict) and "rho" in ambient:
             slim["ambient"] = {"rho": ambient["rho"]}
-        for k in ("intensity", "theta_offset", "sample_broadening"):
+        for k in ("intensity", "theta_offset", "sample_broadening", "background"):
             v = st.get(k)
             if isinstance(v, dict):
                 slim[k] = {sub: v[sub] for sub in ("init", "min", "max") if sub in v}

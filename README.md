@@ -294,8 +294,10 @@ hand-editing YAML:
   and renders a two-column checklist of layers and tieable parameters that
   tick straight into the textarea.
 - **Per-state overrides accordion** lets you adjust ambient SLD,
-  intensity / theta_offset / sample_broadening triplets, back-reflection,
-  and per-state extra descriptions without leaving the page.
+  intensity / background / theta_offset / sample_broadening triplets,
+  back-reflection, and per-state extra descriptions without leaving the
+  page. `background` fits one flat background tied across the state's data
+  files; `theta_offset` / `sample_broadening` are partials-only.
 - **Load Setup / Save Setup** round-trip the entire form to a setup YAML
   that also works with `aure analyze -c` and `aure batch` — handy for
   saving experimental configurations or sharing with collaborators.

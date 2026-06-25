@@ -59,6 +59,11 @@ Extract the following information in JSON format:
         "min": <minimum intensity, default 0.7>,
         "max": <maximum intensity, default 1.1>,
         "fixed": <true if data is perfectly normalized and intensity should not vary>
+    }},
+    "background": {{
+        "enabled": <true ONLY if the user asks to fit/add a flat background, else false>,
+        "min": <minimum background, default 0.0>,
+        "max": <maximum background, default 1e-5>
     }}
 }}
 
@@ -66,6 +71,13 @@ Intensity normalization:
 - By default, allow intensity to vary between 0.7 and 1.1 to account for normalization uncertainty
 - If user says "data is perfectly normalized" or similar, set fixed=true
 - If user says "data needs large normalization correction" or similar, expand the range (e.g., 0.5 to 1.3)
+
+Flat background:
+- A constant incoherent background added to the reflectivity (R_total = intensity*R + background).
+- Set background.enabled=true ONLY when the user explicitly asks to fit or add a background
+  (e.g. "fit a flat background", "account for the background", "the data isn't background-subtracted").
+  Otherwise leave it disabled. When enabled, a single background is fit and tied across all
+  data files of each measurement state.
 
 EXPECTED / TENTATIVE LAYERS (keep these OUT of the baseline):
 - The "layers" list is the BASELINE structure — include ONLY layers the user
@@ -913,6 +925,11 @@ You must output a COMPLETE, valid JSON object matching this schema:
     "enabled": <true/false>,
     "min": <min offset in degrees, default -0.02>,
     "max": <max offset in degrees, default 0.02>
+  }},
+  "background": {{
+    "enabled": <true/false>,
+    "min": <min background, default 0.0>,
+    "max": <max background, default 1e-5>
   }}
 }}
 ```
@@ -929,6 +946,7 @@ Rules:
 7. Apply all domain-specific rules from the Domain Knowledge section above.
 8. sample_broadening and theta_offset only work with angle-based probes (multi-segment data with theta info). Only set "enabled": true when angle info is available and the fit quality warrants it. These give each segment independent resolution/alignment corrections.
 9. When sample_broadening or theta_offset are already enabled and hitting bounds, widen their ranges.
+9b. background fits a constant incoherent background (works with any data). Only enable it if the user asked for it or if the high-Q residuals plateau above the model (a sign of unmodelled background). When enabled it is tied across each state's data files.
 10. If the evaluator's `next_action` is `structural_change`, realize the
     specified hypothesis (`proposed_hypothesis_id`) exactly as described in
     its `change` field — insert/remove the layer at the correct position

@@ -45,9 +45,9 @@ You can configure a multi-state run two ways:
   each file with a state name, pick a ties mode (Auto / Shared / Unshared),
   optionally click *Preview structure* to see the available layer
   parameters as a checklist, and adjust per-state ambient / intensity /
-  theta_offset / sample_broadening / back_reflection / extra_description
-  overrides from the accordion. The UI submits the same JSON body as the
-  CLI/Python path.
+  background / theta_offset / sample_broadening / back_reflection /
+  extra_description overrides from the accordion. The UI submits the same
+  JSON body as the CLI/Python path.
 - **YAML config** (`aure analyze ... --config`): add a `states:` block to
   the user config:
 
@@ -73,8 +73,12 @@ shared_parameters:
   - substrate.interface
 ```
 
-Each `state` may also override `ambient`, `intensity`, `theta_offset`,
-`sample_broadening`, and `back_reflection`. Per-state partials (multiple
+Each `state` may also override `ambient`, `intensity`, `background`,
+`theta_offset`, `sample_broadening`, and `back_reflection`. `background`
+fits one flat background tied across that state's data files (`background:
+true` enables it with a default `0 … 1e-5` range; or give an explicit
+`{init, min, max}`). Unlike `theta_offset` / `sample_broadening` it is **not**
+partials-only — it applies to combined data too. Per-state partials (multiple
 files sharing one `set_id`) are supported just like the single-state
 multi-segment workflow.
 
@@ -88,8 +92,9 @@ AuRE ties the **structural** parameters of each layer:
 - `<layer>.interface`
 
 plus `substrate.interface`. Everything else (ambient SLD, intensity per
-file, theta_offset, sample_broadening) is left **per-state**. The default
-tied set is the right starting point for solvent-contrast experiments.
+file, background, theta_offset, sample_broadening) is left **per-state** —
+e.g. each state fits its own single tied background. The default tied set is
+the right starting point for solvent-contrast experiments.
 
 ## Choosing `shared_parameters` vs `unshared_parameters`
 

@@ -237,6 +237,8 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
                 new_model["theta_offset"] = current_model.get(
                     "theta_offset", {"enabled": False, "min": -0.02, "max": 0.02}
                 )
+            if "background" not in new_model and current_model.get("background"):
+                new_model["background"] = current_model["background"]
             # Multi-state co-refinement: carry over states + tie spec from
             # the previous model when the LLM omitted them. If the user
             # supplied ties in the config they win, regardless of the LLM.
@@ -523,6 +525,16 @@ def _build_initial_model(state: ReflectivityState) -> Dict[str, Any]:
         "fixed": intensity_settings.get("fixed", False),
     }
 
+    # Optional flat background — only enabled when the user requested it.
+    bg_settings = parsed.get("background", {}) or {}
+    background = {
+        "enabled": bool(bg_settings.get("enabled", False)),
+        "min": bg_settings.get("min", 0.0),
+        "max": bg_settings.get("max", 1e-5),
+    }
+    if "init" in bg_settings or "value" in bg_settings:
+        background["init"] = bg_settings.get("init", bg_settings.get("value"))
+
     try:
         import os
 
@@ -545,6 +557,7 @@ def _build_initial_model(state: ReflectivityState) -> Dict[str, Any]:
                 "min": -0.02,
                 "max": 0.02,
             },
+            "background": background,
         }
         updates["current_model"] = model_def
         updates["model_history"] = [

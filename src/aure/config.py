@@ -276,6 +276,7 @@ def _parse_states(
             "back_reflection",
             "theta_offset",
             "sample_broadening",
+            "background",
             "ambient",
             "intensity",
         ):
@@ -333,14 +334,24 @@ def _detect_kind(state_name: str, data_files: List[dict]) -> str:
     return "combined"
 
 
+# Per-state nuisance parameters expressed as a fittable {init, min, max}
+# triplet. ``true`` expands to the default range below; ``false`` / null
+# disables. ``theta_offset`` / ``sample_broadening`` are partials-only (see
+# ``_NUISANCE_KEYS``); ``background`` applies to any state (combined or
+# partial) — a single tied, fittable flat background per state.
+_TRIPLET_DEFAULTS: dict = {
+    "theta_offset": {"init": 0.0, "min": -0.02, "max": 0.02},
+    "sample_broadening": {"init": 0.0, "min": 0.0, "max": 0.05},
+    "background": {"init": 1e-6, "min": 0.0, "max": 1e-5},
+}
+
+
 def _normalise_nuisance(key: str, value: Any) -> Any:
-    """Expand ``true`` for theta_offset / sample_broadening into the default dict."""
-    if key not in _NUISANCE_KEYS:
+    """Expand ``true`` for triplet nuisance params into their default dict."""
+    if key not in _TRIPLET_DEFAULTS:
         return value
     if value is True:
-        if key == "theta_offset":
-            return {"init": 0.0, "min": -0.02, "max": 0.02}
-        return {"init": 0.0, "min": 0.0, "max": 0.05}
+        return dict(_TRIPLET_DEFAULTS[key])
     if value in (False, None):
         return None
     if isinstance(value, dict):

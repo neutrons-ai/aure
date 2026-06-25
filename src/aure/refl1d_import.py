@@ -53,7 +53,6 @@ from .state import (
     ModelDefinition,
     ParsedSample,
     PerFileFitResult,
-    ReflectivityState,
     StateDefinition,
     SubstrateInfo,
     create_initial_state,
@@ -70,16 +69,42 @@ logger = logging.getLogger(__name__)
 
 # Names treated as substrates when guessing back_reflection orientation.
 _SUBSTRATE_NAMES = {
-    "silicon", "si", "sapphire", "al2o3", "alumina",
-    "quartz", "sio2", "glass", "germanium", "ge", "mica",
-    "gold", "au",   # gold can be a substrate in some setups
+    "silicon",
+    "si",
+    "sapphire",
+    "al2o3",
+    "alumina",
+    "quartz",
+    "sio2",
+    "glass",
+    "germanium",
+    "ge",
+    "mica",
+    "gold",
+    "au",  # gold can be a substrate in some setups
 }
 
 # Names treated as ambient/fronting media.
 _AMBIENT_NAMES = {
-    "air", "vacuum", "d2o", "h2o", "water", "h2o-air", "d2o-air",
-    "ethanol", "methanol", "acetone", "dthf", "hthf", "cmsi", "cmsi4",
-    "cd3od", "cdcl3", "thf", "toluene", "buffer",
+    "air",
+    "vacuum",
+    "d2o",
+    "h2o",
+    "water",
+    "h2o-air",
+    "d2o-air",
+    "ethanol",
+    "methanol",
+    "acetone",
+    "dthf",
+    "hthf",
+    "cmsi",
+    "cmsi4",
+    "cd3od",
+    "cdcl3",
+    "thf",
+    "toluene",
+    "buffer",
 }
 
 
@@ -251,9 +276,9 @@ def _bounds(parameter) -> Tuple[Optional[float], Optional[float]]:
     return (lo_f, hi_f)
 
 
-def _structure_from_sample(sample, *, back_reflection: bool) -> Tuple[
-    SubstrateInfo, List[LayerInfo], AmbientInfo
-]:
+def _structure_from_sample(
+    sample, *, back_reflection: bool
+) -> Tuple[SubstrateInfo, List[LayerInfo], AmbientInfo]:
     """Pull substrate/layers/ambient out of a refl1d ``Sample`` stack.
 
     Stack ordering (see ``_build_sample``):
@@ -439,9 +464,7 @@ def _recover_tied_set(
     if not tied:
         return ([], untied, all_pairs)
     return (
-        (tied, [], all_pairs)
-        if len(tied) <= len(untied)
-        else ([], untied, all_pairs)
+        (tied, [], all_pairs) if len(tied) <= len(untied) else ([], untied, all_pairs)
     )
 
 
@@ -690,7 +713,7 @@ def definition_from_problem(
         }
         # Recover per-state shared nuisance with FITTED values (matches
         # what _definition_from_setup_and_problem does in setup mode).
-        for attr in ("theta_offset", "sample_broadening"):
+        for attr in ("theta_offset", "sample_broadening", "background"):
             recovered = _shared_nuisance_for_state(experiments, group, attr)
             if recovered:
                 state_def[attr] = recovered
@@ -909,8 +932,8 @@ def _disambiguate_probe_parameters(
             else:
                 rename[id(par)] = f"{state_name} intensity"
 
-        # Per-state shared: theta_offset, sample_broadening.
-        for attr in ("theta_offset", "sample_broadening"):
+        # Per-state shared: theta_offset, sample_broadening, background.
+        for attr in ("theta_offset", "sample_broadening", "background"):
             seen_ids: set[int] = set()
             for exp_idx in idxs:
                 par = getattr(experiments[exp_idx].probe, attr, None)
@@ -1032,9 +1055,7 @@ def _sort_setup_files_by_q(files: list[dict]) -> list[dict]:
     return [ds for ds, _ in annotated]
 
 
-def _validate_setup_against_problem(
-    experiments: list, setup_states: list
-) -> None:
+def _validate_setup_against_problem(experiments: list, setup_states: list) -> None:
     """Check that the setup's file count lines up with the problem's experiments."""
     n_files = sum(len(st.get("data_files") or []) for st in setup_states)
     n_exps = len(experiments)
@@ -1161,7 +1182,7 @@ def _definition_from_setup_and_problem(
         # rebuilt problem starts from the fitted state (and reproduces
         # the same χ²). The setup file's init values were the original
         # starting points — we override them here.
-        for attr in ("theta_offset", "sample_broadening"):
+        for attr in ("theta_offset", "sample_broadening", "background"):
             recovered = _shared_nuisance_for_state(experiments, idxs, attr)
             if recovered:
                 state_def[attr] = recovered
@@ -1169,9 +1190,8 @@ def _definition_from_setup_and_problem(
                 state_def[attr] = setup_state[attr]
         if setup_state.get("extra_description"):
             state_def["extra_description"] = setup_state["extra_description"]
-        state_def["_kind"] = (
-            setup_state.get("_kind")
-            or _detect_state_kind([ds["file"] for ds in data_files])
+        state_def["_kind"] = setup_state.get("_kind") or _detect_state_kind(
+            [ds["file"] for ds in data_files]
         )
         state_defs.append(state_def)
 
@@ -1357,9 +1377,7 @@ def import_refl1d(
             ds["Q"] = data["Q"].tolist()
             ds["R"] = data["R"].tolist()
             dR = data.get("dR")
-            ds["dR"] = (
-                dR.tolist() if dR is not None else [0.0] * len(ds["Q"])
-            )
+            ds["dR"] = dR.tolist() if dR is not None else [0.0] * len(ds["Q"])
             # Deterministic theta extraction from the header; falls back
             # to 0.0 for combined / multi-segment files (intake-style
             # behaviour). dq_is_fwhm and num_segments use the same
@@ -1535,9 +1553,7 @@ def _synth_parsed_sample(
     )
 
 
-def _synth_features(
-    Q: list, R: list, dR: Optional[list]
-) -> dict:
+def _synth_features(Q: list, R: list, dR: Optional[list]) -> dict:
     """Run deterministic feature extraction on the primary dataset."""
     from .tools.feature_tools import extract_all_features
 
@@ -1565,9 +1581,7 @@ def _synth_features(
         }
 
 
-def _default_sample_description(
-    parsed: ParsedSample, n_states: int
-) -> str:
+def _default_sample_description(parsed: ParsedSample, n_states: int) -> str:
     """Synthesise a sample description from the recovered structure.
 
     Layer order in :class:`ParsedSample` runs *bottom-up* (the first

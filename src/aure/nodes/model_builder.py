@@ -100,6 +100,57 @@ def load_probe_from_angle(file_path: str, theta: float, *, dq_is_fwhm: bool = Tr
 # Build refl1d objects from ModelDefinition
 # ======================================================================
 
+# Default flat-background range used when a ``background`` block omits values.
+_BACKGROUND_DEFAULTS = {"init": 1e-6, "min": 0.0, "max": 1e-5}
+
+
+def _nuisance_enabled(spec) -> bool:
+    """True when a nuisance block (background / theta_offset / sample_broadening)
+    requests a parameter.
+
+    A nuisance spec reaches the builder in one of two shapes and this reconciles
+    both:
+
+    * model-level (from the modeling LLM): ``{"enabled": bool, "min", "max"}`` —
+      always a dict even when off, so it must be read via the ``enabled`` flag
+      (a plain truthiness test would treat ``{"enabled": False}`` as on);
+    * per-state (from config ``_normalise_nuisance``): ``{"init", "min", "max"}``
+      when on, ``None`` when off — no ``enabled`` key, so presence of a
+      range/init means on (a ``.get("enabled")`` test would treat it as off).
+
+    Using one predicate everywhere keeps the three nuisance parameters
+    consistent. ``background`` in particular cannot rely on ``hasattr(probe,
+    ...)`` to gate it the way the angle-only ``theta_offset`` /
+    ``sample_broadening`` do, because it exists on every refl1d probe type.
+    """
+    if not isinstance(spec, dict) or not spec:
+        return False
+    if "enabled" in spec:
+        return bool(spec["enabled"])
+    return any(k in spec for k in ("init", "value", "min", "max", "fixed"))
+
+
+def _configure_background(probe, spec) -> bool:
+    """Set ``probe.background`` from a background block. Returns True if applied.
+
+    ``fixed: true`` sets only the value (constant background); otherwise the
+    background is made fittable over ``[min, max]``. No-ops when the spec is
+    disabled or the probe has no ``background`` parameter. Unlike
+    ``theta_offset`` / ``sample_broadening``, ``background`` exists on every
+    refl1d probe type, so it works for combined and partial data alike.
+    """
+    if not _nuisance_enabled(spec) or not hasattr(probe, "background"):
+        return False
+    probe.background.value = spec.get(
+        "init", spec.get("value", _BACKGROUND_DEFAULTS["init"])
+    )
+    if not spec.get("fixed", False):
+        probe.background.range(
+            spec.get("min", _BACKGROUND_DEFAULTS["min"]),
+            spec.get("max", _BACKGROUND_DEFAULTS["max"]),
+        )
+    return True
+
 
 def build_experiment(definition: dict):
     """Construct a refl1d ``Experiment`` from a ``ModelDefinition`` dict.
@@ -133,6 +184,9 @@ def build_experiment(definition: dict):
         int_max = intensity.get("max", 1.1)
         probe.intensity.value = int_val
         probe.intensity.range(int_min, int_max)
+
+    # Optional fittable flat background.
+    _configure_background(probe, definition.get("background", {}))
 
     experiment = Experiment(probe=probe, sample=sample)
     return experiment
@@ -299,14 +353,16 @@ def build_multi_problem(definition: dict, data_files: list[dict]):
 
     broadening = definition.get("sample_broadening", {})
     offset = definition.get("theta_offset", {})
+    background = definition.get("background", {})
 
-    # Shared sample_broadening / theta_offset parameters.  These describe
-    # the *sample*, not the instrument, so they must be tied across all
-    # probes in a co-refinement.  We configure the range on the first
-    # probe that exposes the attribute and then alias the same bumps
-    # Parameter onto subsequent probes.
+    # Shared sample_broadening / theta_offset / background parameters.  These
+    # describe the *sample* / *measurement*, not the individual segment, so
+    # they must be tied across all probes in a co-refinement.  We configure
+    # the range on the first probe that exposes the attribute and then alias
+    # the same bumps Parameter onto subsequent probes.
     shared_broadening = None
     shared_offset = None
+    shared_background = None
 
     experiments = []
     for probe, ds in zip(sorted_probes, sorted_data_files):
@@ -331,7 +387,7 @@ def build_multi_problem(definition: dict, data_files: list[dict]):
         # sample_broadening / theta_offset only exist on NeutronProbe
         # (angle-based), not on QProbe (Q-based from load4).  Tie them
         # across probes so the fit uses a single shared parameter.
-        if broadening.get("enabled") and hasattr(probe, "sample_broadening"):
+        if _nuisance_enabled(broadening) and hasattr(probe, "sample_broadening"):
             if shared_broadening is None:
                 probe.sample_broadening.range(
                     broadening.get("min", 0.0), broadening.get("max", 0.5)
@@ -339,7 +395,7 @@ def build_multi_problem(definition: dict, data_files: list[dict]):
                 shared_broadening = probe.sample_broadening
             else:
                 probe.sample_broadening = shared_broadening
-        if offset.get("enabled") and hasattr(probe, "theta_offset"):
+        if _nuisance_enabled(offset) and hasattr(probe, "theta_offset"):
             if shared_offset is None:
                 probe.theta_offset.range(
                     offset.get("min", -0.02), offset.get("max", 0.02)
@@ -347,6 +403,15 @@ def build_multi_problem(definition: dict, data_files: list[dict]):
                 shared_offset = probe.theta_offset
             else:
                 probe.theta_offset = shared_offset
+
+        # Single fittable flat background tied across all segments.
+        if _nuisance_enabled(background) and hasattr(probe, "background"):
+            if shared_background is None:
+                _configure_background(probe, background)
+                probe.background.name = "background"
+                shared_background = probe.background
+            else:
+                probe.background = shared_background
 
         experiments.append(Experiment(probe=probe, sample=sample))
 
@@ -377,15 +442,15 @@ def needs_states_problem(definition: dict) -> bool:
     """Return True when the model must be built via :func:`build_states_problem`.
 
     The multi-file path (:func:`build_multi_problem`) doesn't honor per-state
-    ``theta_offset`` / ``sample_broadening`` blocks, so a single-state model
-    with those nuisance parameters still needs the states route to wire them
-    correctly. Multi-state models always need it.
+    ``theta_offset`` / ``sample_broadening`` / ``background`` blocks, so a
+    single-state model with those nuisance parameters still needs the states
+    route to wire them correctly. Multi-state models always need it.
     """
     states = definition.get("states") or []
     if len(states) > 1:
         return True
     return any(
-        st.get("theta_offset") or st.get("sample_broadening")
+        st.get("theta_offset") or st.get("sample_broadening") or st.get("background")
         for st in states
     )
 
@@ -593,9 +658,7 @@ def build_states_problem(definition: dict):
     # of substrate.interface (and any same-attr layer pair whose range
     # is asymmetric) silently drops the range on one side.
     base_back = bool(definition.get("back_reflection", False))
-    orientations = {
-        bool(st.get("back_reflection", base_back)) for st in states
-    }
+    orientations = {bool(st.get("back_reflection", base_back)) for st in states}
     if len(orientations) > 1:
         raise ValueError(
             "build_states_problem: all states must share the same "
@@ -655,13 +718,16 @@ def build_states_problem(definition: dict):
         sorted_files = [data_files[k] for k in order]
         sorted_probes = [probes[k] for k in order]
 
-        # Per-state shared theta_offset / sample_broadening (partials).
+        # Per-state shared theta_offset / sample_broadening (partials) and
+        # background (any data kind). Each is tied across the state's probes.
         broadening = state.get("sample_broadening") or definition.get(
             "sample_broadening", {}
         )
         offset = state.get("theta_offset") or definition.get("theta_offset", {})
+        background = state.get("background") or definition.get("background", {})
         shared_broadening = None
         shared_offset = None
+        shared_background = None
 
         state_experiments: list = []
         for ds, probe in zip(sorted_files, sorted_probes):
@@ -681,7 +747,7 @@ def build_states_problem(definition: dict):
                 probe.intensity.value = int_val
                 probe.intensity.range(int_min, int_max)
 
-            if broadening and hasattr(probe, "sample_broadening"):
+            if _nuisance_enabled(broadening) and hasattr(probe, "sample_broadening"):
                 if shared_broadening is None:
                     init = broadening.get("init", broadening.get("value", 0.0))
                     probe.sample_broadening.value = init
@@ -691,7 +757,7 @@ def build_states_problem(definition: dict):
                     shared_broadening = probe.sample_broadening
                 else:
                     probe.sample_broadening = shared_broadening
-            if offset and hasattr(probe, "theta_offset"):
+            if _nuisance_enabled(offset) and hasattr(probe, "theta_offset"):
                 if shared_offset is None:
                     init = offset.get("init", offset.get("value", 0.0))
                     probe.theta_offset.value = init
@@ -701,6 +767,14 @@ def build_states_problem(definition: dict):
                     shared_offset = probe.theta_offset
                 else:
                     probe.theta_offset = shared_offset
+
+            # Single fittable flat background tied across the state's probes.
+            if _nuisance_enabled(background) and hasattr(probe, "background"):
+                if shared_background is None:
+                    _configure_background(probe, background)
+                    shared_background = probe.background
+                else:
+                    probe.background = shared_background
 
             exp = Experiment(probe=probe, sample=sample)
             state_experiments.append(exp)
@@ -754,6 +828,12 @@ def build_states_problem(definition: dict):
         state_files = sorted_files_by_state[st_name]
         state_exps = experiments_by_state[st_name]
         multi_in_state = len(state_exps) > 1
+        # `background` exists on every probe, so only rename it when this state
+        # actually enabled one (theta_offset / sample_broadening only exist on
+        # angle-based NeutronProbe, so their hasattr check already gates them).
+        bg_enabled = _nuisance_enabled(
+            state.get("background") or definition.get("background", {})
+        )
         seen_nuisance: set[int] = set()
         for ds, exp in zip(state_files, state_exps):
             if hasattr(exp.probe, "intensity"):
@@ -762,7 +842,9 @@ def build_states_problem(definition: dict):
                     exp.probe.intensity.name = f"{st_name} {label} intensity"
                 else:
                     exp.probe.intensity.name = f"{st_name} intensity"
-            for nuisance_attr in ("theta_offset", "sample_broadening"):
+            for nuisance_attr in ("theta_offset", "sample_broadening", "background"):
+                if nuisance_attr == "background" and not bg_enabled:
+                    continue
                 if not hasattr(exp.probe, nuisance_attr):
                     continue
                 par = getattr(exp.probe, nuisance_attr)

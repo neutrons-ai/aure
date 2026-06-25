@@ -238,9 +238,7 @@ def _setup_from_dict(
         out["name"] = str(raw["name"])
 
     desc = (
-        raw.get("sample_description")
-        or raw.get("describe")
-        or raw.get("description")
+        raw.get("sample_description") or raw.get("describe") or raw.get("description")
     )
     if desc:
         out["sample_description"] = str(desc)
@@ -254,17 +252,13 @@ def _setup_from_dict(
             try:
                 out[opt_int] = int(raw[opt_int])  # type: ignore[literal-required]
             except (TypeError, ValueError) as exc:
-                raise ConfigError(
-                    f"{source}: `{opt_int}` must be an integer"
-                ) from exc
+                raise ConfigError(f"{source}: `{opt_int}` must be an integer") from exc
 
     if "llm_temperature" in raw and raw["llm_temperature"] is not None:
         try:
             out["llm_temperature"] = float(raw["llm_temperature"])
         except (TypeError, ValueError) as exc:
-            raise ConfigError(
-                f"{source}: `llm_temperature` must be a number"
-            ) from exc
+            raise ConfigError(f"{source}: `llm_temperature` must be a number") from exc
 
     for opt_str in (
         "llm_provider",
@@ -364,6 +358,7 @@ _STATE_DUMP_ORDER: tuple[str, ...] = (
     "back_reflection",
     "theta_offset",
     "sample_broadening",
+    "background",
     "ambient",
     "intensity",
     "data_files",
@@ -546,9 +541,7 @@ def load_manifest(
         if not isinstance(defaults, dict):
             raise ConfigError(f"{p}: `defaults` must be a mapping if present.")
         if not isinstance(jobs_raw, list) or not jobs_raw:
-            raise ConfigError(
-                f"{p}: `jobs:` must be a non-empty list of job mappings."
-            )
+            raise ConfigError(f"{p}: `jobs:` must be a non-empty list of job mappings.")
         jobs: List[SetupConfig] = []
         for i, job_raw in enumerate(jobs_raw):
             if not isinstance(job_raw, dict):

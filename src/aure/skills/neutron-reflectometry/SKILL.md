@@ -248,6 +248,30 @@ calibration errors.
 **Typical ranges:** `"min": -0.02, "max": 0.02` (degrees).  This is a small
 correction; values larger than ±0.1° suggest a more serious calibration issue.
 
+### background
+
+`background` adds a constant incoherent background to the model
+(`R_total = intensity·R_theory + background`). Unlike `sample_broadening` /
+`theta_offset` it works for **any** data (combined or partial, Q- or
+angle-based), and AuRE fits **one** background **tied across all data files of a
+state** — set it once per state, not per file.
+
+**When to enable background** — enable it (`"enabled": true`, or per-state
+`background: true` / `{init, min, max}`) when:
+- The user asks to fit/account for a background, or says the data is *not*
+  background-subtracted.
+- The high-Q reflectivity **flattens to a plateau** above the model curve
+  (the residuals stop following the Fresnel decay and sit at a constant
+  floor) — a textbook signature of an unmodelled flat background.
+
+**Do NOT enable** when the data was already background-subtracted and decays
+cleanly at high Q (a free background would just drift to ~0 and waste a
+parameter).
+
+**Typical ranges:** `"min": 0.0, "max": 1e-5` with `init` ≈ `1e-6` for
+data normalised to R≈1 at the plateau. Scale the range to the data's noise
+floor if it is normalised differently.
+
 ### Priority order for multi-segment issues
 
 When per-segment χ² values are uneven (one segment much worse than others):

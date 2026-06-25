@@ -182,6 +182,43 @@ def test_theta_offset_on_combined_state_rejected(tmp_path: Path) -> None:
         load_user_config(cfg_path)
 
 
+def test_background_allowed_on_combined_state_and_expands_true(tmp_path: Path) -> None:
+    f = _write(tmp_path, "REFL_1_combined_data_auto.txt")
+    cfg_path = _write_yaml(
+        tmp_path,
+        f"""
+        states:
+          - name: A
+            data_files: [{f.name}]
+            background: true
+        """,
+    )
+    cfg = load_user_config(cfg_path)
+    st = cfg["states"][0]
+    # Not partials-only: a combined state accepts background, and `true`
+    # expands to the default fittable {init, min, max} triplet.
+    assert st["_kind"] == "combined"
+    assert st["background"] == {"init": 1e-6, "min": 0.0, "max": 1e-5}
+
+
+def test_background_dict_passthrough(tmp_path: Path) -> None:
+    f = _write(tmp_path, "REFL_1_combined_data_auto.txt")
+    cfg_path = _write_yaml(
+        tmp_path,
+        f"""
+        states:
+          - name: A
+            data_files: [{f.name}]
+            background:
+              init: 2.0e-6
+              min: 0.0
+              max: 1.0e-5
+        """,
+    )
+    cfg = load_user_config(cfg_path)
+    assert cfg["states"][0]["background"] == {"init": 2e-6, "min": 0.0, "max": 1e-5}
+
+
 def test_shared_and_unshared_mutually_exclusive(tmp_path: Path) -> None:
     f = _write(tmp_path, "REFL_1_combined_data_auto.txt")
     cfg_path = _write_yaml(
