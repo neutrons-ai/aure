@@ -155,174 +155,92 @@ class TestIsaacExporter:
         self.state = _make_state(str(self.output_dir), str(self.data_file))
         self.run_info = _make_run_info(str(self.data_file))
 
-    def test_export_creates_ai_ready_dir(self):
+    def _export_with_mocks(self, exporter, ingest_ok=True):
+        """Run export with the LLM and both subprocess steps mocked out.
+
+        Returns (result, ingest_mock, convert_mock).
+        """
+        from aure.exporters.isaac import IsaacExporter
+
+        with mock.patch(
+            "aure.exporters.isaac._generate_context_description",
+            return_value="Test context.",
+        ), mock.patch.object(
+            IsaacExporter, "_run_ingest_workflow", autospec=True, return_value=ingest_ok
+        ) as ingest, mock.patch.object(
+            IsaacExporter, "_run_convert_ingest", autospec=True, return_value=True
+        ) as convert, mock.patch.object(
+            IsaacExporter, "_run_validate", autospec=True, return_value=True
+        ):
+            result = exporter.export(self.output_dir, self.state, self.run_info)
+        return result, ingest, convert
+
+    def test_export_creates_ai_ready_dir_and_context(self):
         from aure.exporters.isaac import IsaacExporter
 
         exporter = IsaacExporter()
-        # Mock the LLM call so tests don't require an API key
-        with mock.patch(
-            "aure.exporters.isaac._generate_context_description",
-            return_value="Test context description for Cu/Ti/Si sample.",
-        ):
-            result = exporter.export(self.output_dir, self.state, self.run_info)
+        result, _, _ = self._export_with_mocks(exporter)
 
         ai_dir = self.output_dir / "ai-ready-data"
         assert ai_dir.is_dir()
+        assert (ai_dir / "context.txt").read_text() == "Test context."
         assert result.output_path == ai_dir
+        assert result.success is True
 
-    def test_export_copies_data_file(self):
+    def test_export_materializes_run_info(self):
+        from aure.exporters.isaac import IsaacExporter
+
+        # The test fixture has no run_info.json on disk; export should write one
+        # (from the provided dict) so the assembler can pull it.
+        assert not (self.output_dir / "run_info.json").exists()
+        exporter = IsaacExporter()
+        self._export_with_mocks(exporter)
+
+        ri = self.output_dir / "run_info.json"
+        assert ri.is_file()
+        assert (
+            json.loads(ri.read_text())["sample_description"]
+            == self.run_info["sample_description"]
+        )
+
+    def test_export_invokes_pull_pipeline(self):
         from aure.exporters.isaac import IsaacExporter
 
         exporter = IsaacExporter()
-        with mock.patch(
-            "aure.exporters.isaac._generate_context_description",
-            return_value="Test context.",
-        ):
-            exporter.export(self.output_dir, self.state, self.run_info)
+        _, ingest, convert = self._export_with_mocks(exporter)
 
-        ai_dir = self.output_dir / "ai-ready-data"
-        copied = ai_dir / self.data_file.name
-        assert copied.is_file()
-        assert copied.read_text() == self.data_file.read_text()
+        ingest.assert_called_once()
+        convert.assert_called_once()
+        # ingest-workflow is pointed at the run dir, writing into ai-ready-data
+        _self, run_dir_arg, ai_dir_arg, _warnings = ingest.call_args.args
+        assert run_dir_arg == self.output_dir
+        assert ai_dir_arg == self.output_dir / "ai-ready-data"
 
-    def test_export_copies_model_json(self):
+    def test_export_writes_no_manifest(self):
         from aure.exporters.isaac import IsaacExporter
 
         exporter = IsaacExporter()
-        with mock.patch(
-            "aure.exporters.isaac._generate_context_description",
-            return_value="Test context.",
-        ):
-            exporter.export(self.output_dir, self.state, self.run_info)
+        self._export_with_mocks(exporter)
+        # The pull pipeline does not author an ISAAC manifest.
+        assert not (self.output_dir / "ai-ready-data" / "manifest.yaml").exists()
 
-        ai_dir = self.output_dir / "ai-ready-data"
-        assert (ai_dir / "problem.json").is_file()
-
-    def test_export_writes_context_txt(self):
+    def test_export_fails_when_ingest_fails(self):
         from aure.exporters.isaac import IsaacExporter
 
         exporter = IsaacExporter()
-        ctx = "Generated context for neutron reflectometry analysis."
-        with mock.patch(
-            "aure.exporters.isaac._generate_context_description",
-            return_value=ctx,
-        ):
-            exporter.export(self.output_dir, self.state, self.run_info)
-
-        ai_dir = self.output_dir / "ai-ready-data"
-        assert (ai_dir / "context.txt").is_file()
-        assert (ai_dir / "context.txt").read_text() == ctx
-
-    def test_export_writes_manifest_yaml(self):
-        import yaml
-        from aure.exporters.isaac import IsaacExporter
-
-        exporter = IsaacExporter()
-        with mock.patch(
-            "aure.exporters.isaac._generate_context_description",
-            return_value="Test context.",
-        ):
-            exporter.export(self.output_dir, self.state, self.run_info)
-
-        manifest = self.output_dir / "ai-ready-data" / "manifest.yaml"
-        assert manifest.is_file()
-
-        data = yaml.safe_load(manifest.read_text())
-        assert "title" in data
-        assert "sample" in data
-        assert "measurements" in data
-        assert len(data["measurements"]) == 1
-
-        m = data["measurements"][0]
-        assert "reduced" in m
-        assert "context" in m
-        assert "environment" in m
-
-    def test_export_manifest_sample_block(self):
-        import yaml
-        from aure.exporters.isaac import IsaacExporter
-
-        exporter = IsaacExporter()
-        with mock.patch(
-            "aure.exporters.isaac._generate_context_description",
-            return_value="Test context.",
-        ):
-            exporter.export(self.output_dir, self.state, self.run_info)
-
-        manifest = self.output_dir / "ai-ready-data" / "manifest.yaml"
-        data = yaml.safe_load(manifest.read_text())
-
-        assert data["sample"]["description"] == self.state["sample_description"]
-        assert "./problem.json" in data["sample"]["model"]
-
-    def test_export_fails_with_missing_data_file(self):
-        from aure.exporters.isaac import IsaacExporter
-
-        self.state["data_file"] = "/nonexistent/file.txt"
-        exporter = IsaacExporter()
-        with mock.patch(
-            "aure.exporters.isaac._generate_context_description",
-            return_value="Test context.",
-        ):
-            result = exporter.export(self.output_dir, self.state, self.run_info)
+        result, _, convert = self._export_with_mocks(exporter, ingest_ok=False)
 
         assert result.success is False
-        assert any("not found" in e for e in result.errors)
-
-    def test_export_warns_on_missing_model(self):
-        from aure.exporters.isaac import IsaacExporter
-
-        # Remove the problem.json
-        (self.output_dir / "problem.json").unlink()
-
-        exporter = IsaacExporter()
-        with mock.patch(
-            "aure.exporters.isaac._generate_context_description",
-            return_value="Test context.",
-        ):
-            result = exporter.export(self.output_dir, self.state, self.run_info)
-
-        assert any("problem.json" in w for w in result.warnings)
+        assert any("ingest-workflow" in e for e in result.errors)
+        # convert is short-circuited when the ingest step fails
+        convert.assert_not_called()
 
     def test_export_result_has_correct_output_path(self):
         from aure.exporters.isaac import IsaacExporter
 
         exporter = IsaacExporter()
-        with mock.patch(
-            "aure.exporters.isaac._generate_context_description",
-            return_value="Test context.",
-        ):
-            result = exporter.export(self.output_dir, self.state, self.run_info)
-
+        result, _, _ = self._export_with_mocks(exporter)
         assert result.output_path == self.output_dir / "ai-ready-data"
-
-
-# ---------------------------------------------------------------
-# Environment classification
-# ---------------------------------------------------------------
-
-
-class TestEnvironmentClassification:
-    def test_operando(self):
-        from aure.exporters.isaac import _classify_environment
-
-        assert _classify_environment("electrochemical cell") == "operando"
-        assert _classify_environment("operando measurement") == "operando"
-
-    def test_in_situ(self):
-        from aure.exporters.isaac import _classify_environment
-
-        assert _classify_environment("in situ heating") == "in_situ"
-
-    def test_ex_situ_default(self):
-        from aure.exporters.isaac import _classify_environment
-
-        assert _classify_environment("50 nm Cu on Si") == "ex_situ"
-
-    def test_in_silico(self):
-        from aure.exporters.isaac import _classify_environment
-
-        assert _classify_environment("simulation data") == "in_silico"
 
 
 # ---------------------------------------------------------------
