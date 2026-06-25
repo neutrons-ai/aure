@@ -10,6 +10,7 @@ the data using bumps.  Supports multiple fitting methods:
 
 import copy
 import os
+import re
 import logging
 from typing import Dict, Any, Optional
 from pathlib import Path
@@ -49,9 +50,10 @@ def fitting_node(state: ReflectivityState) -> Dict[str, Any]:
         updates["error"] = "No model to fit"
         return updates
 
-    # Name the exported FitProblem after the setup's model_name; otherwise
-    # bumps writes the refl1d output as None-*.dat / None.json.
-    model_name = (state.get("user_config") or {}).get("model_name") or None
+    # Name the exported FitProblem so bumps never writes None-*.dat / None.json.
+    # Falls back through output-dir basename / data-file stem when no explicit
+    # model_name was supplied (see _resolve_model_name).
+    model_name = _resolve_model_name(state, model)
 
     iteration = state.get("iteration", 0)
     method = os.environ.get("FIT_METHOD", "dream").lower()
@@ -312,6 +314,63 @@ def run_states_refl1d_fit(
         iteration=iteration,
         export_dir=export_dir,
     )
+
+
+def _sanitize_model_name(value) -> str:
+    """Normalise a candidate model name; return ``""`` if unusable.
+
+    Rejects empty / ``None``-like values and replaces filesystem-hostile
+    characters (spaces, slashes, …) so the result is a safe filename stem.
+    """
+    if not value:
+        return ""
+    text = str(value).strip()
+    if not text or text.lower() == "none":
+        return ""
+    return re.sub(r"[^\w.\-]+", "_", text)
+
+
+def _resolve_model_name(state: dict, model) -> str:
+    """Resolve a stable, non-empty basename for refl1d/bumps export files.
+
+    Bumps names every exported artifact after ``FitProblem.name`` (and the
+    ``export_fit`` basename). When that is unset, every file becomes
+    ``None-*`` / ``None.json`` — the regression this guards against. We always
+    return a real name, trying in order:
+
+    1. an explicit ``user_config['model_name']`` (e.g. from a setup YAML),
+    2. ``state['model_name']`` (set by some callers),
+    3. the model definition's own ``model_name`` / ``name``,
+    4. the run's output-directory basename (e.g. ``230536``),
+    5. the primary data file's stem,
+    6. a literal ``"model"`` as the last resort.
+    """
+    uc = state.get("user_config") or {}
+    mdl = model if isinstance(model, dict) else {}
+    candidates = [
+        uc.get("model_name"),
+        state.get("model_name"),
+        mdl.get("model_name"),
+        mdl.get("name"),
+    ]
+
+    out = state.get("output_dir")
+    if out:
+        candidates.append(Path(out).name)
+
+    data_file = state.get("data_file")
+    if not data_file:
+        dfs = state.get("data_files") or []
+        if dfs and isinstance(dfs[0], dict):
+            data_file = dfs[0].get("file")
+    if data_file:
+        candidates.append(Path(str(data_file)).stem)
+
+    for cand in candidates:
+        name = _sanitize_model_name(cand)
+        if name:
+            return name
+    return "model"
 
 
 def _name_problem(problem, model_name: Optional[str]) -> None:

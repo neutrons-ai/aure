@@ -230,3 +230,97 @@ def test_fitting_node_dispatches_to_states_branch(two_files, tmp_path, monkeypat
     assert called["multi"] is False
     assert called["single"] is False
     assert "error" not in out
+
+
+# ----------------------------------------------------------------------
+# Model-name resolution (regression: refl1d output written as None-*)
+# ----------------------------------------------------------------------
+
+
+def test_resolve_model_name_priority_chain(tmp_path):
+    from aure.nodes import fitting
+
+    # 1. explicit user_config model_name wins over everything else
+    st = {
+        "user_config": {"model_name": "cu_air_230536"},
+        "model_name": "ignored",
+        "output_dir": str(tmp_path / "230536"),
+    }
+    assert fitting._resolve_model_name(st, {"name": "ignored"}) == "cu_air_230536"
+
+    # 2. state-level model_name
+    assert fitting._resolve_model_name({"model_name": "foo"}, {}) == "foo"
+
+    # 3. the model definition's own name fields
+    assert fitting._resolve_model_name({}, {"model_name": "bar"}) == "bar"
+    assert fitting._resolve_model_name({}, {"name": "baz"}) == "baz"
+
+    # 4. THE REGRESSION: user_config is None -> fall back to output-dir basename
+    st = {"user_config": None, "output_dir": str(tmp_path / "230536")}
+    assert fitting._resolve_model_name(st, {}) == "230536"
+
+    # 5. primary data-file stem
+    st = {"data_files": [{"file": "/data/REFL_111_1_111_partial.txt"}]}
+    assert fitting._resolve_model_name(st, {}) == "REFL_111_1_111_partial"
+
+    # 6. last-resort literal — but never None / "None" / ""
+    assert fitting._resolve_model_name({}, {}) == "model"
+    assert (
+        fitting._resolve_model_name({"user_config": {"model_name": "None"}}, {})
+        == "model"
+    )
+
+    # candidate names are sanitised into safe filename stems
+    assert (
+        fitting._resolve_model_name({"model_name": "my model/v2"}, {}) == "my_model_v2"
+    )
+
+
+def test_fitting_node_never_uses_none_basename(tmp_path, monkeypatch):
+    """Regression: a run with no user_config must still name its refl1d output
+    after the run folder, not None (which produced None-*.dat / None.json)."""
+    from aure.nodes import fitting
+
+    captured = {}
+
+    def fake_single(*a, **kw):
+        captured["model_name"] = kw.get("model_name")
+        return {
+            "success": True,
+            "chi_squared": 1.0,
+            "method": "dream",
+            "parameters": {},
+            "uncertainties": {},
+            "converged": True,
+            "per_file_results": [],
+            "issues": [],
+            "suggestions": [],
+            "_n_free_params": 3,
+        }
+
+    def _boom(branch):
+        def _f(*a, **kw):
+            raise AssertionError(f"{branch} branch should not run")
+
+        return _f
+
+    monkeypatch.setattr(fitting, "run_refl1d_fit", fake_single)
+    monkeypatch.setattr(fitting, "run_multi_refl1d_fit", _boom("multi"))
+    monkeypatch.setattr(fitting, "run_states_refl1d_fit", _boom("states"))
+
+    data_file = _make_data_file()
+    run_dir = tmp_path / "230536"
+    run_dir.mkdir()
+    state = {
+        "current_model": {"substrate": {"material": "Si"}, "layers": [], "ambient": {}},
+        "user_config": None,  # the regression condition
+        "iteration": 0,
+        "data_files": [{"file": data_file}],
+        "Q": [0.01, 0.02, 0.03],
+        "output_dir": str(run_dir),
+        "messages": [],
+    }
+    out = fitting.fitting_node(state)
+    assert "error" not in out, out.get("error")
+    assert captured["model_name"] == "230536"
+    assert captured["model_name"] not in (None, "None", "")

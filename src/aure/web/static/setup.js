@@ -108,7 +108,7 @@ function _syncDataFileInput() {
 
 let _restoringFiles = false;  // guard against DOMContentLoaded race
 
-function _restorePlottedFiles(savedFiles) {
+function _restorePlottedFiles(savedFiles, onDone) {
   var remaining = savedFiles.slice();
   plottedFiles = [];
   _restoringFiles = true;
@@ -120,6 +120,7 @@ function _restorePlottedFiles(savedFiles) {
       _renderPlottedFilesList();
       _renderSetupReflectivityPlot();
       _restoringFiles = false;
+      if (typeof onDone === "function") onDone();
       return;
     }
     var entry = remaining.shift();
@@ -1324,8 +1325,9 @@ function _applySetupPrefill(payload) {
     });
   });
 
-  // Reset plotted files to the new list.
-  plottedFiles = (payload.data_files || []).map(function (df) {
+  // The file list to (re)load with curve data — fetched below so the loaded
+  // setup is actually plotted, not just listed.
+  const fileEntries = (payload.data_files || []).map(function (df) {
     return {
       path: df.file,
       isFit: true,
@@ -1369,11 +1371,13 @@ function _applySetupPrefill(payload) {
     tiesText = "";
   }
 
-  // Re-render UI.
-  if (typeof _renderPlottedFilesList === "function") _renderPlottedFilesList();
-  if (typeof _renderSetupReflectivityPlot === "function") _renderSetupReflectivityPlot();
-  if (typeof _wireTiesPanel === "function") _wireTiesPanel();
-  _saveFormValues();
+  // Fetch each file's reflectivity data, then render the list + plot. The
+  // remaining UI (overrides / ties panels) is rendered by _renderPlottedFilesList
+  // inside _restorePlottedFiles; ties wiring + persistence run once data is in.
+  _restorePlottedFiles(fileEntries, function () {
+    if (typeof _wireTiesPanel === "function") _wireTiesPanel();
+    _saveFormValues();
+  });
 }
 
 function saveSetupToFile() {
