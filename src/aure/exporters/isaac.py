@@ -1,49 +1,31 @@
 """
 ISAAC AI-Ready Data exporter.
 
-Assembles a manifest YAML file, copies the reduced data and best-fit model
-JSON into an ``ai-ready-data/`` subdirectory, generates an LLM-powered
-context description, then runs ``nr-isaac-format convert`` + ``validate``
-to produce a validated ISAAC JSON record.
+Drives the canonical *pull* pipeline: points the data-assembler at the workflow
+run directory (``data-assembler ingest-workflow``) to produce neutral, typed
+records, then ``nr-isaac-format convert-ingest`` to map those records into a
+validated ISAAC JSON record.
+
+AuRE no longer authors an ISAAC manifest or classifies environments — the
+data-assembler is the structured-truth layer (it pulls the fitted model with
+uncertainties, χ², and experimental conditions straight from the run dir) and
+nr-isaac-format owns the ISAAC schema mapping. AuRE's only job here is to point
+the assembler at the run directory and supply a human-readable context summary.
 """
 
 from __future__ import annotations
 
-import hashlib
+import json
 import logging
-import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import List, Optional
 
 from .base import BaseExporter, ExportResult
 
 logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# Environment classification (mirrors IsaacWriter._classify_environment)
-# ---------------------------------------------------------------------------
-
-_ENVIRONMENT_KEYWORDS: list[tuple[str, str]] = [
-    ("electrochemical", "operando"),
-    ("operando", "operando"),
-    ("under bias", "operando"),
-    ("in situ", "in_situ"),
-    ("in_situ", "in_situ"),
-    ("in silico", "in_silico"),
-    ("simulat", "in_silico"),
-]
-
-
-def _classify_environment(text: str) -> str:
-    """Best-effort classification of free-text to the ISAAC environment enum."""
-    low = text.strip().lower()
-    for keyword, env in _ENVIRONMENT_KEYWORDS:
-        if keyword in low:
-            return env
-    return "ex_situ"
 
 
 # ---------------------------------------------------------------------------
@@ -133,57 +115,12 @@ def _generate_context_description(state: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _extract_run_name(data_file: str) -> str:
-    """Derive a short run identifier from the data file path."""
-    stem = Path(data_file).stem
-    m = re.search(r"(\d{6})", stem)
-    if m:
-        return m.group(1)
-    return re.sub(r"[^\w\-]", "_", stem)
-
-
-def _find_best_problem_json(output_dir: Path) -> Optional[Path]:
-    """Locate the best-fit ``problem.json`` in the output directory."""
-    # Prefer the top-level copy made by _copy_best_problem_json
-    top = output_dir / "problem.json"
-    if top.exists():
-        return top
-
-    # Fall back: find the latest refl1d_output/fit_iter*/ directory
-    refl1d_dir = output_dir / "refl1d_output"
-    if refl1d_dir.is_dir():
-        fit_dirs = sorted(refl1d_dir.glob("fit_iter*"))
-        for d in reversed(fit_dirs):
-            pj = d / "problem.json"
-            if pj.exists():
-                return pj
-
-    return None
-
-
-def _file_sha256(path: Path) -> str:
-    """Compute SHA-256 hex digest of a file."""
-    h = hashlib.sha256()
-    try:
-        with open(path, "rb") as f:
-            for chunk in iter(lambda: f.read(8192), b""):
-                h.update(chunk)
-        return h.hexdigest()
-    except OSError:
-        return ""
-
-
-# ---------------------------------------------------------------------------
 # IsaacExporter
 # ---------------------------------------------------------------------------
 
 
 class IsaacExporter(BaseExporter):
-    """Export workflow results to ISAAC AI-Ready Record format."""
+    """Export workflow results to ISAAC AI-Ready Record format (pull pipeline)."""
 
     @property
     def name(self) -> str:
@@ -203,77 +140,53 @@ class IsaacExporter(BaseExporter):
         errors: List[str] = []
         warnings: List[str] = []
 
-        ai_dir = output_dir / "ai-ready-data"
+        run_dir = Path(output_dir)
+        ai_dir = run_dir / "ai-ready-data"
         ai_dir.mkdir(parents=True, exist_ok=True)
 
         # ------------------------------------------------------------------
-        # Step A – copy reduced data file
+        # Step A – ensure run_info.json is on disk for the assembler to pull.
+        # The workflow normally writes it; only materialise it if missing so we
+        # never clobber the canonical copy.
         # ------------------------------------------------------------------
-        data_file_str = state.get("data_file") or run_info.get("data_file", "")
-        data_file = Path(data_file_str) if data_file_str else None
-        copied_data: Optional[Path] = None
-
-        if data_file and data_file.is_file():
-            copied_data = ai_dir / data_file.name
-            shutil.copy2(data_file, copied_data)
-            logger.info("[ISAAC-EXPORT] Copied data file → %s", copied_data)
-        else:
-            errors.append(f"Data file not found: {data_file_str}")
+        run_info_path = run_dir / "run_info.json"
+        if not run_info_path.is_file() and run_info:
+            try:
+                run_info_path.write_text(json.dumps(run_info, default=str), encoding="utf-8")
+            except OSError as exc:
+                warnings.append(f"Could not write run_info.json: {exc}")
 
         # ------------------------------------------------------------------
-        # Step B – copy best-fit model JSON
-        # ------------------------------------------------------------------
-        problem_json = _find_best_problem_json(output_dir)
-        copied_model: Optional[Path] = None
-
-        if problem_json:
-            copied_model = ai_dir / "problem.json"
-            shutil.copy2(problem_json, copied_model)
-            logger.info("[ISAAC-EXPORT] Copied model JSON → %s", copied_model)
-        else:
-            warnings.append(
-                "Best-fit problem.json not found; manifest will omit the model reference."
-            )
-
-        # ------------------------------------------------------------------
-        # Step C – generate LLM context description
+        # Step B – human-readable context summary. Saved as an artifact and
+        # passed to the record as the measurement notes.
         # ------------------------------------------------------------------
         context_description = _generate_context_description(state)
         if user_context:
             context_description = user_context + "\n\n" + context_description
-        context_file = ai_dir / "context.txt"
-        context_file.write_text(context_description, encoding="utf-8")
-        logger.info("[ISAAC-EXPORT] Wrote context description → %s", context_file)
+        (ai_dir / "context.txt").write_text(context_description, encoding="utf-8")
+        logger.info("[ISAAC-EXPORT] Wrote context description → %s", ai_dir / "context.txt")
 
         # ------------------------------------------------------------------
-        # Step D – write manifest YAML
+        # Step C – data-assembler pulls everything from the run dir → records.
         # ------------------------------------------------------------------
-        if errors:
+        if not self._run_ingest_workflow(run_dir, ai_dir, warnings):
+            errors.append("data-assembler ingest-workflow failed; see warnings.")
             return ExportResult(
                 success=False, output_path=ai_dir, errors=errors, warnings=warnings
             )
 
-        manifest_path = ai_dir / "manifest.yaml"
-        self._write_manifest(
-            manifest_path=manifest_path,
-            state=state,
-            run_info=run_info,
-            copied_data=copied_data,
-            copied_model=copied_model,
-            context_description=context_description,
-        )
-        logger.info("[ISAAC-EXPORT] Wrote manifest → %s", manifest_path)
+        # ------------------------------------------------------------------
+        # Step D – nr-isaac-format maps the records → ISAAC JSON, with the
+        # context summary as the measurement notes.
+        # ------------------------------------------------------------------
+        out_dir = ai_dir / "output"
+        convert_ok = self._run_convert_ingest(ai_dir, out_dir, context_description, warnings)
 
         # ------------------------------------------------------------------
-        # Step E – run nr-isaac-format convert
-        # ------------------------------------------------------------------
-        convert_ok = self._run_convert(manifest_path, warnings)
-
-        # ------------------------------------------------------------------
-        # Step F – validate the produced record(s)
+        # Step E – validate the produced record(s).
         # ------------------------------------------------------------------
         if convert_ok:
-            self._run_validate(ai_dir / "output", warnings)
+            self._run_validate(out_dir, warnings)
 
         return ExportResult(
             success=len(errors) == 0,
@@ -283,70 +196,44 @@ class IsaacExporter(BaseExporter):
         )
 
     # ------------------------------------------------------------------
-    # Manifest writer
+    # CLI wrappers
     # ------------------------------------------------------------------
 
-    def _write_manifest(
-        self,
-        manifest_path: Path,
-        state: dict,
-        run_info: dict,
-        copied_data: Optional[Path],
-        copied_model: Optional[Path],
-        context_description: str,
-    ) -> None:
-        """Write a manifest YAML compatible with ``nr-isaac-format convert``."""
-        import yaml
+    def _run_ingest_workflow(self, run_dir: Path, ai_dir: Path, warnings: list[str]) -> bool:
+        """Run ``data-assembler ingest-workflow <run_dir> -o <ai_dir> --json``."""
+        cmd = self._find_assembler_command()
+        if cmd is None:
+            warnings.append(
+                "data-assembler is not installed. "
+                "Install with: pip install 'aure[export]' or "
+                "pip install git+https://github.com/isaac-neutrons/data-assembler.git"
+            )
+            return False
+        try:
+            result = subprocess.run(
+                [*cmd, "ingest-workflow", str(run_dir), "-o", str(ai_dir), "--json"],
+                capture_output=True,
+                text=True,
+                timeout=180,
+            )
+            if result.returncode != 0:
+                msg = result.stderr.strip() or result.stdout.strip()
+                warnings.append(f"data-assembler ingest-workflow failed: {msg}")
+                logger.warning("[ISAAC-EXPORT] ingest-workflow failed: %s", msg)
+                return False
+            logger.info("[ISAAC-EXPORT] ingest-workflow succeeded:\n%s", result.stdout.strip())
+            return True
+        except subprocess.TimeoutExpired:
+            warnings.append("data-assembler ingest-workflow timed out after 180 s")
+            return False
+        except Exception as exc:
+            warnings.append(f"data-assembler ingest-workflow error: {exc}")
+            return False
 
-        sample_desc = (
-            state.get("sample_description")
-            or run_info.get("sample_description")
-            or "Unknown sample"
-        )
-        data_file = state.get("data_file") or run_info.get("data_file", "")
-        run_name = _extract_run_name(data_file)
-        environment = _classify_environment(sample_desc)
-
-        # Build measurement entry
-        measurement: dict[str, Any] = {
-            "name": f"Run {run_name}" if run_name else "Measurement",
-            "reduced": f"./{copied_data.name}" if copied_data else "",
-            "environment": environment,
-            "context": context_description,
-        }
-
-        if copied_model:
-            measurement["model"] = f"./{copied_model.name}"
-            measurement["model_dataset_index"] = 1
-
-        # Build sample block
-        sample_block: dict[str, Any] = {
-            "description": sample_desc,
-        }
-        if copied_model:
-            sample_block["model"] = f"./{copied_model.name}"
-            sample_block["model_dataset_index"] = 1
-
-        manifest: dict[str, Any] = {
-            "title": f"AuRE analysis — {sample_desc[:80]}",
-            "sample": sample_block,
-            "output": "./output",
-            "measurements": [measurement],
-        }
-
-        manifest_path.write_text(
-            yaml.dump(
-                manifest, default_flow_style=False, sort_keys=False, allow_unicode=True
-            ),
-            encoding="utf-8",
-        )
-
-    # ------------------------------------------------------------------
-    # nr-isaac-format CLI wrappers
-    # ------------------------------------------------------------------
-
-    def _run_convert(self, manifest_path: Path, warnings: list[str]) -> bool:
-        """Run ``nr-isaac-format convert <manifest>``."""
+    def _run_convert_ingest(
+        self, ingest_dir: Path, out_dir: Path, context: str, warnings: list[str]
+    ) -> bool:
+        """Run ``nr-isaac-format convert-ingest <ingest_dir> -o <out_dir>``."""
         cmd = self._find_cli_command()
         if cmd is None:
             warnings.append(
@@ -355,26 +242,23 @@ class IsaacExporter(BaseExporter):
                 "pip install git+https://github.com/isaac-neutrons/nr-isaac-format.git"
             )
             return False
+        argv = [*cmd, "convert-ingest", str(ingest_dir), "-o", str(out_dir)]
+        if context:
+            argv += ["--context", context]
         try:
-            result = subprocess.run(
-                [*cmd, "convert", manifest_path.name],
-                capture_output=True,
-                text=True,
-                cwd=str(manifest_path.parent),
-                timeout=120,
-            )
+            result = subprocess.run(argv, capture_output=True, text=True, timeout=120)
             if result.returncode != 0:
                 msg = result.stderr.strip() or result.stdout.strip()
-                warnings.append(f"nr-isaac-format convert failed: {msg}")
-                logger.warning("[ISAAC-EXPORT] convert failed: %s", msg)
+                warnings.append(f"nr-isaac-format convert-ingest failed: {msg}")
+                logger.warning("[ISAAC-EXPORT] convert-ingest failed: %s", msg)
                 return False
-            logger.info("[ISAAC-EXPORT] convert succeeded:\n%s", result.stdout.strip())
+            logger.info("[ISAAC-EXPORT] convert-ingest succeeded:\n%s", result.stdout.strip())
             return True
         except subprocess.TimeoutExpired:
-            warnings.append("nr-isaac-format convert timed out after 120 s")
+            warnings.append("nr-isaac-format convert-ingest timed out after 120 s")
             return False
         except Exception as exc:
-            warnings.append(f"nr-isaac-format convert error: {exc}")
+            warnings.append(f"nr-isaac-format convert-ingest error: {exc}")
             return False
 
     def _run_validate(self, output_dir: Path, warnings: list[str]) -> bool:
@@ -419,29 +303,26 @@ class IsaacExporter(BaseExporter):
 
     @staticmethod
     def _find_cli_command() -> Optional[list[str]]:
-        """Locate the ``nr-isaac-format`` CLI entry-point.
-
-        Returns a command list suitable for ``subprocess.run()``, or *None*
-        if the tool is not installed.
-        """
-        import shutil
-
-        # 1. Prefer the installed entry-point script
+        """Locate the ``nr-isaac-format`` CLI, or *None* if not installed."""
         exe = shutil.which("nr-isaac-format")
         if exe:
             return [exe]
-
-        # 2. Try invoking via the package's cli module
-        #    (works even without a __main__.py)
         try:
             from nr_isaac_format import cli as _cli  # noqa: F401
 
-            return [
-                sys.executable,
-                "-c",
-                "from nr_isaac_format.cli import main; main()",
-            ]
+            return [sys.executable, "-c", "from nr_isaac_format.cli import main; main()"]
         except ImportError:
-            pass
+            return None
 
-        return None
+    @staticmethod
+    def _find_assembler_command() -> Optional[list[str]]:
+        """Locate the ``data-assembler`` CLI, or *None* if not installed."""
+        exe = shutil.which("data-assembler")
+        if exe:
+            return [exe]
+        try:
+            from assembler.cli.main import main as _m  # noqa: F401
+
+            return [sys.executable, "-c", "from assembler.cli.main import main; main()"]
+        except ImportError:
+            return None
