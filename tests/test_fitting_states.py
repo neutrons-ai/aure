@@ -324,3 +324,5 @@ def test_fitting_node_never_uses_none_basename(tmp_path, monkeypatch):
     assert "error" not in out, out.get("error")
     assert captured["model_name"] == "230536"
     assert captured["model_name"] not in (None, "None", "")
+    # The resolved name is persisted onto the state for checkpoints / run_info.
+    assert out["model_name"] == "230536"

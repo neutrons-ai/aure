@@ -52,7 +52,9 @@ def test_find_problem_json_ignores_definition_sidecar(tmp_path):
     d = _fit_dir(mgr)
     _write(d / "m_definition.json", '{"def": 1}')
     real = _write(d / "m.json", json.dumps({"models": list(range(50))}))
-    found = CheckpointManager._find_problem_json(d, {"user_config": {"model_name": "m"}})
+    found = CheckpointManager._find_problem_json(
+        d, {"user_config": {"model_name": "m"}}
+    )
     assert found == real
 
 
@@ -73,3 +75,30 @@ def test_copy_best_problem_json_writes_problem_json(tmp_path):
     }
     mgr._copy_best_problem_json(state)
     assert (mgr.output_dir / "problem.json").is_file()
+
+
+def test_run_info_records_explicit_model_name_at_init(tmp_path):
+    mgr = CheckpointManager(str(tmp_path))
+    initial_state = {"hypothesis": None, "user_config": {"model_name": "cu_air_230536"}}
+    mgr.initialize(initial_state, data_file="/x/REFL.txt", sample_description="Cu")
+
+    run_info = json.loads((mgr.output_dir / "run_info.json").read_text())
+    assert run_info["model_name"] == "cu_air_230536"
+
+
+def test_run_info_captures_resolved_model_name_on_checkpoint(tmp_path):
+    """With no explicit name, run_info picks up the name the fitting node
+    resolves onto the state (regression: it was absent / None)."""
+    mgr = CheckpointManager(str(tmp_path))
+    mgr.initialize(
+        {"hypothesis": None}, data_file="/x/REFL.txt", sample_description="Cu"
+    )
+    run_info = json.loads((mgr.output_dir / "run_info.json").read_text())
+    assert "model_name" not in run_info  # nothing explicit yet
+
+    # The fitting node has run and persisted a resolved name onto the state.
+    mgr.save_checkpoint(
+        {"iteration": 0, "model_name": "230536", "messages": []}, "fitting"
+    )
+    run_info = json.loads((mgr.output_dir / "run_info.json").read_text())
+    assert run_info["model_name"] == "230536"

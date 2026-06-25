@@ -367,6 +367,7 @@ class ReflectivityState(TypedDict):
     workflow_complete: bool
     error: Optional[str]
     output_dir: Optional[str]
+    model_name: Optional[str]  # Resolved basename for refl1d/bumps export files
     user_config: Optional[dict]  # User-supplied YAML config (criteria & constraints)
     bounds_only_refinement: (
         bool  # Set by evaluation when only bound-expansion is needed

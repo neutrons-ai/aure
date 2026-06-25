@@ -85,6 +85,13 @@ class CheckpointManager:
             "hypothesis": initial_state.get("hypothesis"),
             "checkpoints": [],
         }
+        # Record an explicit model_name up front when available; the fitting
+        # node fills in a resolved one (via the state) once it runs.
+        explicit_name = initial_state.get("model_name") or (
+            initial_state.get("user_config") or {}
+        ).get("model_name")
+        if explicit_name:
+            run_info["model_name"] = explicit_name
         # Persist co-refinement file list (paths + labels only, no data arrays)
         raw_df = initial_state.get("data_files") or []
         if raw_df:
@@ -179,7 +186,7 @@ class CheckpointManager:
         self._save_json(checkpoint_path, checkpoint_data)
 
         # Update run info
-        self._update_run_info(filename, node_name, iteration)
+        self._update_run_info(filename, node_name, iteration, state)
 
         # Write companion markdown log with readable messages
         self._save_checkpoint_log(checkpoint_path, state, node_name, iteration)
@@ -257,7 +264,9 @@ class CheckpointManager:
 
         dst = self.output_dir / "problem.json"
         shutil.copy2(src, dst)
-        logger.info("[CHECKPOINT] Copied best-fit problem.json (%s) → %s", src.name, dst)
+        logger.info(
+            "[CHECKPOINT] Copied best-fit problem.json (%s) → %s", src.name, dst
+        )
 
     @staticmethod
     def _find_problem_json(fit_dir, state: Dict[str, Any]):
@@ -280,7 +289,8 @@ class CheckpointManager:
 
         sidecar = ("-expt.json", "_definition.json")
         candidates = [
-            p for p in fit_dir.glob("*.json")
+            p
+            for p in fit_dir.glob("*.json")
             if not any(p.name.endswith(s) for s in sidecar)
         ]
         if not candidates:
@@ -357,7 +367,13 @@ class CheckpointManager:
             return ""
         return "**χ² progression:** " + " → ".join(values)
 
-    def _update_run_info(self, checkpoint_file: str, node_name: str, iteration: int):
+    def _update_run_info(
+        self,
+        checkpoint_file: str,
+        node_name: str,
+        iteration: int,
+        state: Optional[Dict[str, Any]] = None,
+    ):
         """Update run_info.json with new checkpoint."""
         run_info_path = self.output_dir / "run_info.json"
         run_info = json.loads(run_info_path.read_text())
@@ -371,6 +387,10 @@ class CheckpointManager:
             }
         )
         run_info["last_updated"] = datetime.now().isoformat()
+
+        # Capture the model name once the fitting node resolves it onto state.
+        if state and state.get("model_name") and not run_info.get("model_name"):
+            run_info["model_name"] = state["model_name"]
 
         self._save_json(run_info_path, run_info)
 

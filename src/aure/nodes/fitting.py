@@ -52,8 +52,11 @@ def fitting_node(state: ReflectivityState) -> Dict[str, Any]:
 
     # Name the exported FitProblem so bumps never writes None-*.dat / None.json.
     # Falls back through output-dir basename / data-file stem when no explicit
-    # model_name was supplied (see _resolve_model_name).
+    # model_name was supplied (see _resolve_model_name). Persist it onto the
+    # state so it's recorded in checkpoints / run_info.json and stays stable
+    # across refinement iterations.
     model_name = _resolve_model_name(state, model)
+    updates["model_name"] = model_name
 
     iteration = state.get("iteration", 0)
     method = os.environ.get("FIT_METHOD", "dream").lower()
