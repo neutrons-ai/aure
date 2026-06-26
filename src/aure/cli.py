@@ -23,7 +23,6 @@ from .env_config import load_env
 # Load environment variables from .env then ~/.aure (project .env wins)
 load_env()
 
-from .config import load_user_config  # noqa: E402
 from .llm import (  # noqa: E402
     get_llm_info,
     get_llm,
@@ -1076,7 +1075,7 @@ def prepare(
             checkpoint_callback=checkpoint_callback if not output_json else None,
             user_config=user_config,
             data_files=data_files,
-            states=states if len(states) > 1 else None,
+            states=states or None,
         )
     except Exception as e:
         if output_json:
@@ -1357,7 +1356,7 @@ def batch(manifest: str, job: tuple, dry_run: bool, data_dir: Optional[str]):
                     hypothesis=j.get("hypothesis"),
                     output_dir=output_dir,
                     checkpoint_callback=checkpoint_cb if not output_json else None,
-                    states=states if len(states) > 1 else None,
+                    states=states or None,
                     user_config=job_user_config,
                 )
                 model = result.get("current_model")
@@ -1431,7 +1430,7 @@ def batch(manifest: str, job: tuple, dry_run: bool, data_dir: Optional[str]):
                     max_iterations=int(j.get("max_refinements", 5)),
                     output_dir=output_dir,
                     checkpoint_callback=checkpoint_cb if not output_json else None,
-                    states=states if len(states) > 1 else None,
+                    states=states or None,
                     user_config=job_user_config,
                 )
                 chi2 = None

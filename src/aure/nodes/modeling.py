@@ -45,16 +45,37 @@ def _attach_state_metadata(
     config and validated against the structural layer names. Raises
     ``ValueError`` when validation fails.
 
-    No-op when the workflow is single-state (``state['states']`` empty
-    or has fewer than two entries).
+    For a genuine multi-state run (``>= 2`` states) the full states block plus
+    the tie spec is attached. For a *single* state the block is attached **only
+    when it carries a user-requested nuisance parameter** (``background`` /
+    ``theta_offset`` / ``sample_broadening``) so the very first model AuRE fits
+    reflects that choice — :func:`~aure.nodes.model_builder.needs_states_problem`
+    then routes it through the per-state builder which ties that parameter. A
+    single state with no such request is left for the model-level build path
+    (no states block needed). No-op when there are no states at all.
     """
+    from .model_builder import _nuisance_enabled
+
     states_in = state.get("states") or []
-    if len(states_in) < 2:
+    if not states_in:
+        return
+
+    multi = len(states_in) >= 2
+    user_nuisance = any(
+        _nuisance_enabled(st.get(k))
+        for st in states_in
+        for k in ("background", "theta_offset", "sample_broadening")
+    )
+    if not multi and not user_nuisance:
         return
 
     import copy as _copy
 
     model_def["states"] = _copy.deepcopy(states_in)
+
+    # Cross-state ties only apply to genuine multi-state co-refinement.
+    if not multi:
+        return
 
     user_config = state.get("user_config") or {}
     cfg_shared = user_config.get("shared_parameters") or []

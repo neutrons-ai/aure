@@ -156,6 +156,63 @@ def test_initial_build_mutually_exclusive_errors():
 
 
 # ----------------------------------------------------------------------
+# Single-state nuisance must reach the FIRST model (regression)
+# ----------------------------------------------------------------------
+
+
+def _single_state(**nuisance) -> list[dict]:
+    st = {
+        "name": "state0",
+        "data_files": [{"file": "/tmp/d2o.dat", "label": "d2o"}],
+    }
+    st.update(nuisance)
+    return [st]
+
+
+def test_initial_build_single_state_background_is_attached():
+    """A single state that requests `background` must be attached so the first
+    model AuRE fits includes it (regression: single-state nuisance was dropped
+    by the `< 2 states` guard)."""
+    from aure.nodes.model_builder import needs_states_problem
+    from aure.nodes.modeling import _build_initial_model
+
+    out = _build_initial_model(
+        _make_state(_single_state(background={"init": 2e-6, "min": 0.0, "max": 1e-5}))
+    )
+    assert "error" not in out, out.get("error")
+    model = out["current_model"]
+    assert model.get("states"), "single-state nuisance not attached to first model"
+    assert model["states"][0]["background"] == {"init": 2e-6, "min": 0.0, "max": 1e-5}
+    # Routes through the per-state builder that ties the background.
+    assert needs_states_problem(model) is True
+    # A single state has no cross-state ties.
+    assert model.get("shared_parameters", []) == []
+
+
+def test_initial_build_single_state_theta_offset_is_attached():
+    from aure.nodes.model_builder import needs_states_problem
+    from aure.nodes.modeling import _build_initial_model
+
+    out = _build_initial_model(
+        _make_state(_single_state(theta_offset={"init": 0.0, "min": -0.02, "max": 0.02}))
+    )
+    assert "error" not in out, out.get("error")
+    model = out["current_model"]
+    assert model.get("states") and model["states"][0].get("theta_offset")
+    assert needs_states_problem(model) is True
+
+
+def test_initial_build_single_state_without_nuisance_not_attached():
+    """A single state with no requested nuisance stays on the model-level build
+    path — no states block is needed."""
+    from aure.nodes.modeling import _build_initial_model
+
+    out = _build_initial_model(_make_state(_single_state()))
+    assert "error" not in out
+    assert "states" not in out["current_model"]
+
+
+# ----------------------------------------------------------------------
 # _attach_state_metadata standalone
 # ----------------------------------------------------------------------
 
