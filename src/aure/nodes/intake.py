@@ -495,12 +495,15 @@ def intake_node(state: ReflectivityState) -> Dict[str, Any]:
         states_in = state.get("states", []) or []
         is_multi = len(states_in) > 1
 
-        if is_multi:
-            # ===== Multi-state path (Ticket 05) =====
-            # Each state's data_files is enriched in place with header
-            # metadata + Q/R/dR for plotting. The flat ``data_files``
-            # list is rebuilt to match for compatibility with downstream
-            # nodes that still iterate it.
+        if states_in:
+            # ===== States path (single or multi) =====
+            # Every state's data_files is enriched in place with header
+            # metadata (theta, dq convention) + Q/R/dR for plotting, and the
+            # flat ``data_files`` list is rebuilt for downstream nodes that
+            # still iterate it. The *single*-state case is enriched too: that
+            # is what lets a single state's theta_offset / sample_broadening
+            # load an angle-based NeutronProbe — they silently no-op on the
+            # Q-only QProbe produced when a dataset carries no theta.
             enriched_states: list[dict] = []
             flat_files: list[dict] = []
             kind_errors: list[str] = []
@@ -528,7 +531,10 @@ def intake_node(state: ReflectivityState) -> Dict[str, Any]:
                         set_ids.add(sid)
                     enriched_files.append(enriched_ds)
                     flat_files.append(enriched_ds)
-                if len(set_ids) > 1:
+                if is_multi and len(set_ids) > 1:
+                    # Single-state set_id consistency is already validated in
+                    # config._detect_kind; only re-check across a multi-state
+                    # run here (and don't reject single-state combined splices).
                     kind_errors.append(
                         f"State {st.get('name')!r}: partial files mix set_ids "
                         f"{sorted(set_ids)} — each state must contain files "
@@ -552,17 +558,29 @@ def intake_node(state: ReflectivityState) -> Dict[str, Any]:
             updates["states"] = enriched_states
             updates["data_files"] = flat_files
             n_files = len(flat_files)
-            labels = ", ".join(s["name"] for s in enriched_states)
-            updates["messages"].append(
-                Message(
-                    role="system",
-                    content=(
-                        f"Multi-state co-refinement: {len(enriched_states)} "
-                        f"states ({labels}), {n_files} files total"
-                    ),
-                    timestamp=None,
+            if is_multi:
+                labels = ", ".join(s["name"] for s in enriched_states)
+                updates["messages"].append(
+                    Message(
+                        role="system",
+                        content=(
+                            f"Multi-state co-refinement: {len(enriched_states)} "
+                            f"states ({labels}), {n_files} files total"
+                        ),
+                        timestamp=None,
+                    )
                 )
-            )
+            elif n_files > 1:
+                updates["messages"].append(
+                    Message(
+                        role="system",
+                        content=(
+                            f"Single-state co-refinement: {n_files} files in "
+                            f"state {enriched_states[0]['name']!r}"
+                        ),
+                        timestamp=None,
+                    )
+                )
         elif existing_data_files:
             # ===== Legacy flat multi-file path =====
             # The CLI/web layers now always wrap multi-file invocations

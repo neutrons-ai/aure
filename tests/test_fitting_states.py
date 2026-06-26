@@ -493,3 +493,57 @@ def test_states_background_surfaces_in_fit_results():
     params = result["parameters"]
     assert "D2O background" in params, list(params)
     assert "H2O background" in params, list(params)
+
+
+def test_states_all_three_nuisance_wire_for_single_state():
+    """A single state can fit background + theta_offset + sample_broadening
+    together (each tied across the state's angle-based probes). Regression:
+    the initial model must include *all* user-specified nuisance, not one."""
+    from aure.nodes.model_builder import build_states_problem
+
+    f1, f2 = _make_data_file(), _make_data_file()
+    model = {
+        "substrate": {
+            "name": "silicon",
+            "sld": 2.07,
+            "roughness": 3.0,
+            "roughness_max": 15.0,
+        },
+        "layers": [
+            {
+                "name": "Cu",
+                "sld": 6.5,
+                "sld_min": 4.0,
+                "sld_max": 8.0,
+                "thickness": 500.0,
+                "thickness_min": 250.0,
+                "thickness_max": 750.0,
+                "roughness": 5.0,
+                "roughness_max": 20.0,
+            },
+        ],
+        "ambient": {"name": "air", "sld": 0.0},
+        "states": [
+            {
+                "name": "s0",
+                # theta on each dataset -> angle-based NeutronProbe, which is
+                # what theta_offset / sample_broadening require.
+                "data_files": [
+                    {"file": f1, "label": "a", "theta": 0.5},
+                    {"file": f2, "label": "b", "theta": 0.7},
+                ],
+                "background": {"init": 2e-6, "min": 0.0, "max": 1e-5},
+                "theta_offset": {"init": 0.0, "min": -0.02, "max": 0.02},
+                "sample_broadening": {"init": 0.0, "min": 0.0, "max": 0.05},
+            }
+        ],
+    }
+    problem, _by_state, _sorted = build_states_problem(model)
+    free = [str(p.name) for p in problem._parameters]
+    assert "s0 background" in free, free
+    assert "s0 theta_offset" in free, free
+    assert "s0 sample_broadening" in free, free
+    # Each is tied across the two probes -> exactly one of each.
+    assert sum("background" in n for n in free) == 1
+    assert sum("theta_offset" in n for n in free) == 1
+    assert sum("sample_broadening" in n for n in free) == 1

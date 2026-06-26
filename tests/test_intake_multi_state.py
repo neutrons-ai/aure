@@ -27,6 +27,24 @@ def _make_data_file(name_prefix: str, q_min=0.01, q_max=0.10, n=60) -> str:
     return path
 
 
+def _make_partial_with_angle(name_prefix: str, two_theta: float = 1.0, n=60) -> str:
+    """A partial file whose header carries a single TwoTheta(deg) row, so
+    `_parse_theta_from_header` recovers theta = two_theta / 2 (> 0)."""
+    Q = np.linspace(0.01, 0.10, n)
+    R = np.clip((0.0217 / (2 * np.maximum(Q, 0.001))) ** 4, 1e-10, 1.0)
+    dR = 0.05 * R
+    dQ = 0.02 * Q
+    tmpdir = tempfile.mkdtemp()
+    path = os.path.join(tmpdir, name_prefix)
+    with open(path, "w") as f:
+        f.write("# index TwoTheta(deg) wavelength\n")
+        f.write(f"# 0 {two_theta} 5.0\n")
+        f.write("# Q R dR dQ\n")
+        for q, r, dr, dq in zip(Q, R, dR, dQ):
+            f.write(f"{q:.6f}  {r:.6e}  {dr:.6e}  {dq:.6e}\n")
+    return path
+
+
 def _ds(file_path: str, label: str | None = None) -> dict:
     return {"file": file_path, "label": label or os.path.basename(file_path)}
 
@@ -112,6 +130,44 @@ def test_intake_flat_partials_same_set_id_passes():
         result = intake_node(state)
         assert "error" not in result, result.get("error")
         assert len(result["data_files"]) == 2
+    finally:
+        os.unlink(f1)
+        os.unlink(f2)
+
+
+def test_intake_single_state_enriches_datasets_with_theta():
+    """A single state (e.g. from the web UI / a single-state config) must have
+    its datasets enriched with header metadata — including theta — so a
+    requested theta_offset / sample_broadening can load an angle-based probe.
+    The state's nuisance choices must survive enrichment."""
+    from aure.nodes.intake import intake_node
+    from aure.state import create_initial_state
+
+    f1 = _make_partial_with_angle("REFL_226642_1_2001_partial.txt", two_theta=1.0)
+    f2 = _make_partial_with_angle("REFL_226642_2_2002_partial.txt", two_theta=1.6)
+    try:
+        states = [
+            {
+                "name": "state0",
+                "data_files": [_ds(f1, "lo"), _ds(f2, "hi")],
+                "theta_offset": {"init": 0.0, "min": -0.02, "max": 0.02},
+                "sample_broadening": {"init": 0.0, "min": 0.0, "max": 0.05},
+                "background": {"init": 1e-6, "min": 0.0, "max": 1e-5},
+            }
+        ]
+        state = create_initial_state(data_file=f1, sample_description="", states=states)
+        result = intake_node(state)
+        assert "error" not in result, result.get("error")
+        assert len(result["states"]) == 1
+        st = result["states"][0]
+        # Nuisance choices survive enrichment.
+        assert st["theta_offset"]["max"] == 0.02
+        assert st["sample_broadening"]["max"] == 0.05
+        assert st["background"]["max"] == 1e-5
+        # Datasets enriched with a parsed angle (-> NeutronProbe at build time).
+        for ds in st["data_files"]:
+            assert ds.get("theta", 0.0) > 0.0
+            assert len(ds["Q"]) > 0
     finally:
         os.unlink(f1)
         os.unlink(f2)

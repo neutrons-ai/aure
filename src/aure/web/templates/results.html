@@ -285,6 +285,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   renderRQ(reflData, _selectedIteration);
   renderSLD(sldData, _selectedIteration);
   renderParams(paramData);
+  _positionDataAtFittedOffset();
 
   // Populate restart checkpoint dropdown from workflow steps
   const sel = document.getElementById("restart-checkpoint");
@@ -417,6 +418,7 @@ function renderRQ(data, selectedIteration) {
   // Experimental data – per-file traces for co-refinement, single trace otherwise
   if (data.data_files && data.data_files.length > 1) {
     data.data_files.forEach((df, i) => {
+      const nm = df.label || ("File " + (i + 1));
       traces.push({
         x: df.Q, y: df.R,
         error_y: df.dR && df.dR.length
@@ -424,8 +426,12 @@ function renderRQ(data, selectedIteration) {
           : undefined,
         mode: "markers",
         marker: { size: 3, color: DATA_COLORS[i % DATA_COLORS.length], symbol: ["circle", "diamond", "square", "cross", "triangle-up"][i % 5] },
-        name: df.label || ("File " + (i + 1)),
+        name: nm,
         type: "scatter",
+        // Tag experimental data so the live editor can re-map it to the
+        // theta_offset-corrected Q (and restore it on reset).
+        _isData: true, _dataLabel: nm,
+        _origX: df.Q, _origY: df.R, _origErr: (df.dR && df.dR.length) ? df.dR : null,
       });
     });
   } else {
@@ -440,6 +446,8 @@ function renderRQ(data, selectedIteration) {
       marker: { size: 3, color: "#6c757d" },
       name: "Data",
       type: "scatter",
+      _isData: true, _dataLabel: "Data",
+      _origX: data.Q, _origY: data.R, _origErr: (data.dR && data.dR.length) ? data.dR : null,
     });
   }
 
@@ -633,6 +641,7 @@ async function onIterationChange(value) {
     _removeUserTraces("rq-chart");
     _removeUserTraces("sld-chart");
     renderParams(paramData);
+    _positionDataAtFittedOffset();
   } catch (err) {
     console.warn("Failed to fetch iteration parameters:", err);
   }
@@ -727,9 +736,13 @@ function resetParameters() {
   document.getElementById("btn-refit").classList.add("d-none");
   document.getElementById("sim-chi2").classList.add("d-none");
 
-  // Remove "User" traces from charts
+  // Remove "User" traces from charts, restore data to its nominal Q, then
+  // re-position it at the *fitted* theta_offset's corrected Q (matching the
+  // initial load state; a no-op when there is no theta_offset).
   _removeUserTraces("rq-chart");
   _removeUserTraces("sld-chart");
+  _restoreDataTraces("rq-chart");
+  _positionDataAtFittedOffset();
 }
 
 function _removeUserTraces(chartId) {
@@ -740,6 +753,61 @@ function _removeUserTraces(chartId) {
     if (t.name === "User" || (t.name && t.name.startsWith("User – ")) || t._isUser) indices.push(i);
   });
   if (indices.length) Plotly.deleteTraces(el, indices);
+}
+
+/** Re-map an experimental data trace to the theta_offset-corrected Q. */
+function _moveDataTrace(rqEl, pf, nPerFile) {
+  if (!pf || !pf.Q_data || !pf.Q_data.length) return;
+  let idx = rqEl.data.findIndex(t => t._isData && t._dataLabel === pf.label);
+  if (idx < 0 && nPerFile === 1) {
+    // Single-file run: the lone data trace is named "Data", not the file label.
+    idx = rqEl.data.findIndex(t => t._isData);
+  }
+  if (idx < 0) return;
+  const upd = { x: [pf.Q_data] };
+  if (pf.R_data) upd.y = [pf.R_data];
+  if (pf.dR_data) upd["error_y.array"] = [pf.dR_data];
+  Plotly.restyle(rqEl, upd, [idx]);
+}
+
+/** Restore every experimental data trace to its nominal (uncorrected) Q. */
+function _restoreDataTraces(chartId) {
+  const el = document.getElementById(chartId);
+  if (!el || !el.data) return;
+  el.data.forEach((t, i) => {
+    if (t._isData && t._origX) {
+      const upd = { x: [t._origX], y: [t._origY] };
+      if (t._origErr) upd["error_y.array"] = [t._origErr];
+      Plotly.restyle(el, upd, [i]);
+    }
+  });
+}
+
+/** On load / iteration change, replot the data at the *fitted* theta_offset's
+ *  corrected Q so it matches the fit without the user touching a slider.
+ *  Only theta_offset re-assigns Q (sample_broadening is resolution-only), so
+ *  this no-ops when no theta_offset parameter is present. */
+async function _positionDataAtFittedOffset() {
+  const hasThetaOffset = Object.keys(_paramState).some((n) => /theta_offset/i.test(n));
+  if (!hasThetaOffset) return;
+  const params = {};
+  for (const [name, ps] of Object.entries(_paramState)) {
+    params[name] = ps.originalValue;
+  }
+  try {
+    const resp = await fetch("/api/simulate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ parameters: params, iteration: _selectedIteration }),
+    });
+    const data = await resp.json();
+    if (data.error || !data.per_file || !data.per_file.length) return;
+    const rqEl = document.getElementById("rq-chart");
+    if (!rqEl || !rqEl.data) return;
+    data.per_file.forEach((pf) => _moveDataTrace(rqEl, pf, data.per_file.length));
+  } catch (e) {
+    /* non-fatal — leave the data at its nominal Q */
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -812,6 +880,8 @@ function _updateChartsWithSimulation(data) {
             _isUser: true,
           });
         }
+        // Re-map the experimental data to the theta_offset-corrected Q.
+        _moveDataTrace(rqEl, pf, data.per_file.length);
       });
     } else if (data.Q_fit && data.Q_fit.length) {
       // Single-file
@@ -831,21 +901,42 @@ function _updateChartsWithSimulation(data) {
     }
   }
 
-  // SLD chart — add/update "User" trace
+  // SLD chart — add/update "User" trace(s)
   const sldEl = document.getElementById("sld-chart");
-  if (sldEl && sldEl.data && data.sld_z && data.sld_z.length) {
-    const userTrace = {
-      x: data.sld_z, y: data.sld_rho,
-      mode: "lines",
-      line: { width: 2.5, color: "#000", dash: "dash" },
-      name: "User",
-      _isUser: true,
-    };
-    const idx = sldEl.data.findIndex(t => t.name === "User");
-    if (idx >= 0) {
-      Plotly.restyle(sldEl, { x: [userTrace.x], y: [userTrace.y] }, [idx]);
-    } else {
-      Plotly.addTraces(sldEl, userTrace);
+  if (sldEl && sldEl.data) {
+    if (data.sld_profiles && data.sld_profiles.length) {
+      // Multi-state (or single state via the states path): one dashed User
+      // trace per state. The states response carries `sld_profiles`, not the
+      // flat `sld_z`/`sld_rho` pair.
+      _removeUserTraces("sld-chart");
+      data.sld_profiles.forEach((sp) => {
+        if (sp.z && sp.z.length) {
+          Plotly.addTraces(sldEl, {
+            x: sp.z, y: sp.sld,
+            mode: "lines",
+            line: { width: 2.5, color: "#000", dash: "dash" },
+            name: data.sld_profiles.length > 1
+              ? "User – " + (sp.state || "")
+              : "User",
+            _isUser: true,
+          });
+        }
+      });
+    } else if (data.sld_z && data.sld_z.length) {
+      // Single-experiment response shape.
+      const userTrace = {
+        x: data.sld_z, y: data.sld_rho,
+        mode: "lines",
+        line: { width: 2.5, color: "#000", dash: "dash" },
+        name: "User",
+        _isUser: true,
+      };
+      const idx = sldEl.data.findIndex(t => t.name === "User");
+      if (idx >= 0) {
+        Plotly.restyle(sldEl, { x: [userTrace.x], y: [userTrace.y] }, [idx]);
+      } else {
+        Plotly.addTraces(sldEl, userTrace);
+      }
     }
   }
 }

@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import numpy as np
+
 from aure.web.data import RunData
 
 
@@ -658,3 +660,112 @@ def load_setup_text(out_dir: Path, yaml_text: str):
     p = out_dir / "roundtrip.yaml"
     p.write_text(yaml_text)
     return load_setup(p)
+
+
+def _write_angle_partial(path: Path, two_theta: float = 0.9, n: int = 80) -> str:
+    """A partial file whose header carries one TwoTheta(deg) row so
+    `_parse_theta_from_header` recovers theta = two_theta / 2."""
+    Q = np.linspace(0.01, 0.12, n)
+    R = np.clip((0.0217 / (2 * Q)) ** 4, 1e-9, 1.0)
+    lines = ["# index TwoTheta(deg) wavelength", f"# 0 {two_theta} 5.0", "# Q R dR dQ"]
+    for q, r in zip(Q, R):
+        lines.append(f"{q:.6f}  {r:.6e}  {0.05 * r:.6e}  {0.02 * q:.6f}")
+    path.write_text("\n".join(lines) + "\n")
+    return str(path)
+
+
+def test_states_simulation_backfills_theta_for_theta_offset(tmp_path: Path) -> None:
+    """Regression: the Results-tab recompute must apply theta_offset even when
+    the model's state dataset carries no `theta` (imported / older models). The
+    angle is re-derived from the file header so the slider has an effect."""
+    from aure.web.data import _compute_states_simulation
+
+    f = _write_angle_partial(tmp_path / "REFL_1_1_1_partial.txt")
+    model = {
+        "substrate": {
+            "name": "silicon",
+            "sld": 2.07,
+            "roughness": 3.0,
+            "roughness_max": 15.0,
+        },
+        "layers": [
+            {
+                "name": "Cu",
+                "sld": 6.5,
+                "sld_min": 4.0,
+                "sld_max": 8.0,
+                "thickness": 500.0,
+                "thickness_min": 250.0,
+                "thickness_max": 750.0,
+                "roughness": 5.0,
+                "roughness_max": 20.0,
+            },
+        ],
+        "ambient": {"name": "air", "sld": 0.0},
+        "states": [
+            {
+                "name": "state0",
+                # No `theta` on the dataset -> must be re-derived from header.
+                "data_files": [{"file": f, "label": "p"}],
+                "theta_offset": {"init": 0.0, "min": -0.02, "max": 0.02},
+            }
+        ],
+    }
+    r0 = _compute_states_simulation(model, {"state0 theta_offset": 0.0})
+    r1 = _compute_states_simulation(model, {"state0 theta_offset": 0.02})
+    R0 = np.array(r0["per_file"][0]["R_fit"])
+    R1 = np.array(r1["per_file"][0]["R_fit"])
+    assert len(R0) and not np.allclose(R0, R1), "theta_offset had no effect"
+    # The states response uses `sld_profiles` (the shape the Results SLD User
+    # trace now reads), not flat sld_z/sld_rho.
+    assert r0.get("sld_profiles")
+
+
+def test_states_simulation_returns_corrected_data_q(tmp_path: Path) -> None:
+    """theta_offset re-assigns each measured point's Q, so the recompute must
+    return the experimental data at the corrected Q (Q_data) for the Results
+    tab to replot the data markers. R_data (measured) is unchanged."""
+    import numpy as np
+
+    from aure.web.data import _compute_states_simulation
+
+    f = _write_angle_partial(tmp_path / "REFL_1_1_1_partial.txt")
+    model = {
+        "substrate": {
+            "name": "silicon",
+            "sld": 2.07,
+            "roughness": 3.0,
+            "roughness_max": 15.0,
+        },
+        "layers": [
+            {
+                "name": "Cu",
+                "sld": 6.5,
+                "sld_min": 4.0,
+                "sld_max": 8.0,
+                "thickness": 500.0,
+                "thickness_min": 250.0,
+                "thickness_max": 750.0,
+                "roughness": 5.0,
+                "roughness_max": 20.0,
+            },
+        ],
+        "ambient": {"name": "air", "sld": 0.0},
+        "states": [
+            {
+                "name": "state0",
+                "data_files": [{"file": f, "label": "p"}],
+                "theta_offset": {"init": 0.0, "min": -0.05, "max": 0.05},
+            }
+        ],
+    }
+    pf0 = _compute_states_simulation(model, {"state0 theta_offset": 0.0})["per_file"][0]
+    pf1 = _compute_states_simulation(model, {"state0 theta_offset": 0.05})["per_file"][
+        0
+    ]
+    assert "Q_data" in pf0 and "R_data" in pf0
+    Qd0, Qd1 = np.array(pf0["Q_data"]), np.array(pf1["Q_data"])
+    Rd0, Rd1 = np.array(pf0["R_data"]), np.array(pf1["R_data"])
+    # The data's Q shifts with the offset; the measured R is unchanged.
+    assert not np.allclose(Qd0, Qd1), "corrected data Q did not move with theta_offset"
+    assert np.allclose(Rd0, Rd1), "measured R should not change"

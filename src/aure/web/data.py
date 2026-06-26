@@ -936,6 +936,47 @@ def _compute_multi_file_simulation(
     return result
 
 
+def _with_angle_theta(model: dict) -> dict:
+    """Deep-copy *model* and back-fill each state dataset's incident angle.
+
+    ``theta_offset`` / ``sample_broadening`` only take effect on an angle-based
+    refl1d NeutronProbe, which :func:`build_states_problem` builds only when a
+    dataset carries ``theta > 0``. Freshly-run models are enriched at intake,
+    but imported / older models can carry an *enabled* nuisance block next to
+    theta-less datasets — in which case the parameter is silently dropped and
+    the Results-tab slider does nothing. Re-derive theta from the file header
+    so the recompute matches what the fit actually optimised.
+    """
+    import copy
+
+    from aure.nodes.model_builder import _nuisance_enabled
+
+    definition = copy.deepcopy(model)
+    model_wants_angle = _nuisance_enabled(
+        definition.get("theta_offset")
+    ) or _nuisance_enabled(definition.get("sample_broadening"))
+    for st in definition.get("states") or []:
+        wants_angle = (
+            model_wants_angle
+            or _nuisance_enabled(st.get("theta_offset"))
+            or _nuisance_enabled(st.get("sample_broadening"))
+        )
+        if not wants_angle:
+            continue
+        for ds in st.get("data_files") or []:
+            if ds.get("theta"):
+                continue
+            try:
+                from aure.nodes.intake import _parse_theta_from_header
+
+                t = _parse_theta_from_header(ds.get("file", ""))
+            except Exception:
+                t = 0.0
+            if t and t > 0:
+                ds["theta"] = t
+    return definition
+
+
 def _compute_states_simulation(
     model: dict,
     parameters: Dict[str, float],
@@ -954,7 +995,7 @@ def _compute_states_simulation(
         build_states_problem,
     )
 
-    definition = dict(model)
+    definition = _with_angle_theta(model)
     problem, experiments_by_state, sorted_files_by_state = build_states_problem(
         definition
     )
@@ -994,6 +1035,16 @@ def _compute_states_simulation(
                 Q_arr, R_arr = exp.reflectivity()
                 pf["Q_fit"] = np.array(Q_arr).tolist()
                 pf["R_fit"] = np.array(R_arr).tolist()
+                # theta_offset re-assigns each measured point's Q (Q is derived
+                # from the incident angle), so the experimental data must be
+                # replotted at the corrected Q. ``probe.Q`` already carries the
+                # offset-corrected Q; ``probe.R`` is the unchanged measured R.
+                probe = exp.probe
+                pf["Q_data"] = np.asarray(probe.Q, dtype=float).tolist()
+                pf["R_data"] = np.asarray(probe.R, dtype=float).tolist()
+                _dr = getattr(probe, "dR", None)
+                if _dr is not None:
+                    pf["dR_data"] = np.asarray(_dr, dtype=float).tolist()
             except Exception:
                 pf["Q_fit"] = []
                 pf["R_fit"] = []

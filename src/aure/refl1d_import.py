@@ -1396,7 +1396,14 @@ def import_refl1d(
             else:
                 ds["dR"] = [0.0] * len(ds["Q"])
             ds["dq_is_fwhm"] = True
-            ds["theta"] = 0.0
+            # Recover the incident angle from the probe geometry so a recovered
+            # theta_offset / sample_broadening block stays effective on rebuild
+            # (an angle-based NeutronProbe carries .T in degrees; QProbe has no
+            # angle). The self-contained probe dumps written here are headerless,
+            # so theta cannot be re-parsed later — persist it now.
+            T = getattr(probe, "T", None)
+            T = np.atleast_1d(np.asarray(T, dtype=float)) if T is not None else None
+            ds["theta"] = float(np.mean(T)) if T is not None and T.size else 0.0
             ds["num_segments"] = 0
 
     # --- Build a synthetic ReflectivityState -----------------------------------
