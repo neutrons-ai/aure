@@ -264,27 +264,7 @@
             <tbody></tbody>
           </table>
 
-          {# ── Live Results Panels ─────────────────────────── #}
-          <div id="live-results" style="display:none">
-            <hr>
-            <div class="row">
-              <div class="col-md-6">
-                <h6>Reflectivity R(Q)</h6>
-                <div id="live-rq-chart" style="height:340px"></div>
-              </div>
-              <div class="col-md-6">
-                <h6>SLD Profile</h6>
-                <div id="live-sld-chart" style="height:340px"></div>
-              </div>
-            </div>
-            <h6 class="mt-3">Fit Parameters <span id="live-fit-summary" class="text-muted fw-normal small"></span></h6>
-            <div style="max-height:200px;overflow-y:auto">
-              <table class="table table-sm table-bordered" id="live-param-table">
-                <thead><tr><th>Parameter</th><th class="text-end">Value</th><th class="text-end">± Uncertainty</th></tr></thead>
-                <tbody></tbody>
-              </table>
-            </div>
-          </div>
+          {# Fit results (R(Q), SLD, parameters) live on the Results tab. #}
 
           {# ── Chat Panel (interactive mode) ───────────────── #}
           <div id="chat-panel" style="display:none">
@@ -332,13 +312,9 @@
             </details>
           </div>
         </div>
-        <div class="card-footer text-center" id="progress-footer" style="display:none">
-          <a href="/history" class="btn btn-success">
-            <i class="bi bi-check-circle"></i> View Results
-          </a>
-          <button class="btn btn-outline-secondary ms-2" onclick="resetSetup()">
-            <i class="bi bi-arrow-counterclockwise"></i> New Analysis
-          </button>
+        <div class="card-footer text-center text-muted small" id="progress-footer" style="display:none">
+          <i class="bi bi-check-circle text-success"></i>
+          Analysis complete — open the <strong>Results</strong> tab to view the fit.
         </div>
       </div>
     </div>

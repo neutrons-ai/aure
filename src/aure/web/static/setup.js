@@ -1542,12 +1542,8 @@ function pollStatus() {
         _liveResultsFetched = false;
       }
 
-      // Show live results panel when we have fit data (even while running)
-      if (st.status === "complete" || st.status === "error") {
-        _fetchLiveResults();  // final update
-      }
-
-      // Footer buttons
+      // On completion, show the "open the Results tab" hint and stop polling.
+      // The fit (R(Q), SLD, parameters) lives on the Results tab.
       if (st.status === "complete" || st.status === "error") {
         document.getElementById("progress-footer").style.display = "";
         chatPanel.style.display = "none";
@@ -1562,39 +1558,6 @@ function pollStatus() {
     .catch(() => {
       pollTimer = setTimeout(pollStatus, 3000);
     });
-}
-
-/* ---- reset --------------------------------------------------- */
-
-function resetSetup() {
-  document.getElementById("setup-section").style.display = "";
-  document.getElementById("progress-section").style.display = "none";
-
-  // Re-enable start button
-  const btn = document.getElementById("btn-start");
-  btn.disabled = false;
-  btn.innerHTML = '<i class="bi bi-play-fill"></i> Start Analysis';
-
-  // Clear progress
-  document.getElementById("progress-bar").style.width = "5%";
-  document.getElementById("progress-bar").className =
-    "progress-bar progress-bar-striped progress-bar-animated";
-  document.getElementById("progress-footer").style.display = "none";
-  document.getElementById("checkpoint-table").querySelector("tbody").innerHTML = "";
-  document.getElementById("chat-panel").style.display = "none";
-  document.getElementById("chat-messages").innerHTML = "";
-  document.getElementById("chat-input").value = "";
-  // Clear live results
-  document.getElementById("live-results").style.display = "none";
-  Plotly.purge(document.getElementById("live-rq-chart"));
-  Plotly.purge(document.getElementById("live-sld-chart"));
-  Plotly.purge(document.getElementById("chi2-mini-chart"));
-  document.getElementById("live-param-table").querySelector("tbody").innerHTML = "";
-  document.getElementById("live-fit-summary").textContent = "";
-  _liveResultsFetched = false;
-
-  _renderPlottedFilesList();
-  _renderSetupReflectivityPlot();
 }
 
 /* ---- chat / feedback helpers --------------------------------- */
@@ -1734,113 +1697,16 @@ function _renderChi2Chart(checkpoints) {
 /* ---- live results -------------------------------------------- */
 
 function _fetchLiveResults() {
+  // Used during interactive pauses to surface the evaluation summary
+  // (issues / suggestions) in the feedback panel. The fit curves and
+  // parameters are shown on the Results tab, not inline here.
   fetch("/api/live/results")
     .then(function (r) { return r.json(); })
     .then(function (data) {
       if (!data.models || data.models.length === 0) return;
-      document.getElementById("live-results").style.display = "";
-      _renderLiveRQ(data);
-      _renderLiveSLD(data);
-      _renderLiveParams(data);
       _renderEvalSummary(data);
     })
     .catch(function (err) { console.error("Live results error:", err); });
-}
-
-function _renderLiveRQ(data) {
-  const el = document.getElementById("live-rq-chart");
-  const traces = [];
-  const DATA_COLORS = ["#6c757d", "#0d6efd", "#198754", "#dc3545", "#fd7e14", "#6610f2", "#20c997", "#d63384"];
-  const DATA_SYMBOLS = ["circle", "diamond", "square", "cross", "triangle-up"];
-
-  // Experimental data – per-file traces for co-refinement, single trace otherwise
-  if (data.data_files && data.data_files.length > 1) {
-    data.data_files.forEach(function (df, i) {
-      traces.push({
-        x: df.Q, y: df.R,
-        error_y: df.dR && df.dR.length
-          ? { type: "data", array: df.dR, visible: true, thickness: 1 }
-          : undefined,
-        mode: "markers", marker: { size: 3, color: DATA_COLORS[i % DATA_COLORS.length], symbol: DATA_SYMBOLS[i % DATA_SYMBOLS.length] },
-        name: df.label || ("File " + (i + 1)), type: "scatter",
-      });
-    });
-  } else if (data.Q && data.Q.length) {
-    traces.push({
-      x: data.Q, y: data.R,
-      error_y: data.dR && data.dR.length
-        ? { type: "data", array: data.dR, visible: true, thickness: 1 }
-        : undefined,
-      mode: "markers", marker: { size: 3, color: "#6c757d" },
-      name: "Data", type: "scatter",
-    });
-  }
-  var allModels = data.models || [];
-  var lastIter = allModels.length ? allModels[allModels.length - 1].iteration : null;
-  allModels.forEach(function (m, i) {
-    var mIter = m.iteration != null ? m.iteration : i;
-    var isFinal = (lastIter != null) ? mIter === lastIter : i === allModels.length - 1;
-    traces.push({
-      x: m.Q, y: m.R, mode: "lines",
-      line: { width: isFinal ? 3.5 : 1.5, color: COLORS[(i + 1) % COLORS.length] },
-      name: m.label,
-    });
-  });
-  var layout = {
-    margin: { l: 50, r: 10, t: 5, b: 40 },
-    xaxis: { title: "Q (Å⁻¹)", type: "log", exponentformat: "e" },
-    yaxis: { title: "R(Q)", type: "log", exponentformat: "e" },
-    legend: { x: 0, y: 0, bgcolor: "rgba(255,255,255,0.7)", font: { size: 10 } },
-    hovermode: "closest",
-  };
-  Plotly.react(el, traces, layout, { responsive: true, scrollZoom: true });
-}
-
-function _renderLiveSLD(data) {
-  var el = document.getElementById("live-sld-chart");
-  var profiles = data.profiles || [];
-  if (profiles.length === 0) {
-    el.innerHTML = '<p class="text-muted text-center py-4" style="font-size:0.85rem">SLD profile not yet available.</p>';
-    return;
-  }
-  var traces = profiles.map(function (p, i) {
-    var isFinal = i === profiles.length - 1;
-    return {
-      x: p.z, y: p.sld, mode: "lines",
-      line: { width: isFinal ? 3.5 : 1.5, color: COLORS[(i + 1) % COLORS.length] },
-      name: p.label,
-    };
-  });
-  var layout = {
-    margin: { l: 50, r: 10, t: 5, b: 40 },
-    xaxis: { title: "Depth z (Å)" },
-    yaxis: { title: "SLD (×10⁻⁶ Å⁻²)" },
-    legend: { x: 1, xanchor: "right", y: 1, bgcolor: "rgba(255,255,255,0.7)", font: { size: 10 } },
-    hovermode: "closest",
-  };
-  Plotly.react(el, traces, layout, { responsive: true, scrollZoom: true });
-}
-
-function _renderLiveParams(data) {
-  var tbody = document.getElementById("live-param-table").querySelector("tbody");
-  tbody.innerHTML = "";
-  var summary = document.getElementById("live-fit-summary");
-  if (!data.parameters || data.parameters.length === 0) return;
-
-  var parts = [];
-  if (data.chi_squared != null) parts.push("χ² = " + data.chi_squared.toFixed(2));
-  if (data.method) parts.push(data.method);
-  if (data.converged != null) parts.push(data.converged ? "converged ✓" : "not converged ✗");
-  summary.textContent = parts.join("  ·  ");
-
-  data.parameters.forEach(function (p) {
-    var val = typeof p.value === "number" ? p.value.toPrecision(5) : p.value;
-    var unc = p.uncertainty != null ? "± " + p.uncertainty.toPrecision(3) : "—";
-    tbody.insertAdjacentHTML("beforeend",
-      '<tr><td><code>' + _escapeHtml(p.name) + '</code></td>' +
-      '<td class="text-end">' + val + '</td>' +
-      '<td class="text-end">' + unc + '</td></tr>');
-  });
 }
 
 function _renderEvalSummary(data) {
