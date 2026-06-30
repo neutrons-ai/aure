@@ -464,3 +464,101 @@ def test_refine_hypothesis_writeback_is_status_only(monkeypatch):
     assert len(hyps) == 1  # fabricated #2 dropped
     assert hyps[0]["title"] == "Add CuO"  # identity preserved (not HIJACKED)
     assert hyps[0]["status"] == "tried"  # status update applied
+
+
+# ----------------------------------------------------------------------
+# Natural-language cross-state tie extraction (unshared parameters)
+# ----------------------------------------------------------------------
+
+import json as _json_mod  # noqa: E402
+from unittest.mock import MagicMock  # noqa: E402
+
+
+def _state_with_oxide(desc, user_config=None):
+    parsed = {
+        "substrate": {"name": "silicon", "sld": 2.07, "roughness": 3.0, "roughness_max": 15.0},
+        "layers": [
+            {"name": "Cu oxide", "sld": 4.0, "sld_min": 2.0, "sld_max": 6.0,
+             "thickness": 30.0, "thickness_min": 5.0, "thickness_max": 100.0,
+             "roughness": 5.0, "roughness_max": 20.0},
+            {"name": "Cu", "sld": 6.5, "sld_min": 4.0, "sld_max": 8.0,
+             "thickness": 500.0, "thickness_min": 250.0, "thickness_max": 750.0,
+             "roughness": 5.0, "roughness_max": 20.0},
+        ],
+        "ambient": {"name": "D2O", "sld": 6.4},
+        "back_reflection": True,
+        "intensity": {"value": 1.0, "min": 0.7, "max": 1.1, "fixed": False},
+        "constraints": [],
+    }
+    return {
+        "data_file": "/tmp/REFL_230539.txt",
+        "sample_description": desc,
+        "parsed_sample": parsed,
+        "extracted_features": {},
+        "iteration": 0,
+        "messages": [],
+        "states": _two_states(),
+        "user_config": user_config or {},
+        "dq_is_fwhm": True,
+    }
+
+
+_OXIDE_DESC = (
+    "D2O / Cu oxide / 50 nm Cu / 3 nm Ti on Si. The copper oxide thickness, SLD and "
+    "interface are not shared across states."
+)
+
+
+def _fake_llm(monkeypatch, payload):
+    from aure.nodes import modeling
+    monkeypatch.setattr(modeling, "llm_available", lambda: True)
+    fake = MagicMock()
+    fake.invoke.return_value = MagicMock(content=_json_mod.dumps(payload))
+    monkeypatch.setattr(modeling, "get_llm", lambda temperature=0: fake)
+    return fake
+
+
+def test_nl_unshared_extracted_and_unties_oxide(monkeypatch):
+    from aure.nodes import modeling
+    from aure.nodes.model_builder import _resolve_tied_set
+
+    _fake_llm(monkeypatch, {"unshared_parameters": [
+        "Cu oxide.thickness", "Cu oxide.material.rho", "Cu oxide.interface"]})
+
+    out = modeling.modeling_node(_state_with_oxide(_OXIDE_DESC))
+    assert "error" not in out, out.get("error")
+    md = out["current_model"]
+    assert set(md["unshared_parameters"]) == {
+        "Cu oxide.thickness", "Cu oxide.material.rho", "Cu oxide.interface"}
+    # persisted into user_config so it survives refinement
+    assert set(out["user_config"]["unshared_parameters"]) == set(md["unshared_parameters"])
+    # the Cu oxide structural params are NOT tied across states
+    tied = _resolve_tied_set(md)
+    assert ("Cu oxide", "thickness") not in tied
+    assert ("Cu oxide", "material.rho") not in tied
+    assert ("Cu oxide", "interface") not in tied
+    # Cu (not called out) stays tied by default
+    assert ("Cu", "thickness") in tied
+
+
+def test_nl_extraction_skipped_when_user_config_ties_present(monkeypatch):
+    from aure.nodes import modeling
+
+    fake = _fake_llm(monkeypatch, {"unshared_parameters": ["Cu oxide.thickness"]})
+    st = _state_with_oxide(_OXIDE_DESC, user_config={"shared_parameters": ["Cu.thickness"]})
+    out = modeling.modeling_node(st)
+    assert "error" not in out, out.get("error")
+    assert out["current_model"]["shared_parameters"] == ["Cu.thickness"]
+    fake.invoke.assert_not_called()  # explicit user config wins; no NL extraction
+
+
+def test_nl_extraction_noop_without_llm(monkeypatch):
+    from aure.nodes import modeling
+    from aure.nodes.model_builder import _resolve_tied_set
+
+    monkeypatch.setattr(modeling, "llm_available", lambda: False)
+    out = modeling.modeling_node(_state_with_oxide(_OXIDE_DESC))
+    assert "error" not in out, out.get("error")
+    md = out["current_model"]
+    assert not md.get("unshared_parameters")  # nothing derived without an LLM
+    assert ("Cu oxide", "thickness") in _resolve_tied_set(md)  # default tying

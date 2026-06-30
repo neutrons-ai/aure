@@ -1239,19 +1239,6 @@ function _buildAnalysisBody(opts) {
     body.states = order.map(function (name) {
       return _buildStateEntry(name, byState[name], errors);
     });
-
-    const tieParams = _parseTiesText(tiesText);
-    if (tiesMode === "shared" && tieParams.length) {
-      body.shared_parameters = tieParams;
-    } else if (tiesMode === "unshared" && tieParams.length) {
-      body.unshared_parameters = tieParams;
-    }
-    if (body.shared_parameters && body.unshared_parameters) {
-      // Radio prevents this, but be defensive.
-      errors.push(
-        "shared_parameters and unshared_parameters are mutually exclusive."
-      );
-    }
     // Multi-state path drops top-level data_files.
   } else {
     // Single-state or ad-hoc multi-file co-refinement. Emit a one-entry
@@ -1273,6 +1260,25 @@ function _buildAnalysisBody(opts) {
       });
       if (dataFiles.length > 1) body.data_files = dataFiles;
     }
+  }
+
+  // Cross-state parameter ties. Collected here — OUTSIDE the state-grouping
+  // branches above — so the user's selection in the ties panel always survives
+  // both Save Setup (/api/setup/export) and Start Analysis. Previously this ran
+  // only inside the multi-state branch, so grouping-state edge cases (e.g. after
+  // loading a setup) silently dropped the shared/unshared parameters. The ties
+  // panel is only shown for multi-state, so a non-empty selection is a genuine
+  // co-refinement; tiesMode/tiesText are restored on setup load independently of
+  // the file-grouping UI.
+  const tieParams = _parseTiesText(tiesText);
+  if (tiesMode === "shared" && tieParams.length) {
+    body.shared_parameters = tieParams;
+  } else if (tiesMode === "unshared" && tieParams.length) {
+    body.unshared_parameters = tieParams;
+  }
+  if (body.shared_parameters && body.unshared_parameters) {
+    // The radio prevents this, but be defensive.
+    errors.push("shared_parameters and unshared_parameters are mutually exclusive.");
   }
 
   return { body: body, errors: errors };

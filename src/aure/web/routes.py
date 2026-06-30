@@ -73,6 +73,51 @@ def _extract_run_name(data_file: str) -> str:
     return re.sub(r"[^\w\-]", "_", stem)
 
 
+def _sanitize_dir_name(name: str) -> str:
+    """Make a string safe for use as a directory name."""
+    return re.sub(r"[^\w\-]", "_", str(name)).strip("_") or "run"
+
+
+def _derive_run_dir_name(states, data_files, data_file) -> str:
+    """Derive the output/run folder name.
+
+    - Single run/file → its run number, or the state name when unnumbered (never
+      a bare sanitised stem if a state name is available).
+    - Co-refinement → the per-state primary run numbers joined (e.g.
+      ``230539_230543``), so the folder includes every state's run and does NOT
+      overwrite an existing single-state fit named by one run. When a state has no
+      run number, its name is used.
+
+    Each *group* below is one state (or the flat file list for a single-state
+    co-refinement); a group's id is the lowest run number among its files.
+    """
+    if states:
+        groups = [(st.get("data_files") or [], st.get("name")) for st in states]
+    elif data_files:
+        groups = [(data_files, None)]
+    else:
+        return _extract_run_name(data_file)
+
+    ids: list[str] = []
+    for files, state_name in groups:
+        paths = [
+            (df.get("file") if isinstance(df, dict) else df) for df in files
+        ]
+        run_names = [_extract_run_name(p) for p in paths if p]
+        numeric = [int(n) for n in run_names if n.isdigit()]
+        if numeric:
+            ids.append(str(min(numeric)))
+        elif state_name:
+            ids.append(_sanitize_dir_name(state_name))
+        elif run_names:
+            ids.append(_sanitize_dir_name(run_names[0]))
+
+    deduped = list(dict.fromkeys(ids))  # preserve order, drop dups
+    if not deduped:
+        return _extract_run_name(data_file)
+    return "_".join(deduped)
+
+
 def _apply_overrides_to_model_script(
     script: str,
     parameter_overrides: dict,
@@ -1042,23 +1087,10 @@ def api_start_analysis():
         if df_errors:
             return jsonify({"errors": df_errors}), 400
 
-    if states:
-        # Multi-state: derive run sub-dir from the lowest run number among files
-        from ..state import flatten_data_files as _flatten_for_name
-
-        flat = _flatten_for_name(states)
-        run_names = [_extract_run_name(df.get("file", "")) for df in flat]
-        numeric = [int(r) for r in run_names if r.isdigit()]
-        run_name = (
-            str(min(numeric)) if numeric else (run_names[0] if run_names else "run")
-        )
-    elif data_files and len(data_files) > 1:
-        # For co-refinement: use the lowest run number across all files
-        run_names = [_extract_run_name(df["file"]) for df in data_files]
-        numeric = [int(r) for r in run_names if r.isdigit()]
-        run_name = str(min(numeric)) if numeric else run_names[0]
-    else:
-        run_name = _extract_run_name(data_file)
+    # Co-refinement folders include every state's run (e.g. "230539_230543") so
+    # they never overwrite a single-state fit; unnumbered runs fall back to the
+    # state name. See _derive_run_dir_name.
+    run_name = _derive_run_dir_name(states, data_files, data_file)
     output_dir = str(Path(output_root).expanduser().resolve() / run_name)
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 

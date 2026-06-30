@@ -1089,3 +1089,38 @@ def format_model_refinement_prompt_json(
         )
         + feedback_section
     )
+
+
+def format_cross_state_ties_prompt(sample_description: str, tieable_params: list) -> str:
+    """Prompt to extract per-state (unshared) parameters from a free-text description.
+
+    In a multi-state co-refinement every structural parameter below is SHARED
+    (tied to one fitted value) across all states by default. The user's sample
+    description may say that some parameters should instead vary independently
+    per state (e.g. a surface oxide that differs between an in-air state and an
+    in-electrolyte state). The LLM maps that wording onto the dotted parameter
+    names and returns the ones to leave UNshared.
+    """
+    params_block = "\n".join(f"  - {p}" for p in tieable_params)
+    return (
+        "You are configuring a multi-state neutron-reflectometry co-refinement.\n\n"
+        "By default, every structural parameter listed below is SHARED (tied to a "
+        "single fitted value) across all states. The sample description may say that "
+        "certain parameters should NOT be shared — i.e. they vary independently per "
+        "state.\n\n"
+        "Sample description:\n"
+        f'"""{sample_description}"""\n\n'
+        "Tieable parameters — dotted \"<layer>.<attr>\" names; <attr> is one of "
+        "`thickness`, `material.rho` (the SLD), or `interface` (the roughness):\n"
+        f"{params_block}\n\n"
+        "From the description ONLY, list the parameters that should NOT be shared "
+        "across states. Map the user's wording onto the names above:\n"
+        "  - \"SLD\" -> `.material.rho`; \"thickness\" -> `.thickness`; "
+        "\"interface\"/\"roughness\" -> `.interface`.\n"
+        "  - Match layer names case-insensitively (e.g. \"copper oxide\" -> a layer "
+        "named \"Cu oxide\").\n"
+        "Only include names that appear in the list above. If the description does "
+        "not call out any per-state (unshared) parameters, return an empty list.\n\n"
+        "Respond with ONLY a JSON object, no prose:\n"
+        '{"unshared_parameters": ["<layer>.<attr>", ...]}'
+    )

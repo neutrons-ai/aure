@@ -516,6 +516,50 @@ def _refine_model_legacy(state: ReflectivityState) -> Dict[str, Any]:
     return updates
 
 
+def _extract_cross_state_unshared(sample_description: str, model_def: dict):
+    """Derive per-state (unshared) structural parameters from the NL description.
+
+    For a multi-state co-refinement, structural parameters are tied across states
+    by default. When the description says some should vary per state but no
+    structured tie config was supplied, ask the LLM to map that wording onto the
+    tieable ``"<layer>.<attr>"`` names. Returns a validated subset of those names,
+    or ``None`` when the LLM is unavailable / nothing was called out / on any
+    error (callers then fall back to the default tied set). Never raises.
+    """
+    if not sample_description or not llm_available():
+        return None
+    from .model_builder import _resolve_tied_set
+    from .prompts import format_cross_state_ties_prompt
+
+    try:
+        default_pairs = _resolve_tied_set(
+            {**model_def, "shared_parameters": [], "unshared_parameters": []}
+        )
+    except Exception:
+        return None
+    tieable = [f"{layer}.{attr}" for (layer, attr) in default_pairs]
+    if not tieable:
+        return None
+
+    try:
+        import json
+
+        prompt = format_cross_state_ties_prompt(sample_description, tieable)
+        response = get_llm(temperature=0).invoke([HumanMessage(content=prompt)])
+        data = json.loads(_strip_code_fences(response.content.strip()))
+        proposed = data.get("unshared_parameters") or []
+        tieable_set = set(tieable)
+        derived = [p for p in proposed if isinstance(p, str) and p in tieable_set]
+        if derived:
+            logger.info(
+                "[MODELING] Derived unshared parameters from description: %s", derived
+            )
+        return derived or None
+    except Exception as exc:  # graceful: fall back to default tying
+        logger.warning("[MODELING] cross-state tie extraction failed: %s", exc)
+        return None
+
+
 def _build_initial_model(state: ReflectivityState) -> Dict[str, Any]:
     """
     Build the initial refl1d model from features and sample description.
@@ -592,6 +636,24 @@ def _build_initial_model(state: ReflectivityState) -> Dict[str, Any]:
 
         # Multi-state co-refinement: attach states + tie spec (config wins).
         try:
+            # When the user described per-state (unshared) structural parameters
+            # in natural language but supplied no structured tie config, derive
+            # them from the description so the default "tie everything across
+            # states" set does not wrongly tie a parameter the user said varies
+            # per state (e.g. a surface oxide in-air vs in-electrolyte).
+            states_in = state.get("states") or []
+            if len(states_in) >= 2:
+                uc = dict(state.get("user_config") or {})
+                if not uc.get("shared_parameters") and not uc.get("unshared_parameters"):
+                    derived = _extract_cross_state_unshared(
+                        state.get("sample_description", ""), model_def
+                    )
+                    if derived:
+                        uc["unshared_parameters"] = derived
+                        # Persist so it survives refinement and is visible in state;
+                        # _attach_state_metadata (config wins) applies it below.
+                        state["user_config"] = uc
+                        updates["user_config"] = uc
             _attach_state_metadata(model_def, state)
         except ValueError as exc:
             updates["error"] = f"Multi-state model setup failed: {exc}"

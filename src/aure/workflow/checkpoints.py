@@ -99,6 +99,22 @@ class CheckpointManager:
                 {"file": str(df.get("file", "")), "label": df.get("label", "")}
                 for df in raw_df
             ]
+        # Persist explicit, user-named states so the data-assembler can group
+        # runs per measurement state (→ one AI-ready record per state) without
+        # parsing file names. Each state carries its angles + its conditions.
+        raw_states = initial_state.get("states") or []
+        if raw_states:
+            run_info["states"] = [
+                {
+                    "name": s.get("name"),
+                    "extra_description": s.get("extra_description"),
+                    "data_files": [
+                        {"file": str(df.get("file", "")), "label": df.get("label", "")}
+                        for df in (s.get("data_files") or [])
+                    ],
+                }
+                for s in raw_states
+            ]
         self._save_json(self.output_dir / "run_info.json", run_info)
 
         self._initialized = True
