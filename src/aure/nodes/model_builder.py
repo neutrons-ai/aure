@@ -494,6 +494,58 @@ def _layer_index(
     return None
 
 
+def _valid_layer_names(definition: dict) -> set[str]:
+    """Every layer name a tie spec may legitimately reference.
+
+    The model-level layers plus each state's own layers (when a state overrides
+    the structure), the substrate and ambient material names, and the literal
+    aliases ``substrate``/``ambient``. Considering per-state layers makes this
+    the UNION across states, so a layer present in only some states is still a
+    valid tie target (the tie simply does not apply where the layer is absent).
+    """
+    names: set[str] = set()
+
+    def _collect(d: dict) -> None:
+        for layer in d.get("layers") or []:
+            if isinstance(layer, dict) and layer.get("name"):
+                names.add(layer["name"])
+        sub = (d.get("substrate") or {}).get("name")
+        if sub:
+            names.add(sub)
+        amb = (d.get("ambient") or {}).get("name")
+        if amb:
+            names.add(amb)
+
+    _collect(definition)
+    for st in definition.get("states") or []:
+        _collect(st)  # per-state structure override (may add/remove layers)
+    names.add("substrate")
+    names.add("ambient")
+    return names
+
+
+def prune_tie_specs(definition: dict) -> list[str]:
+    """Drop ``shared_/unshared_parameters`` entries whose layer is absent from
+    the model's structure (model-level plus any per-state override), in place.
+
+    A tie that references a layer no longer present — e.g. after a structural
+    edit removed it — is meaningless and must not reach the fit, where
+    :func:`_resolve_tied_set` would raise. Returns the dropped specs (for logging).
+    """
+    valid = _valid_layer_names(definition)
+    dropped: list[str] = []
+    for key in ("shared_parameters", "unshared_parameters"):
+        specs = definition.get(key)
+        if not specs:
+            continue
+        kept: list[str] = []
+        for spec in specs:
+            layer_name = spec.split(".", 1)[0] if "." in spec else spec
+            (kept if layer_name in valid else dropped).append(spec)
+        definition[key] = kept
+    return dropped
+
+
 def _resolve_tied_set(definition: dict) -> list[tuple[str, str]]:
     """Resolve the (layer_name, attr_path) pairs to alias across states.
 
@@ -509,7 +561,6 @@ def _resolve_tied_set(definition: dict) -> list[tuple[str, str]]:
             "shared_parameters and unshared_parameters are mutually exclusive"
         )
 
-    layers = definition.get("layers", []) or []
     sub_name = (definition.get("substrate") or {}).get("name", "substrate")
     amb_name = (definition.get("ambient") or {}).get("name")
 
@@ -523,11 +574,22 @@ def _resolve_tied_set(definition: dict) -> list[tuple[str, str]]:
             return amb_name
         return layer_name
 
-    # Build the default tied set.
+    # Build the default tied set over EVERY layer name across the model-level
+    # stack and any per-state structure (the union). A layer present in >=2
+    # states is tied across them; one present in a single state has nothing to
+    # alias to and stays free (the build-time aliasing skips absent layers).
+    union_names: list[str] = []
+    seen_union: set[str] = set()
+    for d in [definition, *(definition.get("states") or [])]:
+        for layer in d.get("layers") or []:
+            nm = layer.get("name") if isinstance(layer, dict) else None
+            if nm and nm not in seen_union:
+                seen_union.add(nm)
+                union_names.append(nm)
     default: list[tuple[str, str]] = []
-    for layer in layers:
+    for nm in union_names:
         for attr in _DEFAULT_TIED_LAYER_ATTRS:
-            default.append((layer["name"], attr))
+            default.append((nm, attr))
     for attr in _DEFAULT_TIED_SUBSTRATE_ATTRS:
         default.append((sub_name, attr))
 
@@ -539,12 +601,7 @@ def _resolve_tied_set(definition: dict) -> list[tuple[str, str]]:
         layer_name, attr = spec.split(".", 1)
         return layer_name, attr
 
-    valid_layers = {layer["name"] for layer in layers}
-    valid_layers.add(sub_name)
-    valid_layers.add("substrate")
-    if amb_name:
-        valid_layers.add(amb_name)
-    valid_layers.add("ambient")
+    valid_layers = _valid_layer_names(definition)
 
     if shared:
         out: list[tuple[str, str]] = []
@@ -593,9 +650,10 @@ def _set_layer_param(layer_obj, attr_path: str, value) -> None:
 def _state_overrides(definition: dict, state: dict) -> dict:
     """Return a per-state copy of *definition* with state-local overrides applied.
 
-    Currently supports overrides for ``ambient``, ``back_reflection``,
-    and ``intensity``. The structure (substrate / layers) is shared
-    across states.
+    Supports overrides for ``ambient``, ``back_reflection``, ``intensity``,
+    and — when the state declares them — its own ``layers``/``substrate``
+    (a full per-state structure; sample ≠ structure). A state without
+    ``layers``/``substrate`` inherits the model-level template.
 
     The state's ``ambient`` is **merged** into the model-level ambient
     rather than replacing it, so a partial override (e.g. just the SLD)
@@ -617,6 +675,13 @@ def _state_overrides(definition: dict, state: dict) -> dict:
         eff["back_reflection"] = bool(state["back_reflection"])
     if state.get("intensity"):
         eff["intensity"] = state["intensity"]
+    # Per-state structure override: when a state declares its own layers (and
+    # optionally substrate), use them as that state's complete stack so a layer
+    # can be present in some states and absent in others.
+    if state.get("layers") is not None:
+        eff["layers"] = state["layers"]
+    if state.get("substrate"):
+        eff["substrate"] = state["substrate"]
     return eff
 
 
@@ -691,7 +756,15 @@ def build_states_problem(definition: dict):
                 ref_idx = _layer_index(ref_def, layer_name, back_reflection=ref_back)
                 cur_idx = _layer_index(eff, layer_name, back_reflection=cur_back)
                 if ref_idx is None or cur_idx is None:
-                    # Already validated in _resolve_tied_set; skip silently.
+                    # The layer is absent from this state's stack (per-state
+                    # structure, or a pruned spec) — the tie does not apply here.
+                    # This is expected, not an error.
+                    logger.debug(
+                        "[STATES] tie %s.%s not applied to state %r — layer absent",
+                        layer_name,
+                        attr_path,
+                        state.get("name"),
+                    )
                     continue
                 ref_param = _get_layer_param(ref_sample[ref_idx], attr_path)
                 _set_layer_param(sample[cur_idx], attr_path, ref_param)

@@ -271,6 +271,49 @@ def test_dump_setup_round_trip(tmp_path, data_file):
     assert _strip_kind(reloaded) == _strip_kind(original)
 
 
+def test_distinct_sample_round_trips(tmp_path, data_file):
+    """A multi-state setup with distinct_sample: true survives dump → load."""
+    from aure.setup import dump_setup, load_setup
+
+    p = _write_yaml(
+        tmp_path,
+        "distinct.yaml",
+        {
+            "sample_description": "Two electrodes co-refined",
+            "distinct_sample": True,
+            "states": [
+                {"name": "A", "data_files": [{"file": data_file}]},
+                {"name": "B", "data_files": [{"file": data_file}]},
+            ],
+        },
+    )
+    setup = load_setup(p)
+    assert setup.get("distinct_sample") is True
+
+    text = dump_setup(setup)
+    assert "distinct_sample: true" in text
+    out = tmp_path / "rt.yaml"
+    out.write_text(text)
+    assert load_setup(out).get("distinct_sample") is True
+
+
+def test_distinct_sample_default_false_not_dumped(tmp_path, data_file):
+    """The default (False) flag is omitted from the dumped YAML."""
+    from aure.setup import dump_setup, load_setup
+
+    p = _write_yaml(
+        tmp_path,
+        "shared.yaml",
+        {
+            "sample_description": "x",
+            "states": [{"name": "state0", "data_files": [{"file": data_file}]}],
+        },
+    )
+    setup = load_setup(p)
+    assert setup.get("distinct_sample", False) is False
+    assert "distinct_sample" not in dump_setup(setup)
+
+
 def test_dump_setup_drops_empty_fields(tmp_path, data_file):
     """``dump_setup`` should not emit empty lists / None for unset fields."""
     from aure.setup import dump_setup, load_setup

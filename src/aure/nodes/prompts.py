@@ -957,6 +957,17 @@ Rules:
 11. If `next_action` is `parameter_tweak`, keep the layer stack unchanged
     and adjust only bounds/starting values. Return the `structural_hypotheses`
     list unchanged.
+12. Multi-state co-refinement (sample != structure): if the model has a
+    top-level `states` array, the top-level `layers`/`substrate` is the shared
+    TEMPLATE. A single state may have a DIFFERENT structure (e.g. "the H2O
+    state has no oxide"). To make one state differ, set that state's own
+    complete `layers` array (and `substrate` if it differs) inside its entry of
+    `states`, e.g. `{{"name": "H2O", ..., "layers": [<that state's full stack>]}}`.
+    Leave the other states without a `layers` key so they keep inheriting the
+    template. Removing a layer from ONE state means editing that state's
+    `layers`, NOT the top-level template (which would change every state). Ties
+    referencing a layer absent from a state simply don't apply there — you need
+    not edit `shared_parameters`/`unshared_parameters` for a structural removal.
 
 {user_constraints}
 
@@ -1088,4 +1099,71 @@ def format_model_refinement_prompt_json(
             ),
         )
         + feedback_section
+    )
+
+
+def format_cross_state_ties_prompt(sample_description: str, tieable_params: list) -> str:
+    """Prompt to extract per-state (unshared) parameters from a free-text description.
+
+    In a multi-state co-refinement every structural parameter below is SHARED
+    (tied to one fitted value) across all states by default. The user's sample
+    description may say that some parameters should instead vary independently
+    per state (e.g. a surface oxide that differs between an in-air state and an
+    in-electrolyte state). The LLM maps that wording onto the dotted parameter
+    names and returns the ones to leave UNshared.
+    """
+    params_block = "\n".join(f"  - {p}" for p in tieable_params)
+    return (
+        "You are configuring a multi-state neutron-reflectometry co-refinement.\n\n"
+        "By default, every structural parameter listed below is SHARED (tied to a "
+        "single fitted value) across all states. The sample description may say that "
+        "certain parameters should NOT be shared — i.e. they vary independently per "
+        "state.\n\n"
+        "Sample description:\n"
+        f'"""{sample_description}"""\n\n'
+        "Tieable parameters — dotted \"<layer>.<attr>\" names; <attr> is one of "
+        "`thickness`, `material.rho` (the SLD), or `interface` (the roughness):\n"
+        f"{params_block}\n\n"
+        "From the description ONLY, list the parameters that should NOT be shared "
+        "across states. Map the user's wording onto the names above:\n"
+        "  - \"SLD\" -> `.material.rho`; \"thickness\" -> `.thickness`; "
+        "\"interface\"/\"roughness\" -> `.interface`.\n"
+        "  - Match layer names case-insensitively (e.g. \"copper oxide\" -> a layer "
+        "named \"Cu oxide\").\n"
+        "Only include names that appear in the list above. If the description does "
+        "not call out any per-state (unshared) parameters, return an empty list.\n\n"
+        "Respond with ONLY a JSON object, no prose:\n"
+        '{"unshared_parameters": ["<layer>.<attr>", ...]}'
+    )
+
+
+def format_per_state_structure_prompt(
+    sample_description: str, state_names: list, template_layers: list
+) -> str:
+    """Prompt to extract per-state STRUCTURE differences from the description.
+
+    In a multi-state co-refinement the states share a template layer stack by
+    default, but the SAMPLE CAN DIFFER per state — a layer may be present in one
+    state and absent in another ("sample != structure"), e.g. a surface oxide in
+    air but not in electrolyte. The LLM lists, per state, which template layers
+    are ABSENT.
+    """
+    states_block = "\n".join(f"  - {n}" for n in state_names)
+    layers_block = "\n".join(f"  - {n}" for n in template_layers)
+    return (
+        "You are configuring a multi-state neutron-reflectometry co-refinement.\n\n"
+        "All states share the template layer stack below by default, but the SAMPLE "
+        "CAN DIFFER from state to state — a layer may be PRESENT in one state and "
+        "ABSENT in another (sample != structure). For example a surface oxide may exist "
+        "in an in-air state but not in an in-electrolyte state.\n\n"
+        "Sample description:\n"
+        f'"""{sample_description}"""\n\n'
+        f"States:\n{states_block}\n\n"
+        f"Template layers (the shared default stack):\n{layers_block}\n\n"
+        "From the description ONLY, for each state list the template layers that are "
+        "ABSENT in that state. Match layer names case-insensitively to the template "
+        "names above (e.g. 'copper oxide' -> 'Cu oxide'). If the description does not "
+        "say a state lacks a layer, return an empty list for it.\n\n"
+        "Respond with ONLY a JSON object mapping state name to absent layer names:\n"
+        '{"per_state_absent": {"<state name>": ["<layer name>", ...], ...}}'
     )

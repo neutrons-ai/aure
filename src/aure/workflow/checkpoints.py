@@ -99,6 +99,30 @@ class CheckpointManager:
                 {"file": str(df.get("file", "")), "label": df.get("label", "")}
                 for df in raw_df
             ]
+        # Persist explicit, user-named states so the data-assembler can group
+        # runs per measurement state (→ one AI-ready record per state) without
+        # parsing file names. Each state carries its angles + its conditions.
+        raw_states = initial_state.get("states") or []
+        if raw_states:
+            run_info["states"] = [
+                {
+                    "name": s.get("name"),
+                    "extra_description": s.get("extra_description"),
+                    "data_files": [
+                        {"file": str(df.get("file", "")), "label": df.get("label", "")}
+                        for df in (s.get("data_files") or [])
+                    ],
+                }
+                for s in raw_states
+            ]
+            # Identity: do the co-refined states denote distinct physical
+            # samples (distinct sample_id per state downstream) or one sample
+            # measured under several conditions (shared sample_id, the
+            # default)? Sourced from the user config; orthogonal to ties and to
+            # per-state structure.
+            run_info["distinct_sample"] = bool(
+                (initial_state.get("user_config") or {}).get("distinct_sample", False)
+            )
         self._save_json(self.output_dir / "run_info.json", run_info)
 
         self._initialized = True

@@ -86,6 +86,40 @@ def test_run_info_records_explicit_model_name_at_init(tmp_path):
     assert run_info["model_name"] == "cu_air_230536"
 
 
+def test_run_info_records_distinct_sample_for_multistate(tmp_path):
+    """A multi-state run with distinct_sample in user_config records it in run_info."""
+    mgr = CheckpointManager(str(tmp_path))
+    initial_state = {
+        "hypothesis": None,
+        "user_config": {"distinct_sample": True},
+        "states": [
+            {"name": "A", "data_files": [{"file": "/x/a.txt", "label": "A"}]},
+            {"name": "B", "data_files": [{"file": "/x/b.txt", "label": "B"}]},
+        ],
+    }
+    mgr.initialize(initial_state, data_file="/x/a.txt", sample_description="two samples")
+
+    run_info = json.loads((mgr.output_dir / "run_info.json").read_text())
+    assert run_info["distinct_sample"] is True
+    assert [s["name"] for s in run_info["states"]] == ["A", "B"]
+
+
+def test_run_info_distinct_sample_defaults_false(tmp_path):
+    """Without the flag, a multi-state run defaults to a shared sample."""
+    mgr = CheckpointManager(str(tmp_path))
+    initial_state = {
+        "hypothesis": None,
+        "states": [
+            {"name": "A", "data_files": [{"file": "/x/a.txt", "label": "A"}]},
+            {"name": "B", "data_files": [{"file": "/x/b.txt", "label": "B"}]},
+        ],
+    }
+    mgr.initialize(initial_state, data_file="/x/a.txt", sample_description="one sample")
+
+    run_info = json.loads((mgr.output_dir / "run_info.json").read_text())
+    assert run_info["distinct_sample"] is False
+
+
 def test_run_info_captures_resolved_model_name_on_checkpoint(tmp_path):
     """With no explicit name, run_info picks up the name the fitting node
     resolves onto the state (regression: it was absent / None)."""

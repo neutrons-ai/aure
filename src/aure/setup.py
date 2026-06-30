@@ -61,6 +61,7 @@ class SetupConfig(TypedDict, total=False):
     states: List[dict]
     shared_parameters: List[str]
     unshared_parameters: List[str]
+    distinct_sample: bool  # co-refined states are distinct physical samples
 
     # LLM-side rules
     evaluation_criteria: List[str]
@@ -107,6 +108,7 @@ _KNOWN_TOP_LEVEL = {
     "states",
     "shared_parameters",
     "unshared_parameters",
+    "distinct_sample",
     "evaluation_criteria",
     "model_constraints",
     "command",
@@ -288,6 +290,9 @@ def _setup_from_dict(
     out["shared_parameters"] = shared
     out["unshared_parameters"] = unshared
 
+    if raw.get("distinct_sample") is not None:
+        out["distinct_sample"] = bool(raw["distinct_sample"])
+
     # Resolve the effective data-file resolution override. A programmatic
     # / CLI ``data_dir`` argument wins over a top-level ``data_dir:`` YAML
     # key. A relative YAML key is resolved against the YAML's own
@@ -344,6 +349,7 @@ _DUMP_ORDER: tuple[str, ...] = (
     "fit_burn",
     "shared_parameters",
     "unshared_parameters",
+    "distinct_sample",
     "evaluation_criteria",
     "model_constraints",
     "states",
@@ -382,6 +388,8 @@ def dump_setup(setup: SetupConfig) -> str:
             continue
         if isinstance(value, (list, dict, str)) and not value:
             continue
+        if isinstance(value, bool) and not value:
+            continue  # drop default/false flags (e.g. distinct_sample) for cleaner YAML
         if key == "states":
             body[key] = [_state_for_dump(st) for st in value]
         else:
@@ -451,6 +459,7 @@ def setup_to_user_config(setup: SetupConfig) -> dict:
         "model_constraints",
         "shared_parameters",
         "unshared_parameters",
+        "distinct_sample",
         "sample_description",
         "model_name",
     ):

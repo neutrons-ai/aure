@@ -158,6 +158,7 @@ function _saveFormValues() {
     group_into_states: groupIntoStates,
     ties_mode: tiesMode,
     ties_text: tiesText,
+    distinct_sample: distinctSample,
     state_overrides: stateOverrides,
   };
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(vals)); } catch (_) {}
@@ -230,6 +231,7 @@ function _restoreFormValues() {
         group_into_states: prevStates.length >= 2,
         ties_mode: prefTiesMode,
         ties_text: prefTiesText,
+        distinct_sample: !!_prevRun.distinct_sample,
         state_overrides: prefOverrides,
       };
     }
@@ -251,6 +253,9 @@ function _restoreFormValues() {
     }
     if (typeof vals.ties_text === "string") {
       tiesText = vals.ties_text;
+    }
+    if (typeof vals.distinct_sample === "boolean") {
+      distinctSample = vals.distinct_sample;
     }
     if (vals.state_overrides && typeof vals.state_overrides === "object") {
       stateOverrides = vals.state_overrides;
@@ -655,6 +660,7 @@ function _renderSetupReflectivityPlot() {
 
 let tiesMode = "auto";   // "auto" | "shared" | "unshared"
 let tiesText = "";
+let distinctSample = false;  // co-refined states are distinct physical samples
 
 const TIES_HELP_URL =
   "https://github.com/neutrons-ai/aure/blob/main/src/aure/skills/multi-state-corefinement/SKILL.md";
@@ -714,6 +720,9 @@ function _renderTiesPanel() {
 
   const help = document.getElementById("ties-help");
   if (help) help.href = TIES_HELP_URL;
+
+  const distinctEl = document.getElementById("distinct-sample");
+  if (distinctEl) distinctEl.checked = distinctSample;
 }
 
 function _refreshTiesParamDatalist(extraParams) {
@@ -772,6 +781,14 @@ function _wireTiesPanel() {
     });
   }
 
+  const distinctEl = document.getElementById("distinct-sample");
+  if (distinctEl) {
+    distinctEl.addEventListener("change", function () {
+      distinctSample = distinctEl.checked;
+      _saveFormValues();
+    });
+  }
+
   card.querySelectorAll("[data-ties-preset]").forEach(function (btn) {
     btn.addEventListener("click", function () {
       const key = btn.getAttribute("data-ties-preset");
@@ -823,14 +840,59 @@ function _previewStructure() {
       }
       const params = (res.body.parameters || []).slice();
       _refreshTiesParamDatalist(params);
+      _renderPerStateStacks(res.body.layers || [], res.body.states || []);
       _renderPreviewChecklist(res.body.layers || [], params);
+      const stateNote = (res.body.states || []).length
+        ? " · " + res.body.states.length + " state(s) differ structurally"
+        : "";
       _setPreviewStatus(
-        (res.body.layers || []).length + " layers · " + params.length + " parameters",
+        (res.body.layers || []).length + " layers · " + params.length +
+          " parameters" + stateNote,
         false
       );
     })
     .catch(function (e) { _setPreviewStatus(String(e), true); })
     .finally(function () { if (btn) btn.disabled = false; });
+}
+
+function _renderPerStateStacks(layers, states) {
+  // Display per-state structural divergence (sample != structure): the shared
+  // template stack, plus any state that carries its own layers (which it
+  // omits / adds vs the template). Read-only — editing is description-driven.
+  const host = document.getElementById("ties-perstate-host");
+  if (!host) return;
+  host.innerHTML = "";
+  if (!states || !states.length) return;  // homogeneous: nothing to show
+
+  const templateNames = (layers || []).map(function (l) { return l.name; });
+
+  const wrap = document.createElement("div");
+  wrap.className = "alert alert-info py-2 px-3 mb-2 small";
+
+  const title = document.createElement("div");
+  title.className = "fw-semibold mb-1";
+  title.innerHTML = '<i class="bi bi-layers-half"></i> Per-state structure ' +
+    '(sample ≠ structure)';
+  wrap.appendChild(title);
+
+  const tmpl = document.createElement("div");
+  tmpl.className = "font-monospace";
+  tmpl.textContent = "template: " + (templateNames.join(" / ") || "(none)");
+  wrap.appendChild(tmpl);
+
+  states.forEach(function (st) {
+    const line = document.createElement("div");
+    line.className = "font-monospace";
+    let txt = (st.name || "state") + ": " + (st.layers || []).join(" / ");
+    const notes = [];
+    if (st.omits && st.omits.length) notes.push("omits " + st.omits.join(", "));
+    if (st.adds && st.adds.length) notes.push("adds " + st.adds.join(", "));
+    if (notes.length) txt += "  (" + notes.join("; ") + ")";
+    line.textContent = txt;
+    wrap.appendChild(line);
+  });
+
+  host.appendChild(wrap);
 }
 
 function _renderPreviewChecklist(layers, params) {
@@ -1239,19 +1301,6 @@ function _buildAnalysisBody(opts) {
     body.states = order.map(function (name) {
       return _buildStateEntry(name, byState[name], errors);
     });
-
-    const tieParams = _parseTiesText(tiesText);
-    if (tiesMode === "shared" && tieParams.length) {
-      body.shared_parameters = tieParams;
-    } else if (tiesMode === "unshared" && tieParams.length) {
-      body.unshared_parameters = tieParams;
-    }
-    if (body.shared_parameters && body.unshared_parameters) {
-      // Radio prevents this, but be defensive.
-      errors.push(
-        "shared_parameters and unshared_parameters are mutually exclusive."
-      );
-    }
     // Multi-state path drops top-level data_files.
   } else {
     // Single-state or ad-hoc multi-file co-refinement. Emit a one-entry
@@ -1273,6 +1322,35 @@ function _buildAnalysisBody(opts) {
       });
       if (dataFiles.length > 1) body.data_files = dataFiles;
     }
+  }
+
+  // Cross-state parameter ties. Collected here — OUTSIDE the state-grouping
+  // branches above — so the user's selection in the ties panel always survives
+  // both Save Setup (/api/setup/export) and Start Analysis. Previously this ran
+  // only inside the multi-state branch, so grouping-state edge cases (e.g. after
+  // loading a setup) silently dropped the shared/unshared parameters. The ties
+  // panel is only shown for multi-state, so a non-empty selection is a genuine
+  // co-refinement; tiesMode/tiesText are restored on setup load independently of
+  // the file-grouping UI.
+  const tieParams = _parseTiesText(tiesText);
+  if (tiesMode === "shared" && tieParams.length) {
+    body.shared_parameters = tieParams;
+  } else if (tiesMode === "unshared" && tieParams.length) {
+    body.unshared_parameters = tieParams;
+  }
+  if (body.shared_parameters && body.unshared_parameters) {
+    // The radio prevents this, but be defensive.
+    errors.push("shared_parameters and unshared_parameters are mutually exclusive.");
+  }
+
+  // Identity flag (orthogonal to ties): co-refined states are distinct
+  // physical samples vs one sample under several conditions. Only meaningful
+  // for a genuine multi-state co-refinement, so gate on the ties card being
+  // shown (same condition: grouping on, ≥2 states). Default false → omitted.
+  const tiesCard = document.getElementById("ties-card");
+  const tiesVisible = tiesCard && tiesCard.style.display !== "none";
+  if (distinctSample && tiesVisible) {
+    body.distinct_sample = true;
   }
 
   return { body: body, errors: errors };
@@ -1373,6 +1451,7 @@ function _applySetupPrefill(payload) {
     tiesMode = "auto";
     tiesText = "";
   }
+  distinctSample = !!payload.distinct_sample;
 
   // Fetch each file's reflectivity data, then render the list + plot. The
   // remaining UI (overrides / ties panels) is rendered by _renderPlottedFilesList

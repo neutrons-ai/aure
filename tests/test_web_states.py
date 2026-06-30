@@ -351,6 +351,48 @@ def test_preview_structure_happy_path(tmp_path: Path) -> None:
     assert "substrate.interface" in data["parameters"]
 
 
+def test_preview_structure_surfaces_per_state_divergence(tmp_path: Path) -> None:
+    """When a state carries its own stack (sample != structure), the preview
+    reports how it diverges from the template; homogeneous states are omitted."""
+    f1, f2 = _write_two_state_files(tmp_path)
+    out = tmp_path / "out"
+    out.mkdir()
+    client = _make_ui_client(out)
+    body = _ui_body(f1, f2, str(out))
+
+    result = {
+        "current_model": {
+            "layers": [
+                {"name": n, "thickness": 100.0, "material": {"rho": 6.0}}
+                for n in ["Cu oxide", "Cu", "Ti"]
+            ],
+            "substrate": {"name": "Si"},
+            "ambient": {"name": "air"},
+            "states": [
+                {"name": "D2O"},  # inherits the template (no per-state layers)
+                {
+                    "name": "H2O",
+                    "layers": [
+                        {"name": "Cu", "thickness": 100.0, "material": {"rho": 6.0}},
+                        {"name": "Ti", "thickness": 30.0, "material": {"rho": -1.9}},
+                    ],
+                },
+            ],
+        }
+    }
+    with patch("aure.workflow.runner.run_prepare", return_value=result):
+        resp = client.post("/api/preview-structure", json=body)
+
+    assert resp.status_code == 200, resp.get_data(as_text=True)
+    data = resp.get_json()
+    # Only the divergent state is surfaced.
+    assert [s["name"] for s in data["states"]] == ["H2O"]
+    h2o = data["states"][0]
+    assert h2o["layers"] == ["Cu", "Ti"]
+    assert h2o["omits"] == ["Cu oxide"]
+    assert h2o["adds"] == []
+
+
 def test_preview_structure_rejects_missing_file(tmp_path: Path) -> None:
     out = tmp_path / "out"
     out.mkdir()

@@ -34,6 +34,7 @@ class UserConfig(TypedDict, total=False):
     states: List[dict]  # StateDefinition-shaped dicts (resolved & validated)
     shared_parameters: List[str]
     unshared_parameters: List[str]
+    distinct_sample: bool  # co-refined states are distinct physical samples
 
 
 _EMPTY: UserConfig = {
@@ -43,6 +44,7 @@ _EMPTY: UserConfig = {
     "states": [],
     "shared_parameters": [],
     "unshared_parameters": [],
+    "distinct_sample": False,
 }
 
 
@@ -107,6 +109,8 @@ def load_user_config(path: Optional[str | Path] = None) -> UserConfig:
             "provide at most one."
         )
 
+    cfg["distinct_sample"] = bool(raw.get("distinct_sample", False))
+
     cfg["states"] = _parse_states(raw.get("states"), base_dir=p.parent)
 
     if cfg["evaluation_criteria"]:
@@ -130,6 +134,7 @@ def _empty_config() -> UserConfig:
         "states": [],
         "shared_parameters": [],
         "unshared_parameters": [],
+        "distinct_sample": False,
     }
 
 
@@ -282,6 +287,11 @@ def _parse_states(
         ):
             if opt in entry:
                 state[opt] = _normalise_nuisance(opt, entry[opt])
+        # Per-state structure overrides (sample != structure): a state may carry
+        # its own complete layers/substrate, passed through verbatim.
+        for opt in ("layers", "substrate"):
+            if entry.get(opt):
+                state[opt] = entry[opt]
         parsed.append(state)
 
     if not parsed:
