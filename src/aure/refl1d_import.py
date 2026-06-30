@@ -309,6 +309,20 @@ def _structure_from_sample(
     )
 
 
+def _structure_signature(substrate: dict, layers: list) -> tuple:
+    """Identity of a layer stack for per-state divergence detection.
+
+    Two states are structurally identical when they share the same substrate
+    name and the same ordered list of layer names. Per-state parameter VALUES
+    (thickness, SLD, roughness) are NOT structural — they are handled by the
+    tied/untied parameter machinery — so only names and order matter here.
+    """
+    return (
+        (substrate or {}).get("name"),
+        tuple((layer or {}).get("name") for layer in (layers or [])),
+    )
+
+
 def _probe_intensity(probe) -> dict:
     """Recover intensity normalisation settings from a probe."""
     intensity = getattr(probe, "intensity", None)
@@ -433,6 +447,20 @@ def _recover_tied_set(
             for attr in _DEFAULT_TIED_LAYER_ATTRS:
                 candidates.append((idx, layer_name, attr))
 
+    # Match layers across states by NAME, not position: a heterogeneous
+    # co-refinement may drop a layer in one state (e.g. an oxide present in
+    # air but not in electrolyte), which shifts every layer below it to a
+    # different index. A positional comparison would then tie the wrong
+    # slabs. Build a name -> slab map for each other sample (first wins on
+    # the rare duplicate-name stack).
+    def _by_name(sample) -> dict:
+        out: dict = {}
+        for slab in sample:
+            out.setdefault(str(slab.material.name), slab)
+        return out
+
+    other_maps = [_by_name(other) for other in samples[1:]]
+
     tied: list[str] = []
     untied: list[str] = []
     for idx, name, attr in candidates:
@@ -440,14 +468,16 @@ def _recover_tied_set(
             ref_param = _get_layer_param(first[idx], attr)
         except AttributeError:
             continue
+        # Other states that actually contain this named layer. A layer
+        # present in only sample 0 has nothing to tie across states — it is
+        # that state's own free parameter, so it joins neither list.
+        present = [m[name] for m in other_maps if name in m]
+        if not present:
+            continue
         is_tied = True
-        for other in samples[1:]:
-            other_slabs = list(other)
-            if idx >= len(other_slabs):
-                is_tied = False
-                break
+        for other_slab in present:
             try:
-                other_param = _get_layer_param(other_slabs[idx], attr)
+                other_param = _get_layer_param(other_slab, attr)
             except AttributeError:
                 is_tied = False
                 break
@@ -732,10 +762,20 @@ def definition_from_problem(
     base_back = state_defs[0]["back_reflection"]
     base_ambient = state_defs[0]["ambient"]
     base_intensity = state_defs[0]["intensity"]
-    # Strip the helper keys off the remaining states too.
+    # Per-state structure (sample != structure): a state whose stack differs
+    # structurally from the base template keeps its own full layers/substrate
+    # so a heterogeneous co-refinement (e.g. an oxide present in one state and
+    # absent in another) round-trips into the new schema. States matching the
+    # base inherit the template and are left un-duplicated.
+    base_sig = _structure_signature(base_substrate, base_layers)
     for sd in state_defs[1:]:
-        sd.pop("_substrate", None)
-        sd.pop("_layers", None)
+        sd_subs = sd.pop("_substrate", None)
+        sd_lyrs = sd.pop("_layers", None)
+        if sd_subs is None or sd_lyrs is None:
+            continue
+        if _structure_signature(sd_subs, sd_lyrs) != base_sig:
+            sd["substrate"] = sd_subs
+            sd["layers"] = sd_lyrs
 
     # build_states_problem rejects mixed orientations, so the first
     # sample's orientation applies to every state.
@@ -1194,6 +1234,19 @@ def _definition_from_setup_and_problem(
             [ds["file"] for ds in data_files]
         )
         state_defs.append(state_def)
+
+    # ── Per-state structure (sample != structure) ──────────────────────
+    # A state whose refl1d stack differs structurally from the base template
+    # keeps its own full layers/substrate so heterogeneous co-refinements
+    # round-trip; states matching the base inherit the template.
+    base_sig = _structure_signature(base_substrate, base_layers)
+    for sd, sample, st_back in zip(state_defs, samples, resolved_back):
+        substrate, layers, _amb = _structure_from_sample(
+            sample, back_reflection=st_back
+        )
+        if _structure_signature(substrate, layers) != base_sig:
+            sd["substrate"] = substrate
+            sd["layers"] = layers
 
     # ── Cross-state tied set (still recovered from refl1d via id()) ─────
     shared_params, unshared_params, _ = _recover_tied_set(

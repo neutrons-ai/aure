@@ -85,6 +85,13 @@ def _attach_state_metadata(
             "shared_parameters and unshared_parameters are mutually exclusive"
         )
 
+    # Identity (orthogonal to ties): whether the co-refined states are distinct
+    # physical samples. Default False (same sample under several conditions);
+    # threaded downstream into run_info so the data-assembler assigns one shared
+    # sample_id (default) or a distinct one per state.
+    if "distinct_sample" in user_config:
+        model_def["distinct_sample"] = bool(user_config["distinct_sample"])
+
     # Config wins: any user-supplied tie set is copied verbatim, even if the
     # LLM proposed a different one.
     if user_config_wins and cfg_shared:
@@ -107,7 +114,10 @@ def _attach_state_metadata(
         model_def.setdefault("shared_parameters", [])
         model_def.setdefault("unshared_parameters", [])
 
-    # Surface validation errors early.
+    # Surface validation errors early. On the INITIAL build a tie that names a
+    # layer absent from every state is a genuine mistake (typo) and must raise;
+    # stale ties from a structural edit are pruned on refine (see _refine_model),
+    # not here.
     from .model_builder import _resolve_tied_set
 
     _resolve_tied_set(model_def)
@@ -265,13 +275,34 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
             # supplied ties in the config they win, regardless of the LLM.
             prev_states = current_model.get("states") or []
             if prev_states:
-                if "states" not in new_model or not new_model.get("states"):
-                    # Deepcopy so subsequent in-place edits of new_model
-                    # (e.g. attaching fit_results per state) don't reach
-                    # back into best_model.states through shared refs.
-                    new_model["states"] = copy.deepcopy(prev_states)
+                # Always start from the carried-over states so the runtime
+                # metadata intake attached (data files, ambient, intensity,
+                # back_reflection) survives. The refine LLM may only edit a
+                # state's STRUCTURE (its own `layers`/`substrate`, for
+                # "sample != structure" cases like "the H2O state has no
+                # oxide"); merge just those keys by state name so a lossy
+                # re-emission of the states array can't drop the metadata.
+                # Deepcopy so later in-place edits don't reach back into
+                # best_model.states through shared refs.
+                carried = copy.deepcopy(prev_states)
+                llm_states = new_model.get("states") or []
+                if llm_states:
+                    by_name = {s.get("name"): s for s in carried}
+                    for ls in llm_states:
+                        tgt = by_name.get(ls.get("name"))
+                        if tgt is None:
+                            continue
+                        for key in ("layers", "substrate"):
+                            if ls.get(key):
+                                tgt[key] = copy.deepcopy(ls[key])
+                new_model["states"] = carried
 
                 user_config = state.get("user_config") or {}
+                # Identity flag is carried over (config wins, else previous).
+                if "distinct_sample" in user_config:
+                    new_model["distinct_sample"] = bool(user_config["distinct_sample"])
+                elif "distinct_sample" in current_model:
+                    new_model["distinct_sample"] = current_model["distinct_sample"]
                 cfg_shared = user_config.get("shared_parameters") or []
                 cfg_unshared = user_config.get("unshared_parameters") or []
                 if cfg_shared:
@@ -312,6 +343,19 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
                             new_model["unshared_parameters"] = list(
                                 current_model.get("unshared_parameters") or []
                             )
+
+                # Reconcile ties with the (possibly edited) structure: drop any
+                # tie whose layer no longer exists, so a structural change (e.g.
+                # the LLM removing a layer) can never carry a dangling reference
+                # into the fit — which previously aborted the refit.
+                from .model_builder import prune_tie_specs
+
+                dropped = prune_tie_specs(new_model)
+                if dropped:
+                    logger.info(
+                        "[MODELING] Dropped tie spec(s) for removed layer(s): %s",
+                        dropped,
+                    )
             updates["llm_calls"].append(
                 LLMCallRecord(
                     node="modeling",
@@ -560,6 +604,64 @@ def _extract_cross_state_unshared(sample_description: str, model_def: dict):
         return None
 
 
+def _extract_per_state_structure(
+    sample_description: str, model_def: dict, states_in: list
+) -> None:
+    """Derive per-state STRUCTURE differences from the NL description, in place.
+
+    For a multi-state co-refinement (sample ≠ structure), ask the LLM which
+    template layers each state OMITS and set that state's ``layers`` to the
+    template minus those — so a layer can be present in some states and absent in
+    others. Validated against the template layer names. No-op without an LLM /
+    when nothing is called out / on error (states keep the shared template).
+    Never raises.
+    """
+    if not sample_description or not llm_available():
+        return
+    template = model_def.get("layers") or []
+    template_names = [
+        layer.get("name")
+        for layer in template
+        if isinstance(layer, dict) and layer.get("name")
+    ]
+    state_names = [st.get("name") for st in states_in if st.get("name")]
+    if not template_names or not state_names:
+        return
+
+    from .prompts import format_per_state_structure_prompt
+
+    try:
+        import json
+
+        prompt = format_per_state_structure_prompt(
+            sample_description, state_names, template_names
+        )
+        response = get_llm(temperature=0).invoke([HumanMessage(content=prompt)])
+        per_state = (
+            json.loads(_strip_code_fences(response.content.strip())).get("per_state_absent")
+            or {}
+        )
+    except Exception as exc:  # graceful: keep the shared template
+        logger.warning("[MODELING] per-state structure extraction failed: %s", exc)
+        return
+
+    by_lower = {n.lower(): n for n in template_names}
+    for st in states_in:
+        absent = per_state.get(st.get("name")) or []
+        remove = {
+            by_lower[a.lower()]
+            for a in absent
+            if isinstance(a, str) and a.lower() in by_lower
+        }
+        if remove:
+            st["layers"] = [layer for layer in template if layer.get("name") not in remove]
+            logger.info(
+                "[MODELING] State %r omits layer(s) %s (per-state structure)",
+                st.get("name"),
+                sorted(remove),
+            )
+
+
 def _build_initial_model(state: ReflectivityState) -> Dict[str, Any]:
     """
     Build the initial refl1d model from features and sample description.
@@ -643,6 +745,15 @@ def _build_initial_model(state: ReflectivityState) -> Dict[str, Any]:
             # per state (e.g. a surface oxide in-air vs in-electrolyte).
             states_in = state.get("states") or []
             if len(states_in) >= 2:
+                # Sample ≠ structure: derive any per-state structural differences
+                # ("state 2 has no oxide") from the description, setting that
+                # state's own `layers`. Runs before tie extraction so the tie set
+                # reflects the final per-state stacks.
+                if not any(st.get("layers") for st in states_in):
+                    _extract_per_state_structure(
+                        state.get("sample_description", ""), model_def, states_in
+                    )
+
                 uc = dict(state.get("user_config") or {})
                 if not uc.get("shared_parameters") and not uc.get("unshared_parameters"):
                     derived = _extract_cross_state_unshared(
@@ -1259,6 +1370,18 @@ def _validate_model_json(obj: dict) -> bool:
         return False
     if not isinstance(obj["ambient"], dict) or "sld" not in obj["ambient"]:
         return False
+    # Per-state structure (sample != structure): a state may carry its own
+    # complete `layers` / `substrate`. When present they must be well-formed,
+    # otherwise reject the parse so the deterministic fallback takes over.
+    for st in obj.get("states") or []:
+        if not isinstance(st, dict):
+            return False
+        if "layers" in st and not isinstance(st["layers"], list):
+            return False
+        if "substrate" in st and (
+            not isinstance(st["substrate"], dict) or "sld" not in st["substrate"]
+        ):
+            return False
     return True
 
 

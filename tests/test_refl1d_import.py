@@ -253,6 +253,59 @@ def test_multi_state_recovers_state_grouping(tmp_path, two_files):
     assert amb_names == {"D2O", "H2O"}
 
 
+def _hetero_state_definition(files: list[str]) -> dict:
+    """Two states sharing a Cu/Ti base, but the D2O state additionally has a
+    'Cu oxide' surface layer that H2O lacks (sample != structure). H2O carries
+    its own oxide-less ``layers``; D2O inherits the template (with the oxide)."""
+    defn = _two_state_definition(files)
+    oxide = {
+        "name": "Cu oxide",
+        "sld": 5.0,
+        "sld_min": 3.0,
+        "sld_max": 6.5,
+        "thickness": 25.0,
+        "thickness_min": 5.0,
+        "thickness_max": 60.0,
+        "roughness": 4.0,
+        "roughness_max": 15.0,
+    }
+    base_layers = defn["layers"]  # [Cu, Ti]
+    defn["layers"] = [oxide, *base_layers]  # template = [Cu oxide, Cu, Ti]
+    defn["states"][1]["layers"] = [dict(layer) for layer in base_layers]  # H2O: no oxide
+    return defn
+
+
+def test_multi_state_heterogeneous_structure_round_trips(tmp_path, two_files):
+    """A co-refinement where one state lacks a layer must round-trip: the
+    recovered model keeps that state's own oxide-less stack, and rebuilding
+    yields heterogeneous samples (oxide present in the D2O state only)."""
+    from aure.nodes.model_builder import build_states_problem
+    from aure.refl1d_import import import_refl1d
+
+    src = _save_problem_to(tmp_path, _hetero_state_definition(two_files))
+    out = tmp_path / "imported"
+    import_refl1d(str(src), str(out), state_names=["D2O", "H2O"])
+
+    final = json.loads((out / "final_state.json").read_text())
+    model = final["state"]["current_model"]
+    by_name = {s["name"]: s for s in model["states"]}
+
+    # Template (top-level) keeps the oxide; H2O carries its own oxide-less stack
+    # while D2O inherits the template (no per-state override needed).
+    assert any(layer["name"] == "Cu oxide" for layer in model["layers"])
+    h2o_layers = by_name["H2O"].get("layers")
+    assert h2o_layers is not None
+    assert [layer["name"] for layer in h2o_layers] == ["Cu", "Ti"]
+    assert not by_name["D2O"].get("layers")
+
+    # Rebuild: heterogeneous samples — oxide present only in the D2O state.
+    _problem, by_state, _ = build_states_problem(model)
+    d2o_names = [str(s.material.name) for s in by_state["D2O"][0].sample]
+    h2o_names = [str(s.material.name) for s in by_state["H2O"][0].sample]
+    assert "Cu oxide" in d2o_names
+    assert "Cu oxide" not in h2o_names
+
+
 def test_multi_state_recovered_definition_rebuilds_a_problem(
     tmp_path, two_files
 ):

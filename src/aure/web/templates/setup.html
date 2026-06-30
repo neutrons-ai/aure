@@ -131,11 +131,28 @@
                     </button>
                     <span id="ties-preview-status" class="small text-muted ms-2"></span>
                   </div>
+                  <div id="ties-perstate-host"></div>
                   <div id="ties-checklist-host"></div>
                   <textarea id="ties-text" class="form-control font-monospace"
                             rows="4" disabled
                             placeholder="One dotted name per line, e.g.&#10;Cu.thickness&#10;Cu.material.rho&#10;substrate.interface"></textarea>
                   <datalist id="ties-param-suggestions"></datalist>
+                  <hr class="my-3" />
+                  <div class="form-check">
+                    <input class="form-check-input" type="checkbox" id="distinct-sample" />
+                    <label class="form-check-label fw-semibold" for="distinct-sample">
+                      These states are distinct physical samples
+                    </label>
+                    <div class="form-text">
+                      Leave unchecked (default) when the states are one sample
+                      measured under different conditions (e.g. D<sub>2</sub>O
+                      then H<sub>2</sub>O) — they share one sample identity
+                      downstream. Check when the co-refined states are genuinely
+                      different samples that merely share a fitting strategy, so
+                      each gets a distinct sample id. Independent of structure:
+                      a single sample can change layers between states.
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>

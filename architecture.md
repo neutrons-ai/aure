@@ -13,7 +13,7 @@ evaluation → refinement** (LangGraph nodes in `src/aure/nodes/`, orchestrated 
 three ways: a **web UI** (Flask, `web/`), a **CLI** (`analyze` / `batch`, `cli.py`), and an
 **MCP server** (`mcp_server.py`).
 
-## 2. Domain concepts (two orthogonal axes)
+## 2. Domain concepts (orthogonal axes)
 
 - **State** — one physical condition of the sample (e.g. "in D2O at OCV"). A state is measured
   at one or more incident angles; each angle is a **partial** (its own run/file). Partials of a
@@ -23,10 +23,20 @@ three ways: a **web UI** (Flask, `web/`), a **CLI** (`analyze` / `batch`, `cli.p
   - *Single-state co-refinement*: several Q-segments/angles of one state, structurally tied.
   - *Multi-state co-refinement*: several states (e.g. D2O / H2O) sharing structural parameters
     while differing in others.
+- **Sample identity** (`ModelDefinition.distinct_sample`, default `False`) — whether the
+  co-refined states are *one* physical sample under several conditions (shared sample identity
+  downstream) or *distinct* physical samples that merely share a fitting strategy. Identity only,
+  no physics; threaded into `run_info.json` for the data-assembler to assign one shared
+  `sample_id` (default) or one per state.
+- **Per-state structure ("sample ≠ structure")** — a single sample can change its layer stack
+  between states (e.g. a surface oxide present in air but gone in electrolyte). `StateDefinition`
+  may carry its own complete `layers`/`substrate`; absent ⇒ inherit the model-level template.
 
-These are independent: state = data grouping; co-refinement = how the fit ties parameters.
-The canonical config shape is `states: [{name, data_files, extra_description, …}]` plus
-`shared_parameters` / `unshared_parameters` (see `config.py`, `setup.py`, `state.py`).
+These are independent: **state** = data grouping; **co-refinement** = how the fit ties
+parameters; **sample identity** = how many physical samples; **structure** = each state's stack.
+The canonical config shape is `states: [{name, data_files, extra_description, layers?, …}]` plus
+`shared_parameters` / `unshared_parameters` / `distinct_sample` (see `config.py`, `setup.py`,
+`state.py`).
 
 ## 3. Cross-state parameter ties (shared vs unshared)
 
@@ -45,9 +55,26 @@ Flow: the UI "Cross-state parameter ties" panel (or a setup-YAML `shared_paramet
 Parameter objects across experiments. **Invariant:** a parameter the user marks unshared must
 NOT be aliased across states.
 
-> Known gap: a sharing instruction written only in the free-text `sample_description` is **not**
-> auto-extracted into `shared/unshared_parameters` (no NL→ties parser). Use the structured ties
-> panel / setup block; the description alone will fall back to the Auto default.
+The default tied set and name-validation run over the **union** of every state's layer names, so
+a layer present in only some states is fine; a tie referencing a layer absent from a given state
+simply does not apply there (logged, never a hard fail). When a refine removes a layer,
+`modeling.prune_tie_specs` drops the now-dangling tie before the fit (regression: this used to
+abort with "unshared_parameters references unknown layer").
+
+When the user supplies no structured ties, `modeling._extract_cross_state_unshared` derives
+unshared parameters from the free-text `sample_description` (e.g. "the oxide differs between
+states"), and `modeling._extract_per_state_structure` derives per-state structural differences
+(e.g. "the H2O state has no oxide" → that state's `layers` = template minus the oxide). Both are
+LLM-driven, validated against the layer names, and no-op without an LLM. The structured ties
+panel / setup block still wins when present.
+
+### Per-state structure on refine
+A refine ("remove the oxide on state 2") edits *that state's* `layers` inside `states[]`, not the
+top-level template (which would change every state). `modeling._refine_model` merges only the
+structural keys (`layers`/`substrate`) the LLM emits per state by name, preserving the runtime
+metadata intake attached. `refl1d_import` round-trips heterogeneous co-refinements: it emits a
+state's own `layers` when its refl1d stack diverges from the base, and recovers cross-state ties
+by **layer name** (not stack position, which shifts when a state drops a layer).
 
 Decision (bugfix): cross-state ties are collected in `setup.js:_buildAnalysisBody` **outside**
 the file-grouping branches, so they survive both **Start Analysis** and **Save Setup**

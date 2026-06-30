@@ -317,6 +317,8 @@ def setup():
                         prev_run["unshared_parameters"] = list(
                             model["unshared_parameters"]
                         )
+                    if model.get("distinct_sample"):
+                        prev_run["distinct_sample"] = bool(model["distinct_sample"])
             except Exception:
                 # Prefill is best-effort; never block the setup page.
                 pass
@@ -657,6 +659,7 @@ def api_preview_structure():
         states_body = body.get("states")
         shared_parameters = body.get("shared_parameters")
         unshared_parameters = body.get("unshared_parameters")
+        distinct_sample = body.get("distinct_sample")
         user_config_extra = body.get("user_config") or {}
 
         errors: list[str] = []
@@ -719,6 +722,11 @@ def api_preview_structure():
                     **user_config_extra,
                     "unshared_parameters": unshared_parameters,
                 }
+            if distinct_sample is not None:
+                user_config_extra = {
+                    **user_config_extra,
+                    "distinct_sample": bool(distinct_sample),
+                }
         else:
             if not data_file or not Path(data_file).is_file():
                 errors.append("data_file: file does not exist")
@@ -745,19 +753,49 @@ def api_preview_structure():
         model = result.get("current_model") or {}
         layers = []
         params: list[str] = []
+        states_out: list[dict] = []
         if isinstance(model, dict):
-            for layer in model.get("layers", []) or []:
-                if not isinstance(layer, dict):
-                    continue
-                name = layer.get("name")
-                if not name:
-                    continue
+
+            def _layer_names(layer_list):
+                return [
+                    layer.get("name")
+                    for layer in layer_list or []
+                    if isinstance(layer, dict) and layer.get("name")
+                ]
+
+            template_names = _layer_names(model.get("layers"))
+            for name in template_names:
                 layers.append({"name": name})
                 for attr in ("thickness", "material.rho", "interface"):
                     params.append(f"{name}.{attr}")
             params.append("substrate.interface")
 
-        return jsonify({"layers": layers, "parameters": params, "errors": []})
+            # Per-state structure (sample != structure): surface any state that
+            # carries its own stack so the UI can show how it diverges from the
+            # template (which layers it omits / adds).
+            template_set = set(template_names)
+            for st in model.get("states", []) or []:
+                if not isinstance(st, dict) or not st.get("layers"):
+                    continue
+                names = _layer_names(st.get("layers"))
+                name_set = set(names)
+                states_out.append(
+                    {
+                        "name": st.get("name"),
+                        "layers": names,
+                        "omits": [n for n in template_names if n not in name_set],
+                        "adds": [n for n in names if n not in template_set],
+                    }
+                )
+
+        return jsonify(
+            {
+                "layers": layers,
+                "parameters": params,
+                "states": states_out,
+                "errors": [],
+            }
+        )
     finally:
         _PREVIEW_LOCK.release()
 
@@ -827,6 +865,8 @@ def api_setup_load():
         payload["shared_parameters"] = list(setup["shared_parameters"])  # type: ignore[arg-type]
     if setup.get("unshared_parameters"):
         payload["unshared_parameters"] = list(setup["unshared_parameters"])  # type: ignore[arg-type]
+    if setup.get("distinct_sample"):
+        payload["distinct_sample"] = bool(setup["distinct_sample"])
     if setup.get("model_name"):
         payload["model_name"] = setup["model_name"]
     if setup.get("max_refinements") is not None:
@@ -1005,6 +1045,7 @@ def api_start_analysis():
     user_config_extra = body.get("user_config") or {}
     shared_parameters = body.get("shared_parameters")
     unshared_parameters = body.get("unshared_parameters")
+    distinct_sample = body.get("distinct_sample")
 
     states = None
     if states_body is not None:
@@ -1069,6 +1110,11 @@ def api_start_analysis():
             user_config_extra = {
                 **user_config_extra,
                 "unshared_parameters": unshared_parameters,
+            }
+        if distinct_sample is not None:
+            user_config_extra = {
+                **user_config_extra,
+                "distinct_sample": bool(distinct_sample),
             }
     elif data_files is not None:
         # Validate data_files structure and file existence

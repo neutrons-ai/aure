@@ -96,6 +96,16 @@ class ModelDefinition(TypedDict, total=False):
     states: List["StateDefinition"]
     shared_parameters: List[str]  # Whitelist of "Layer.attr" tied across states
     unshared_parameters: List[str]  # Blacklist; mutually exclusive with above
+    # Identity (NOT physics): whether the co-refined states are distinct
+    # physical samples rather than one sample measured under several
+    # conditions. Default ``False`` — co-refined states usually ARE the same
+    # sample (e.g. one electrode in D2O then H2O), so they share one
+    # downstream ``sample_id``. Set ``True`` when the states are genuinely
+    # different samples that merely share a fitting strategy, so the
+    # data-assembler assigns a distinct ``sample_id`` per state. Orthogonal
+    # to per-state structure ("sample != structure"): a single sample can
+    # change structure between states, and distinct samples can share one.
+    distinct_sample: bool
 
     # ---- Post-fit snapshots (populated after fitting) ----
     fitted_parameters: dict  # {param_name: value}
@@ -182,6 +192,13 @@ class StateDefinition(TypedDict, total=False):
     and ``back_reflection`` are always per-state (they describe the
     measurement, not the sample structure) but inherit the model-level
     defaults when omitted.
+
+    **Sample ≠ structure:** a state may also carry its own ``layers`` /
+    ``substrate`` — its COMPLETE structure, overriding the model-level template
+    for that state. So a layer can be present in some states and absent in
+    others (e.g. a surface oxide in air but not in electrolyte). When omitted,
+    the state inherits ``ModelDefinition.layers``/``substrate``. Cross-state
+    ties apply only where a layer exists in the relevant states.
     """
 
     name: str  # Unique within the model definition
@@ -192,6 +209,10 @@ class StateDefinition(TypedDict, total=False):
     sample_broadening: dict  # {init, min, max} — partials only
     ambient: AmbientInfo  # Per-state override of the model-level ambient
     intensity: IntensityInfo  # Per-state override of the model-level intensity
+    # Per-state STRUCTURE override (full stack). Absent → inherit the
+    # model-level template (ModelDefinition.layers/substrate).
+    layers: List[LayerInfo]
+    substrate: SubstrateInfo
 
 
 class FitResult(TypedDict):

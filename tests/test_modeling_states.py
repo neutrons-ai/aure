@@ -544,12 +544,15 @@ def test_nl_unshared_extracted_and_unties_oxide(monkeypatch):
 def test_nl_extraction_skipped_when_user_config_ties_present(monkeypatch):
     from aure.nodes import modeling
 
-    fake = _fake_llm(monkeypatch, {"unshared_parameters": ["Cu oxide.thickness"]})
+    # The fake returns neither per_state_absent nor unshared ties, so neither NL
+    # extractor changes anything; the explicit tie config must win regardless.
+    # (Structure extraction is orthogonal to ties and may still query the LLM.)
+    _fake_llm(monkeypatch, {"unshared_parameters": []})
     st = _state_with_oxide(_OXIDE_DESC, user_config={"shared_parameters": ["Cu.thickness"]})
     out = modeling.modeling_node(st)
     assert "error" not in out, out.get("error")
     assert out["current_model"]["shared_parameters"] == ["Cu.thickness"]
-    fake.invoke.assert_not_called()  # explicit user config wins; no NL extraction
+    assert not out["current_model"].get("unshared_parameters")  # NL tie extraction skipped
 
 
 def test_nl_extraction_noop_without_llm(monkeypatch):
@@ -562,3 +565,99 @@ def test_nl_extraction_noop_without_llm(monkeypatch):
     md = out["current_model"]
     assert not md.get("unshared_parameters")  # nothing derived without an LLM
     assert ("Cu oxide", "thickness") in _resolve_tied_set(md)  # default tying
+
+
+def test_distinct_sample_threaded_onto_model(monkeypatch):
+    """user_config.distinct_sample lands on the built model (identity, not physics)."""
+    from aure.nodes import modeling
+
+    monkeypatch.setattr(modeling, "llm_available", lambda: False)
+    out = modeling.modeling_node(
+        _state_with_oxide(_OXIDE_DESC, user_config={"distinct_sample": True})
+    )
+    assert "error" not in out, out.get("error")
+    assert out["current_model"]["distinct_sample"] is True
+
+
+def test_distinct_sample_absent_by_default(monkeypatch):
+    """Without the flag, the model does not assert distinct samples."""
+    from aure.nodes import modeling
+
+    monkeypatch.setattr(modeling, "llm_available", lambda: False)
+    out = modeling.modeling_node(_state_with_oxide(_OXIDE_DESC))
+    assert "error" not in out, out.get("error")
+    assert not out["current_model"].get("distinct_sample")
+
+
+def test_refine_prunes_tie_for_removed_layer(monkeypatch):
+    """Regression for the 230539_230543 crash: when a refine removes a layer,
+    the now-dangling tie on it must be PRUNED, not carried into the fit (which
+    previously aborted with 'unshared_parameters references unknown layer')."""
+    import json
+    from unittest.mock import MagicMock
+
+    from aure.nodes import modeling
+    from aure.nodes.model_builder import _resolve_tied_set
+
+    monkeypatch.setattr(modeling, "llm_available", lambda: True)
+
+    current = _multi_state_current_model()
+    cu_oxide = {
+        "name": "Cu oxide", "sld": 4.0, "sld_min": 2.0, "sld_max": 6.0,
+        "thickness": 30.0, "thickness_min": 5.0, "thickness_max": 100.0,
+        "roughness": 5.0, "roughness_max": 20.0,
+    }
+    current["layers"] = [cu_oxide, current["layers"][0]]  # [Cu oxide, Cu]
+    current["shared_parameters"] = []
+    current["unshared_parameters"] = ["Cu oxide.interface"]
+
+    # LLM removes Cu oxide (structural change) and omits the tie spec.
+    llm_return = {
+        k: v for k, v in current.items()
+        if k not in ("states", "shared_parameters", "unshared_parameters")
+    }
+    llm_return["layers"] = [current["layers"][1]]  # only Cu remains
+    fake_llm = MagicMock()
+    fake_llm.invoke.return_value = MagicMock(content=json.dumps(llm_return))
+    monkeypatch.setattr(modeling, "get_llm", lambda temperature=0: fake_llm)
+
+    out = modeling._refine_model(_refine_state(current))
+    assert "error" not in out, out.get("error")
+    nm = out["current_model"]
+    # the dangling Cu oxide tie was pruned ...
+    assert "Cu oxide.interface" not in (nm.get("unshared_parameters") or [])
+    # ... so tie-resolution (which runs at fit time) no longer raises.
+    _resolve_tied_set(nm)
+
+
+def test_per_state_structure_extracted_from_description(monkeypatch):
+    """sample != structure: 'the H2O state has no copper oxide' → that state's
+    own layers drop the oxide while the other state keeps the template."""
+    import json
+    from unittest.mock import MagicMock
+
+    from aure.nodes import modeling
+
+    monkeypatch.setattr(modeling, "llm_available", lambda: True)
+
+    st = _state_with_oxide(
+        "D2O / Cu oxide / 50 nm Cu on Si. The H2O state has no copper oxide."
+    )
+
+    def fake_invoke(msgs):
+        content = msgs[0].content
+        if "per_state_absent" in content:  # structure-extraction prompt
+            return MagicMock(content=json.dumps({"per_state_absent": {"H2O": ["Cu oxide"]}}))
+        return MagicMock(content=json.dumps({"unshared_parameters": []}))  # tie prompt
+
+    fake = MagicMock()
+    fake.invoke.side_effect = fake_invoke
+    monkeypatch.setattr(modeling, "get_llm", lambda temperature=0: fake)
+
+    out = modeling.modeling_node(st)
+    assert "error" not in out, out.get("error")
+    by_name = {s["name"]: s for s in out["current_model"]["states"]}
+    # H2O carries its own oxide-less stack; D2O inherits the template (has oxide).
+    h2o_names = [layer["name"] for layer in by_name["H2O"]["layers"]]
+    assert "Cu oxide" not in h2o_names and "Cu" in h2o_names
+    assert not by_name["D2O"].get("layers")  # inherits template (oxide present)

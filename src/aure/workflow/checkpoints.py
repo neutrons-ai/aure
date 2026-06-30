@@ -115,6 +115,14 @@ class CheckpointManager:
                 }
                 for s in raw_states
             ]
+            # Identity: do the co-refined states denote distinct physical
+            # samples (distinct sample_id per state downstream) or one sample
+            # measured under several conditions (shared sample_id, the
+            # default)? Sourced from the user config; orthogonal to ties and to
+            # per-state structure.
+            run_info["distinct_sample"] = bool(
+                (initial_state.get("user_config") or {}).get("distinct_sample", False)
+            )
         self._save_json(self.output_dir / "run_info.json", run_info)
 
         self._initialized = True
