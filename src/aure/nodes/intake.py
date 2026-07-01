@@ -636,6 +636,7 @@ def intake_node(state: ReflectivityState) -> Dict[str, Any]:
             state["sample_description"],
             parsed_sample=None,
             registry=registry,
+            states=state.get("states"),
         )
         skill_context = load_skill_context(active_skills, registry)
 
@@ -652,6 +653,7 @@ def intake_node(state: ReflectivityState) -> Dict[str, Any]:
                 state["sample_description"],
                 parsed_sample=parsed,
                 registry=registry,
+                states=state.get("states"),
             )
             # Activate the multi-state co-refinement skill when applicable.
             if len(state.get("states") or []) > 1 and (

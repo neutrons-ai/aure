@@ -28,11 +28,14 @@ def extract_critical_edges(
     Find the critical edge and estimate the corresponding SLD.
 
     The critical edge Qc is where total external reflection ends and
-    reflectivity drops from the initial plateau (R ≈ 1) at low Q.
+    reflectivity drops from the initial plateau at low Q.
 
-    The search targets the **first sharp drop after the plateau** and
-    excludes any region where Kiessig fringes (oscillations) have already
-    begun.  At most one candidate is returned.
+    Qc is estimated at the **half-height of the total-reflection plateau**:
+    under resolution smearing R falls to ~½ of the plateau level at the true
+    Qc, so this is both accurate and robust to a plateau that sits below 1.0
+    (imperfect intensity normalization).  The search excludes any region where
+    Kiessig fringes (oscillations) have already begun.  At most one candidate
+    is returned.
 
     For total external reflection: Qc = 4·sqrt(π·SLD)
 
@@ -71,7 +74,7 @@ def extract_critical_edges(
             upper_q = min(upper_q, Q[mi])
             break
 
-    # --- Search for the critical edge in [min_qc, upper_q] --------------
+    # --- Locate the critical edge in [min_qc, upper_q] ------------------
     search_mask = (Q >= min_qc) & (Q <= upper_q)
     if not np.any(search_mask):
         # Fallback: use the full Qc range
@@ -82,27 +85,54 @@ def extract_critical_edges(
     search_idx = np.where(search_mask)[0]
     grad_in_region = dlogR_dQ[search_idx]
 
-    # Find the steepest descent in the region to set a threshold
-    min_grad = np.min(grad_in_region)
-
-    # If the gradient is barely negative there is no discernible edge
+    # If nothing drops there is no discernible edge.
+    min_grad = float(np.min(grad_in_region))
     if min_grad >= -1.0:
         return []
 
-    # Pick the lowest-Q point whose gradient is at least 30% of the
-    # steepest descent — this selects the beginning of the first drop
-    # rather than the steepest point (which can be deeper in the curve).
-    threshold = 0.3 * min_grad  # min_grad is negative
-    candidates = np.where(grad_in_region <= threshold)[0]
-    if len(candidates) == 0:
-        return []
-    best_idx = search_idx[candidates[0]]
+    R_smooth = 10.0**log_R_smooth
 
-    qc = Q[best_idx]
-    # SLD from Qc:  SLD = (Qc / 4)² / π  × 10⁶
+    # Plateau level: robust (median) reflectivity over a small low-Q window at
+    # the start of the search region — the total-reflection plateau. Estimated
+    # from the low-Q points directly (NOT from the steepest-gradient point,
+    # which for a curve decaying toward zero sits far above the edge, deep in
+    # the tail). Using the measured plateau — not an assumed R=1 — makes Qc
+    # correct even when the plateau sits below 1.0 (imperfect normalization).
+    n_plateau = int(min(max(3, len(search_idx) // 8), 12))
+    plateau = float(np.median(R_smooth[search_idx[:n_plateau]]))
+    half_level = 0.5 * plateau
+
+    # Qc = first crossing below half the plateau, scanning up from low Q. This
+    # is the true critical edge; the previous "onset of the first drop"
+    # heuristic fired on plateau noise and under-reported Qc.
+    cross_idx = None
+    for k in search_idx:
+        if R_smooth[k] < half_level:
+            cross_idx = int(k)
+            break
+
+    if cross_idx is None or cross_idx == int(search_idx[0]):
+        # No plateau captured (data may start above Qc) — fall back to the
+        # steepest-descent point in the region.
+        steep_idx = int(search_idx[int(np.argmin(grad_in_region))])
+        qc = float(Q[steep_idx])
+        qc_idx = steep_idx
+    else:
+        # Linear-interpolate the crossing between the bracketing points.
+        prev = cross_idx - 1
+        if prev >= 0 and R_smooth[prev] != R_smooth[cross_idx]:
+            frac = (R_smooth[prev] - half_level) / (
+                R_smooth[prev] - R_smooth[cross_idx]
+            )
+            qc = float(Q[prev] + frac * (Q[cross_idx] - Q[prev]))
+        else:
+            qc = float(Q[cross_idx])
+        qc_idx = cross_idx
+
+    # SLD contrast from Qc:  Δρ = (Qc / 4)² / π  × 10⁶  (incident medium = 0)
     sld = (qc / 4) ** 2 / np.pi * 1e6
 
-    edge_sharpness = abs(dlogR_dQ[best_idx])
+    edge_sharpness = abs(dlogR_dQ[qc_idx])
     if edge_sharpness > 50:
         confidence = "high"
     elif edge_sharpness > 20:
@@ -115,7 +145,7 @@ def extract_critical_edges(
             "Qc": float(qc),
             "estimated_SLD": float(sld),
             "confidence": confidence,
-            "gradient": float(dlogR_dQ[best_idx]),
+            "gradient": float(dlogR_dQ[qc_idx]),
         }
     ]
 
@@ -614,9 +644,7 @@ def analyze_residual_fringes(
     # Deduplicate: merge results within 20% of each other
     thicknesses = _deduplicate_thicknesses(thicknesses)
 
-    n_fringes = max(
-        (t.get("n_fringes", 0) for t in thicknesses), default=0
-    )
+    n_fringes = max((t.get("n_fringes", 0) for t in thicknesses), default=0)
 
     return {
         "has_residual_fringes": len(thicknesses) > 0,
@@ -693,13 +721,15 @@ def _fft_residual_thicknesses(
         if thickness_angstrom < 50:  # unphysically thin
             continue
 
-        results.append({
-            "thickness": float(thickness_angstrom),
-            "uncertainty": float(thickness_angstrom * 0.15),
-            "confidence": "medium",
-            "method": "residual_fft",
-            "fft_power": float(power[idx]),
-        })
+        results.append(
+            {
+                "thickness": float(thickness_angstrom),
+                "uncertainty": float(thickness_angstrom * 0.15),
+                "confidence": "medium",
+                "method": "residual_fft",
+                "fft_power": float(power[idx]),
+            }
+        )
 
     # Sort by FFT power (most significant first), keep top 5
     results.sort(key=lambda x: x.get("fft_power", 0), reverse=True)
@@ -750,7 +780,11 @@ def _fringe_spacing_residual(Q: np.ndarray, ratio: np.ndarray) -> Optional[Dict]
     if len(delta_Q) > 1:
         # Use MAD of spacings for robust uncertainty
         spacing_mad = np.median(np.abs(delta_Q - median_delta_Q))
-        uncertainty = thickness * (spacing_mad / median_delta_Q) if median_delta_Q > 0 else thickness * 0.2
+        uncertainty = (
+            thickness * (spacing_mad / median_delta_Q)
+            if median_delta_Q > 0
+            else thickness * 0.2
+        )
     else:
         uncertainty = thickness * 0.2
 
@@ -792,7 +826,9 @@ def _deduplicate_thicknesses(thicknesses: List[Dict]) -> List[Dict]:
         for m in merged:
             if abs(t["thickness"] - m["thickness"]) / max(m["thickness"], 1) < 0.2:
                 # Keep the higher-confidence estimate
-                if confidence_rank.get(t.get("confidence"), 0) > confidence_rank.get(m.get("confidence"), 0):
+                if confidence_rank.get(t.get("confidence"), 0) > confidence_rank.get(
+                    m.get("confidence"), 0
+                ):
                     m.update(t)
                 found_match = True
                 break
@@ -804,6 +840,32 @@ def _deduplicate_thicknesses(thicknesses: List[Dict]) -> List[Dict]:
         m.pop("fft_power", None)
 
     return merged
+
+
+def format_critical_edge_line(edge: Dict) -> str:
+    """One-line description of a critical edge, incl. any ambient-SLD hint.
+
+    Shared by the analysis display and the evaluation/modeling prompts so the
+    deterministic "critical edge implies a deuterated ambient" hint (annotated
+    onto the edge by the analysis node) travels wherever critical edges are
+    shown.
+    """
+    line = (
+        f"Qc = {edge.get('Qc', 0):.4f} Å⁻¹ → SLD contrast ≈ "
+        f"{edge.get('estimated_SLD', 0):.2f} × 10⁻⁶ Å⁻² "
+        f"({edge.get('confidence', '?')} confidence)"
+    )
+    implied = edge.get("implied_ambient_sld")
+    if edge.get("suggests_deuteration") and implied is not None:
+        sub = edge.get("substrate_sld")
+        sub_str = f"{sub:.2f}" if isinstance(sub, (int, float)) else "?"
+        line += (
+            f" — with the substrate (SLD {sub_str}) this implies an ambient SLD "
+            f"≈ {implied:.1f}, far above the H-form (~0): the ambient is very "
+            f"likely DEUTERATED. Constrain the ambient SLD near {implied:.1f}, "
+            f"not across the full H–D range."
+        )
+    return line
 
 
 def format_features_for_llm(features: Dict) -> str:
@@ -829,9 +891,7 @@ def format_features_for_llm(features: Dict) -> str:
     lines.append("### Critical Edge Analysis")
     if features["critical_edges"]:
         for i, edge in enumerate(features["critical_edges"]):
-            lines.append(
-                f"- Edge {i + 1}: Qc = {edge['Qc']:.4f} Å⁻¹ → SLD ≈ {edge['estimated_SLD']:.2f} × 10⁻⁶ Å⁻² ({edge['confidence']} confidence)"
-            )
+            lines.append(f"- Edge {i + 1}: {format_critical_edge_line(edge)}")
     else:
         lines.append("- No clear critical edges detected")
     lines.append("")

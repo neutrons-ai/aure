@@ -356,6 +356,13 @@ class ReflectivityState(TypedDict):
     # ========== Model State ==========
     current_model: Optional[dict]  # ModelDefinition JSON (or legacy script str)
     model_history: Annotated[List[dict], operator.add]  # Accumulates models
+    # Clean snapshot of the very first model built at intake (before any
+    # refinement). Used as the "rewind" starting point when the refiner
+    # realizes a *reinterpretation* hypothesis (e.g. "the solvent is actually
+    # deuterated") that is mutually exclusive with speculative layers added by
+    # earlier hypotheses — so the new explanation isn't stacked on top of the
+    # discarded one. ``None`` until the initial model is built.
+    baseline_model: Optional[dict]
 
     # ========== Fit Results ==========
     fit_results: Annotated[List[FitResult], operator.add]  # Accumulates fits
@@ -442,6 +449,7 @@ def create_initial_state(
         # Model state
         current_model=None,
         model_history=[],
+        baseline_model=None,
         # Fit results
         fit_results=[],
         current_chi2=None,

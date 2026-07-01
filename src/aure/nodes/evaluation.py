@@ -686,6 +686,7 @@ def _revise_hypotheses(
             parsed_sample=state.get("parsed_sample"),
             registry=registry,
             extra_context=observations,
+            states=state.get("states"),
         )
     except Exception as e:  # never let re-selection break evaluation
         logger.warning("[EVALUATION] Skill re-selection failed: %s", e)

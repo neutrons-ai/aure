@@ -94,6 +94,11 @@ When the active skills apply, include at minimum:
 - **Additional layer missing when residuals show unmodeled fringes of a
   plausible thickness** → flag as a deferred hypothesis that depends on
   residual analysis after the first fit.
+- **Liquid ambient with unspecified isotope** → reinterpret the ambient as a
+  deuterated solvent (skill: `solvent-contrast-matching`). High rank whenever a
+  critical edge / strong low-Q feature appears, or the fit only matches it by
+  inflating a layer thickness or pinning a metal SLD toward the ambient. This
+  is a *reinterpretation* hypothesis (see below), not an added layer.
 
 ### Hypotheses to avoid unless justified
 
@@ -104,6 +109,32 @@ When the active skills apply, include at minimum:
 - Splitting an existing single oxide into two sublayers (CuO + Cu₂O).
 - Any change that reverses the back-reflection geometry or the layer
   stacking order decided at intake.
+
+### Reinterpretation hypotheses (and rewinding the model)
+
+Not every hypothesis adds or removes a layer. A **reinterpretation** changes
+what an *existing* material is — most commonly "the ambient solvent is actually
+deuterated" (its SLD jumps from ≈ 0 to ≈ 6) — or re-labels a layer's nominal
+SLD. Phrase the `change` field as the concrete SLD edit (new value + a wide
+range), with `skill_source` naming the domain skill (e.g.
+`solvent-contrast-matching`).
+
+A reinterpretation is often **mutually exclusive** with an additive hypothesis
+that was already tried to explain the *same* feature. For example, a critical
+edge can be explained EITHER by a deuterated ambient OR by a thick, high-SLD
+layer near the substrate — not both. So when you realize a reinterpretation
+hypothesis:
+
+- **Rewind to the intake baseline model.** Start from the clean structure first
+  built at intake, discarding the speculative layers and inflated thicknesses/
+  SLDs that earlier (now mutually-exclusive) hypotheses accumulated. Then apply
+  ONLY the reinterpretation. Stacking both explanations over-parameterizes the
+  fit and double-counts the same contrast.
+- **The right reinterpretation wins on the data, not just parsimony.** When
+  correct, it fits better (lower χ²) *and* with fewer parameters (lower BIC)
+  than the structural workaround it replaces. The χ²/BIC guardrails keep it
+  only if the refit actually improves; a single worse refit is auto-reverted —
+  that is expected, not a reason to re-propose the same reinterpretation.
 
 ## Consuming the Ranked List (during refinement)
 

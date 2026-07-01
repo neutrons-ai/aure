@@ -13,6 +13,8 @@ the llm module. This file only contains prompt templates and formatting helpers.
 
 from typing import Dict, Any
 
+from ..tools.feature_tools import format_critical_edge_line
+
 
 # ============================================================================
 # SAMPLE DESCRIPTION PARSING
@@ -161,16 +163,26 @@ hypotheses and rank it at the TOP of the list (highest expected value),
 reformatted into the standard fields below, with `skill_source` set to
 "user". Reword it to align with the workflow but preserve the user's intent.
 
+Hypotheses may also be *reinterpretations* — not every hypothesis adds or
+removes a layer. A reinterpretation re-labels an EXISTING material's SLD/isotope
+rather than changing the layer stack. The most important one: when the ambient
+is a liquid whose isotope was not specified, propose reinterpreting it as a
+**deuterated solvent** (ambient SLD ≈ 0 → the D-form value, over a wide range
+spanning both). List this even when the layer stack already looks complete — the
+missing piece is the ambient's isotope, not a layer. Rank it high when the data
+could show a critical edge / strong low-Q feature.
+
 For each hypothesis, produce:
 - `title`: one short line
 - `rationale`: one sentence citing an active skill by name (or the user)
-- `change`: concrete structural edit in neutral terms (insertion point,
-  thickness range Å, SLD range 10⁻⁶ Å⁻², roughness range Å)
+- `change`: the concrete edit in neutral terms — for a layer change: insertion
+  point, thickness range Å, SLD range 10⁻⁶ Å⁻², roughness range Å; for a
+  reinterpretation: the material and its new SLD value + range (no layer added)
 - `skill_source`: name of the skill motivating the hypothesis, or "user"
 
-Return 2–6 hypotheses in rank order. If no structural change is plausible
-(e.g. the user has specified a complete model and all relevant skills are
-satisfied), return an empty list.
+Return 2–6 hypotheses in rank order. If no structural change OR reinterpretation
+is plausible (e.g. the user has specified a complete model in a non-liquid
+ambient and all relevant skills are satisfied), return an empty list.
 
 Apply the ranking criteria and the "avoid unless justified" list from the
 `structural-hypothesis-ranking` skill. Do NOT include changes to the
@@ -463,6 +475,63 @@ def _format_structural_hypotheses(hypotheses: list | None) -> str:
     return "\n".join(lines)
 
 
+def _structural_skeleton(model: dict | None) -> dict:
+    """Compact structural view of a model for baseline diffing/display.
+
+    Keeps only the layer stack / materials (substrate, layers, ambient,
+    geometry) and per-state structure overrides — that is what a "rewind to
+    baseline" decision turns on. Drops fitting runtime (loaded Q/R/dR data
+    arrays inside ``states[*].data_files``) and post-fit snapshots so the
+    serialized form stays small.
+    """
+    if not isinstance(model, dict):
+        return {}
+    skel = {
+        k: model.get(k)
+        for k in ("substrate", "layers", "ambient", "back_reflection")
+        if k in model
+    }
+    states = model.get("states")
+    if states:
+        st_list = []
+        for st in states:
+            st_skel: dict = {"name": st.get("name")}
+            for k in ("ambient", "substrate", "layers"):
+                if st.get(k) is not None:
+                    st_skel[k] = st.get(k)
+            st_list.append(st_skel)
+        skel["states"] = st_list
+    return skel
+
+
+def _format_baseline_model_section(
+    baseline_model: dict | None, current_model: dict | None
+) -> str:
+    """Render the baseline (intake) model block, or "" when not useful.
+
+    Shown only once the working model has structurally diverged from the
+    intake baseline — that is exactly when a "rewind" is meaningful. While the
+    two are identical (early iterations) the section is omitted to keep the
+    prompt lean.
+    """
+    if not baseline_model:
+        return ""
+    import json
+
+    base_skel = _structural_skeleton(baseline_model)
+    cur_skel = _structural_skeleton(current_model)
+    if not base_skel or base_skel == cur_skel:
+        return ""
+    return (
+        "\n## Baseline (Intake) Model — structural skeleton\n"
+        "This is the clean structure first built at intake, before any "
+        "refinement added or inflated layers. When you realize a "
+        "*reinterpretation* hypothesis (see Rule 13), rebuild from THIS "
+        "skeleton, not from the Current Model above.\n"
+        "```json\n" + json.dumps(base_skel, indent=2) + "\n```\n"
+    )
+
+
 def format_fit_evaluation_prompt(
     sample_description: str,
     hypothesis: str | None,
@@ -525,7 +594,7 @@ def format_fit_evaluation_prompt(
         if features.get("critical_edges"):
             for edge in features["critical_edges"][:2]:
                 feature_lines.append(
-                    f"  - Critical edge at Qc={edge.get('Qc', 0):.4f} Å⁻¹"
+                    f"  - Critical edge: {format_critical_edge_line(edge)}"
                 )
     features_str = (
         "\n".join(feature_lines) if feature_lines else "  (no features extracted)"
@@ -795,7 +864,7 @@ def format_model_refinement_prompt(
         if features.get("critical_edges"):
             for edge in features["critical_edges"][:2]:
                 feature_lines.append(
-                    f"  - Critical edge at Qc={edge.get('Qc', 0):.4f} Å⁻¹"
+                    f"  - Critical edge: {format_critical_edge_line(edge)}"
                 )
     features_str = "\n".join(feature_lines) if feature_lines else "  (no features)"
 
@@ -871,7 +940,7 @@ MODEL_REFINEMENT_JSON_PROMPT = """You are refining a neutron reflectivity model 
 
 ## Ranked Structural Hypotheses
 {structural_hypotheses}
-
+{baseline_model_section}
 ## Evaluator's Chosen Next Action
 - `next_action`: {next_action}
 - `proposed_hypothesis_id`: {proposed_hypothesis_id}
@@ -968,6 +1037,21 @@ Rules:
     `layers`, NOT the top-level template (which would change every state). Ties
     referencing a layer absent from a state simply don't apply there — you need
     not edit `shared_parameters`/`unshared_parameters` for a structural removal.
+13. REWIND FOR REINTERPRETATION HYPOTHESES. Some hypotheses REINTERPRET an
+    existing material rather than add structure — most importantly "the ambient
+    solvent/electrolyte is actually deuterated" (its SLD is ~0 in the current
+    model, but the data wants a high-SLD medium). Such a reinterpretation is
+    MUTUALLY EXCLUSIVE with a speculative layer — or an inflated thickness/SLD —
+    that an earlier hypothesis added to explain the SAME data feature (e.g. a
+    critical edge / strong low-Q upturn, a layer SLD pinned toward the ambient,
+    a thickness driven to ~2x its nominal value). When `next_action` is
+    `structural_change` and the chosen hypothesis is such a reinterpretation,
+    START FROM THE BASELINE (INTAKE) MODEL shown above — discard the speculative
+    layers and inflated values accumulated by earlier hypotheses — and apply
+    ONLY the reinterpretation (e.g. set the ambient to the deuterated SLD and
+    let it vary over a wide range). Do NOT keep both explanations; prefer the
+    simpler (lower-BIC) one. For ordinary ADDITIVE hypotheses (a genuinely
+    missing layer), keep editing the Current Model as usual.
 
 {user_constraints}
 
@@ -991,6 +1075,7 @@ def format_model_refinement_prompt_json(
     structural_hypotheses: list | None = None,
     next_action: str | None = None,
     proposed_hypothesis_id: int | None = None,
+    baseline_model: dict | None = None,
 ) -> str:
     """Format the JSON-based model refinement prompt for the LLM.
 
@@ -1049,7 +1134,7 @@ def format_model_refinement_prompt_json(
         if features.get("critical_edges"):
             for edge in features["critical_edges"][:2]:
                 feature_lines.append(
-                    f"  - Critical edge at Qc={edge.get('Qc', 0):.4f} Å⁻¹"
+                    f"  - Critical edge: {format_critical_edge_line(edge)}"
                 )
     features_str = "\n".join(feature_lines) if feature_lines else "  (no features)"
 
@@ -1093,6 +1178,9 @@ def format_model_refinement_prompt_json(
             ),
             skill_context=skill_context or "(no additional domain knowledge)",
             structural_hypotheses=_format_structural_hypotheses(structural_hypotheses),
+            baseline_model_section=_format_baseline_model_section(
+                baseline_model, current_model
+            ),
             next_action=next_action or "parameter_tweak",
             proposed_hypothesis_id=(
                 proposed_hypothesis_id if proposed_hypothesis_id is not None else "null"
@@ -1102,7 +1190,9 @@ def format_model_refinement_prompt_json(
     )
 
 
-def format_cross_state_ties_prompt(sample_description: str, tieable_params: list) -> str:
+def format_cross_state_ties_prompt(
+    sample_description: str, tieable_params: list
+) -> str:
     """Prompt to extract per-state (unshared) parameters from a free-text description.
 
     In a multi-state co-refinement every structural parameter below is SHARED
@@ -1121,15 +1211,15 @@ def format_cross_state_ties_prompt(sample_description: str, tieable_params: list
         "state.\n\n"
         "Sample description:\n"
         f'"""{sample_description}"""\n\n'
-        "Tieable parameters — dotted \"<layer>.<attr>\" names; <attr> is one of "
+        'Tieable parameters — dotted "<layer>.<attr>" names; <attr> is one of '
         "`thickness`, `material.rho` (the SLD), or `interface` (the roughness):\n"
         f"{params_block}\n\n"
         "From the description ONLY, list the parameters that should NOT be shared "
         "across states. Map the user's wording onto the names above:\n"
-        "  - \"SLD\" -> `.material.rho`; \"thickness\" -> `.thickness`; "
-        "\"interface\"/\"roughness\" -> `.interface`.\n"
-        "  - Match layer names case-insensitively (e.g. \"copper oxide\" -> a layer "
-        "named \"Cu oxide\").\n"
+        '  - "SLD" -> `.material.rho`; "thickness" -> `.thickness`; '
+        '"interface"/"roughness" -> `.interface`.\n'
+        '  - Match layer names case-insensitively (e.g. "copper oxide" -> a layer '
+        'named "Cu oxide").\n'
         "Only include names that appear in the list above. If the description does "
         "not call out any per-state (unshared) parameters, return an empty list.\n\n"
         "Respond with ONLY a JSON object, no prose:\n"

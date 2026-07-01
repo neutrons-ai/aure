@@ -31,6 +31,22 @@ from .prompts import format_model_refinement_prompt
 logger = logging.getLogger(__name__)
 
 
+def _strip_dataset_arrays(model: dict) -> dict:
+    """Deepcopy *model* with bulky per-state Q/R/dR arrays removed.
+
+    Intake enriches each state's ``data_files`` with the loaded ``Q``/``R``/
+    ``dR`` arrays. Those belong in the working ``current_model`` but would
+    needlessly bloat any snapshot that is only used as a structural reference
+    (the intake ``baseline_model``). File path / label / theta metadata is kept.
+    """
+    slim = copy.deepcopy(model)
+    for st in slim.get("states") or []:
+        for ds in st.get("data_files") or []:
+            for key in ("Q", "R", "dR"):
+                ds.pop(key, None)
+    return slim
+
+
 def _attach_state_metadata(
     model_def: dict,
     state: "ReflectivityState",
@@ -224,6 +240,7 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
             structural_hypotheses=hypotheses_in,
             next_action=next_action,
             proposed_hypothesis_id=proposed_hid,
+            baseline_model=state.get("baseline_model"),
         )
         # Clear feedback after consumption
         if user_feedback:
@@ -638,7 +655,9 @@ def _extract_per_state_structure(
         )
         response = get_llm(temperature=0).invoke([HumanMessage(content=prompt)])
         per_state = (
-            json.loads(_strip_code_fences(response.content.strip())).get("per_state_absent")
+            json.loads(_strip_code_fences(response.content.strip())).get(
+                "per_state_absent"
+            )
             or {}
         )
     except Exception as exc:  # graceful: keep the shared template
@@ -654,7 +673,9 @@ def _extract_per_state_structure(
             if isinstance(a, str) and a.lower() in by_lower
         }
         if remove:
-            st["layers"] = [layer for layer in template if layer.get("name") not in remove]
+            st["layers"] = [
+                layer for layer in template if layer.get("name") not in remove
+            ]
             logger.info(
                 "[MODELING] State %r omits layer(s) %s (per-state structure)",
                 st.get("name"),
@@ -755,7 +776,9 @@ def _build_initial_model(state: ReflectivityState) -> Dict[str, Any]:
                     )
 
                 uc = dict(state.get("user_config") or {})
-                if not uc.get("shared_parameters") and not uc.get("unshared_parameters"):
+                if not uc.get("shared_parameters") and not uc.get(
+                    "unshared_parameters"
+                ):
                     derived = _extract_cross_state_unshared(
                         state.get("sample_description", ""), model_def
                     )
@@ -769,6 +792,16 @@ def _build_initial_model(state: ReflectivityState) -> Dict[str, Any]:
         except ValueError as exc:
             updates["error"] = f"Multi-state model setup failed: {exc}"
             return updates
+
+        # Snapshot the clean intake model as the rewind point. When a later
+        # refinement realizes a *reinterpretation* hypothesis (e.g. "the
+        # solvent is actually deuterated") that is mutually exclusive with a
+        # speculative layer added by an earlier hypothesis, the refiner starts
+        # from this baseline instead of stacking both explanations. The bulky
+        # per-state Q/R/dR arrays are stripped — the baseline is only ever used
+        # as a structural reference, and keeping them would bloat every
+        # checkpoint.
+        updates["baseline_model"] = _strip_dataset_arrays(model_def)
 
         # Generate explanation
         explanation = _explain_model(layers, substrate, ambient, features)
