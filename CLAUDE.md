@@ -14,7 +14,7 @@ The longest-form design rationale lives in [docs/approach.md](docs/approach.md) 
 - Standard dev setup:
   ```bash
   python -m venv .venv && source .venv/bin/activate
-  pip install -e ".[dev,agent]"     # add ,alcf and/or ,export as needed
+  pip install -e ".[dev]"           # add ,alcf and/or ,export as needed
   ```
 - LLM config is read from environment / `.env` (`LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_TIMEOUT`, `FIT_METHOD`, …). See [.env.example](.env.example) for the full list. Provider dispatch is in [src/aure/llm/providers/](src/aure/llm/providers/); `aure check-llm` validates the live config.
 
@@ -117,4 +117,4 @@ The ISAAC AI-Ready Data exporter ([src/aure/exporters/isaac.py](src/aure/exporte
 - Workflow nodes mutate state **only** by returning a dict; never call `state.update(...)` in-place. `Message` history uses an `Annotated[..., operator.add]` reducer so returning `{"messages": [...]}` appends.
 - `route_*` functions in `nodes/routing.py` must be pure — they're called by LangGraph to pick edges and must not have side effects.
 - Pre-commit hooks are authoritative for formatting (ruff + taplo + yamllint). Don't hand-format files differently.
-- Docker image (`ghcr.io/neutrons-ai/aure`) installs `[agent,export]` and uses `aure` as ENTRYPOINT — changes to the CLI surface area are user-visible there.
+- Docker image (`ghcr.io/neutrons-ai/aure`) installs `[export]` and uses `aure` as ENTRYPOINT — changes to the CLI surface area are user-visible there.

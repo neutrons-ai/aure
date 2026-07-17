@@ -5,7 +5,7 @@ COPY src/ ./src/
 
 # Install the package, then remove git (only needed to fetch nr-isaac-format from GitHub)
 RUN apt-get update && apt-get install -y --no-install-recommends git \
-    && pip install --no-cache-dir ".[agent,export]" \
+    && pip install --no-cache-dir ".[export]" \
     && apt-get purge -y git && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 

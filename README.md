@@ -99,22 +99,39 @@ or resume a run from any point.
 
 ## Installation
 
+Requires **Python ≥ 3.9** (3.12 is what CI uses). All runtime dependencies ship
+as pre-built wheels, so no compiler is needed on any platform.
+
+### macOS / Linux
+
 ```bash
 # Clone the repository
 git clone https://github.com/neutrons-ai/aure.git
 cd aure
 
-# Create a virtual environment and install with the agent extras
+# Create a virtual environment and install
 python -m venv .venv
 source .venv/bin/activate
-pip install -e ".[agent]"
+pip install -e "."
+```
+
+### Windows
+
+Use the Python launcher (`py`) and the platform-appropriate activation script.
+
+```bat
+git clone https://github.com/neutrons-ai/aure.git
+cd aure
+
+py -m venv .venv
+.\.venv\Scripts\activate.bat
+pip install -e "."
 ```
 
 ### Extras
 
 | Extra     | What it adds                                      |
 |-----------|---------------------------------------------------|
-| `agent`   | LangGraph, LangChain, Click, FastMCP, periodictable — everything needed for the CLI and workflow |
 | `export`  | `nr-isaac-format` — ISAAC AI-Ready Data export    |
 | `alcf`    | `globus-sdk` — native Globus auth for ALCF inference endpoints |
 | `dev`     | pytest                                            |

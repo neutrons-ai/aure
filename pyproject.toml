@@ -10,25 +10,38 @@ readme = "README.md"
 requires-python = ">=3.9"
 authors = [{ name = "Oak Ridge National Laboratory" }]
 
-dependencies = ["flask>=3.0", "numpy>=1.24", "scipy>=1.10", "refl1d>=1.0"]
-
-[project.optional-dependencies]
-dev = ["pytest>=7.0", "pytest-cov>=4.0"]
-agent = [
+dependencies = [
+  # Core science stack
+  "numpy>=1.24",
+  "scipy>=1.10",
+  "refl1d>=1.0",
+  # Web UI (aure serve)
+  "flask>=3.0",
+  # CLI + config parsing
+  "click>=8.0",
+  "pyyaml>=6.0",
+  "python-dotenv>=1.0",
+  # LLM agent orchestration
   "langgraph>=1.0",
   "langchain>=1.0",
   "langchain-openai>=1.0",
   "langchain-google-genai>=2.0.0",
-  "periodictable>=2.0",
+  # MCP server (aure mcp-server)
   "fastmcp>=2.0",
-  "click>=8.0",
-  "pyyaml>=6.0",
+  # Science helpers
+  "periodictable>=2.0",
+  "regex>=2023.0.0",
+  # Plotting (aure plot-results)
+  "matplotlib>=3.7",
 ]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "pytest-cov>=4.0"]
 alcf = ["globus-sdk>=3.0"]
 export = [
   "nr-isaac-format @ git+https://github.com/isaac-neutrons/nr-isaac-format.git",
 ]
-all = ["aure[dev,agent,alcf,export]"]
+all = ["aure[dev,alcf,export]"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

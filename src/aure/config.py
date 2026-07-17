@@ -83,11 +83,7 @@ def load_user_config(path: Optional[str | Path] = None) -> UserConfig:
         logger.warning("[CONFIG] Config file not found: %s", p)
         return _empty_config()
 
-    try:
-        import yaml  # pyyaml is already a dependency
-    except ImportError:
-        logger.warning("[CONFIG] pyyaml not installed – ignoring config file")
-        return _empty_config()
+    import yaml
 
     raw: Dict[str, Any] = yaml.safe_load(p.read_text()) or {}
     logger.info("[CONFIG] Loaded user config from %s", p)
