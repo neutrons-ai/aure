@@ -8,7 +8,7 @@ The state tracks all information needed throughout the analysis:
 - Conversation with user
 """
 
-from typing import TypedDict, List, Optional, Annotated
+from typing import TypedDict, List, Optional, Annotated, Dict
 import operator
 
 
@@ -24,6 +24,12 @@ class LayerInfo(TypedDict):
     thickness_max: Optional[float]
     roughness: float
     roughness_max: Optional[float]
+    # Optional: tie this layer's interface roughness to its own thickness as
+    # sigma = fraction * thickness, fitting `fraction` instead of `roughness`.
+    # Keeps a thin layer's interface from outgrowing it (prevents erf-tail
+    # artifacts) while letting the thickness move. Shape:
+    # {"fraction_init": float, "fraction_min": float, "fraction_max": float}.
+    roughness_tie: Optional[Dict[str, float]]
 
 
 class SubstrateInfo(TypedDict):
