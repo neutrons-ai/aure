@@ -96,6 +96,72 @@ def test_diffuse_but_physical_profile_not_flagged():
     assert res["has_artifact"] is False
 
 
+def test_evaluation_veto_overrides_acceptable():
+    """A non-physical excursion must flip acceptable=True -> False so the
+    workflow refines instead of completing on χ² alone."""
+    from aure.nodes.evaluation import _detect_profile_artifacts_into
+
+    z, rho = _profile_from_slabs(
+        [
+            (None, 6.13, None),
+            (100, 4.58, 15),
+            (260, -0.03, 12),
+            (300, 6.42, 10),
+            (869, -1.61, 10),
+            (925, 3.2, 30),
+            (945, 2.07, 6),
+        ]
+    )
+    model = {
+        "ambient": {"name": "THF", "sld": 6.13},
+        "substrate": {"name": "Si", "sld": 2.07},
+        "layers": [
+            {"name": "SEI", "sld": 4.58, "thickness": 160, "roughness": 15},
+            {"name": "Plated", "sld": -0.03, "thickness": 56, "roughness": 8},
+            {"name": "Cu", "sld": 6.42, "thickness": 569, "roughness": 10},
+            {"name": "Ti", "sld": -1.61, "thickness": 56, "roughness": 10},
+            {"name": "SiOx", "sld": 3.2, "thickness": 20, "roughness": 30},
+        ],
+    }
+    fit = {"sld_z": z.tolist(), "sld_rho": rho.tolist(), "parameters": {}}
+    analysis = {"acceptable": True, "issues": [], "suggestions": [], "physical_concerns": []}
+    _detect_profile_artifacts_into(analysis, fit, model)
+    assert analysis["acceptable"] is False
+    assert any("excursion" in i.lower() for i in analysis["issues"])
+    assert analysis["suggestions"], "a remedy suggestion should be added"
+
+
+def test_evaluation_clean_profile_leaves_acceptable_untouched():
+    from aure.nodes.evaluation import _detect_profile_artifacts_into
+
+    z, rho = _profile_from_slabs(
+        [
+            (None, 6.13, None),
+            (100, 4.58, 15),
+            (260, -0.03, 12),
+            (300, 6.42, 10),
+            (869, -1.61, 10),
+            (925, 3.2, 8),
+            (946, 2.07, 6),
+        ]
+    )
+    model = {
+        "ambient": {"name": "THF", "sld": 6.13},
+        "substrate": {"name": "Si", "sld": 2.07},
+        "layers": [
+            {"name": "SEI", "sld": 4.58, "thickness": 160, "roughness": 15},
+            {"name": "Plated", "sld": -0.03, "thickness": 56, "roughness": 12},
+            {"name": "Cu", "sld": 6.42, "thickness": 569, "roughness": 10},
+            {"name": "Ti", "sld": -1.61, "thickness": 56, "roughness": 10},
+            {"name": "SiOx", "sld": 3.2, "thickness": 20, "roughness": 8},
+        ],
+    }
+    fit = {"sld_z": z.tolist(), "sld_rho": rho.tolist(), "parameters": {}}
+    analysis = {"acceptable": True, "issues": [], "suggestions": [], "physical_concerns": []}
+    _detect_profile_artifacts_into(analysis, fit, model)
+    assert analysis["acceptable"] is True
+
+
 def test_roughness_ratio_is_informational_only():
     model = {
         "layers": [
