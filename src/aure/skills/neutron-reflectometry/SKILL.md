@@ -120,9 +120,44 @@ For data files representing an individal run/segment, the table in the header wi
 ## Roughness Constraints
 
 - Roughness must be ≥ 5 Å (values below are physically unrealistic).
-- Roughness must be less than half the thickness of either adjacent layer
-  (otherwise artifacts occur).
 - Typical roughness range: 5–30 Å.
+
+### Two interpretations of a slab + roughness model
+
+A large roughness relative to a layer's thickness (σ > ½·thickness) is **not
+automatically an error** — it means one of two things, and you must decide
+which applies before "fixing" it:
+
+- **Discrete-layer interpretation.** You claim the slab is a real layer with a
+  physical thickness and SLD. Here σ > ½·thickness is a modeling problem: the
+  slab's error-function interface tails bleed across a thin neighbour and the
+  neighbour's own value stops being meaningful. Fix it (see remedy below) if
+  you want to report that layer's thickness/SLD.
+- **Profile-parametrization interpretation.** You are deliberately using the
+  slab stack as a flexible basis to represent a smoothly-varying / graded SLD
+  profile. Then the affected slabs are **not layers** — do not report their
+  individual thickness/SLD; report only the *shape of the SLD profile*. Large
+  σ is expected and fine here.
+
+### The rule that holds under BOTH interpretations
+
+The resulting SLD *profile* must never leave the range physically reachable by
+its bounding media: between two materials of SLD ρ₁ and ρ₂, the profile must
+stay within [min(ρ₁,ρ₂), max(ρ₁,ρ₂)]. A dip below — or overshoot above — what a
+blend of the two adjacent materials can produce (e.g. the profile dipping
+*below the substrate SLD* just before the substrate) is a genuine **erf-tail
+artifact**, usually caused by a distant layer's large roughness tail reaching
+across a thin layer. A good χ² can hide it — it is visible only in the SLD
+profile, not the reflectivity. Always check the profile for such excursions.
+
+### Remedy (only when a discrete-layer interpretation is intended)
+
+Do **not** simply cap or shrink the roughness (that just distorts the layer
+thickness instead). Instead constrain the roughness *as a fraction of the
+layer thickness* — fit the ratio f = σ/thickness with f ≤ 0.5 — so the
+interface can never outgrow its layer as the thickness moves. If instead you
+accept the diffuse transition, keep σ free and re-label the region as a profile
+parametrization per the above.
 
 ## Refl1d API Rules
 
