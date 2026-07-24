@@ -86,6 +86,22 @@ def fitting_node(state: ReflectivityState) -> Dict[str, Any]:
             len(data_files) > 1 and isinstance(model, dict) and not is_multi_state
         )
 
+        # ========== Thin-layer SLD mode enumeration (gated, single-file) ==========
+        # Thin layers sit on a Δρ·t degeneracy ridge with distinct SLD modes a
+        # single optimizer run will not hop between. When enabled, re-seed each
+        # thin layer's SLD across discrete levels, cheaply polish each, and
+        # start the main fit from the best basin. Off by default; never fatal.
+        if (
+            _mode_enumeration_enabled()
+            and not is_multi_state
+            and not is_multi
+            and isinstance(model, dict)
+        ):
+            try:
+                model = _enumerate_thin_layer_modes(model, state)
+            except Exception as e:  # pragma: no cover - safety net
+                logger.warning(f"[FITTING] Mode enumeration skipped: {e}")
+
         if is_multi_state:
             result = run_states_refl1d_fit(
                 model_definition=model,
@@ -175,6 +191,109 @@ def fitting_node(state: ReflectivityState) -> Dict[str, Any]:
         ]
 
     return updates
+
+
+def _mode_enumeration_enabled() -> bool:
+    """Thin-layer SLD mode enumeration is opt-in via the MODE_ENUMERATION env
+    var (default off), so baseline behavior and existing tests are unchanged."""
+    return os.environ.get("MODE_ENUMERATION", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _resolution_limit(state: ReflectivityState) -> Optional[float]:
+    """Real-space resolution limit d ≈ 2π / Q_max, or None if Q is unavailable."""
+    q = state.get("Q") or []
+    if len(q) == 0:
+        return None
+    q_max = float(np.max(np.asarray(q, dtype=float)))
+    if q_max <= 0:
+        return None
+    return 2.0 * np.pi / q_max
+
+
+def _enumerate_thin_layer_modes(model: dict, state: ReflectivityState) -> dict:
+    """Re-seed thin layers to the best SLD basin before the main fit.
+
+    For each layer thinner than ``THIN_LAYER_MODE_K × (2π/Q_max)`` (default
+    K=1), try a few discrete SLD seeds spanning the layer's allowed range,
+    cheaply polish each with a local optimizer, and adopt the lowest-χ² basin.
+    Layers are visited greedily, carrying each improvement forward. Returns a
+    (possibly re-seeded) copy of ``model``; on any trouble it returns the input
+    unchanged. All choices are logged — nothing is silently capped.
+    """
+    d_res = _resolution_limit(state)
+    if d_res is None:
+        logger.info("[FITTING] Mode enumeration: no Q data; skipping")
+        return model
+    k = float(os.environ.get("THIN_LAYER_MODE_K", "1.0"))
+    n_seeds = int(os.environ.get("THIN_LAYER_MODE_SEEDS", "3"))
+    thin_cutoff = k * d_res
+
+    layers = model.get("layers") or []
+    thin_idx = [
+        i
+        for i, ly in enumerate(layers)
+        if float(ly.get("thickness", 0.0)) < thin_cutoff
+    ]
+    if not thin_idx:
+        logger.info(
+            f"[FITTING] Mode enumeration: no layers thinner than "
+            f"{thin_cutoff:.0f} Å; skipping"
+        )
+        return model
+
+    working = copy.deepcopy(model)
+    # Baseline χ² for the current seeds.
+    try:
+        best_chi2 = build_problem(working).chisq()
+    except Exception as e:
+        logger.warning(f"[FITTING] Mode enumeration: baseline build failed: {e}")
+        return model
+    logger.info(
+        f"[FITTING] Mode enumeration: {len(thin_idx)} thin layer(s) "
+        f"(< {thin_cutoff:.0f} Å), baseline χ²={best_chi2:.3f}"
+    )
+
+    from bumps.fitters import fit as bumps_fit
+
+    for i in thin_idx:
+        layer = working["layers"][i]
+        name = layer.get("name", f"layer_{i}")
+        sld0 = float(layer.get("sld", 0.0))
+        lo = float(layer.get("sld_min", sld0 - 2.5))
+        hi = float(layer.get("sld_max", sld0 + 2.5))
+        seeds = list(np.linspace(lo, hi, max(2, n_seeds)))
+
+        layer_best_chi2 = best_chi2
+        layer_best_sld = sld0
+        for seed in seeds:
+            trial = copy.deepcopy(working)
+            trial["layers"][i]["sld"] = float(seed)
+            try:
+                problem = build_problem(trial)
+                bumps_fit(problem, method="amoeba", steps=1000)
+                c2 = float(problem.chisq())
+            except Exception as e:
+                logger.debug(f"[FITTING]   {name} seed ρ={seed:.2f} failed: {e}")
+                continue
+            logger.info(f"[FITTING]   {name} seed ρ={seed:.2f} → χ²={c2:.3f}")
+            if c2 < layer_best_chi2:
+                layer_best_chi2 = c2
+                layer_best_sld = float(seed)
+
+        if layer_best_sld != sld0 and layer_best_chi2 < best_chi2:
+            logger.info(
+                f"[FITTING] Mode enumeration: {name} re-seeded ρ {sld0:.2f} → "
+                f"{layer_best_sld:.2f} (χ² {best_chi2:.3f} → {layer_best_chi2:.3f})"
+            )
+            working["layers"][i]["sld"] = layer_best_sld
+            best_chi2 = layer_best_chi2
+
+    return working
 
 
 def run_refl1d_fit(

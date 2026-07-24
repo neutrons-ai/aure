@@ -20,7 +20,11 @@ logger = logging.getLogger(__name__)
 
 # Always-on skills (baseline + meta-skills)
 _BASELINE_SKILL = "neutron-reflectometry"
-_ALWAYS_ON = ("neutron-reflectometry", "structural-hypothesis-ranking")
+_ALWAYS_ON = (
+    "neutron-reflectometry",
+    "structural-hypothesis-ranking",
+    "thin-layer-degeneracy",
+)
 
 # Low-threshold skill: any liquid/solvent ambient should pull in
 # ``solvent-contrast-matching`` even when the LLM did not pick it and even when

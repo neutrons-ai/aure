@@ -264,9 +264,24 @@ def _build_sample(definition: dict):
         sld_max = layer.get("sld_max", layer["sld"] + 2.5)
         sample[idx].material.rho.range(sld_min, sld_max)
 
-        r_min = layer.get("roughness_min", 5.0)
-        r_max = layer.get("roughness_max", 30.0)
-        sample[idx].interface.range(r_min, r_max)
+        tie = layer.get("roughness_tie")
+        if tie:
+            # Tie this layer's interface roughness to its own thickness:
+            # sigma = fraction * thickness, with `fraction` the fitted free
+            # parameter. Prevents a thin layer's interface from outgrowing it
+            # (erf-tail artifacts) while the thickness stays free.
+            from bumps.parameter import Parameter
+
+            f_init = float(tie.get("fraction_init", 0.3))
+            f_min = float(tie.get("fraction_min", 0.05))
+            f_max = float(tie.get("fraction_max", 0.5))
+            frac = Parameter(f_init, name=f"{layer['name']} rough_frac")
+            frac.range(f_min, f_max)
+            sample[idx].interface = frac * sample[idx].thickness
+        else:
+            r_min = layer.get("roughness_min", 5.0)
+            r_max = layer.get("roughness_max", 30.0)
+            sample[idx].interface.range(r_min, r_max)
 
     if back_reflection:
         sample[0].interface.range(0, 30.0)
@@ -1144,6 +1159,13 @@ def extract_definition(
             layer["sld"] = fitted[f"{layer_name} rho"]
         if f"{layer_name} interface" in fitted:
             layer["roughness"] = fitted[f"{layer_name} interface"]
+        elif f"{layer_name} rough_frac" in fitted:
+            # Tied roughness (sigma = fraction * thickness): the interface is a
+            # derived parameter, not fitted directly. Record the resulting
+            # numeric roughness; the `roughness_tie` metadata (preserved by the
+            # deepcopy above) re-applies the tie on the next rebuild, since
+            # bumps serialization does not round-trip expression ties.
+            layer["roughness"] = fitted[f"{layer_name} rough_frac"] * layer["thickness"]
 
     return defn
 

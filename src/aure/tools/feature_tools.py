@@ -926,6 +926,199 @@ def format_features_for_llm(features: Dict) -> str:
     return "\n".join(lines)
 
 
+def _profile_extrema(z, rho, prominence):
+    """Interior local extrema of ``rho`` with a prominence floor.
+
+    Returns a list of ``(index, sld_value, kind)`` in z-order where ``kind`` is
+    ``"max"`` or ``"min"``. Adjacent same-kind peaks separated by a dip smaller
+    than ``prominence`` (a numerically split plateau) are merged into one.
+    """
+    imax, _ = find_peaks(rho, prominence=prominence)
+    imin, _ = find_peaks(-rho, prominence=prominence)
+    raw = sorted(
+        [(int(i), float(rho[i]), "max") for i in imax]
+        + [(int(i), float(rho[i]), "min") for i in imin]
+    )
+    merged: List = []
+    for idx, val, kind in raw:
+        if merged and merged[-1][2] == kind:
+            lo, hi = min(merged[-1][0], idx), max(merged[-1][0], idx)
+            gap = rho[lo : hi + 1]
+            depth = float(gap.max() - gap.min()) if len(gap) else 0.0
+            if depth < prominence:  # plateau split into two — keep one
+                continue
+        merged.append((idx, val, kind))
+    return merged
+
+
+def _turning_point_slds(layer_rhos):
+    """Interior turning-point SLD values implied by an ordered slab sequence.
+
+    ``layer_rhos`` is the SLD sequence in stack order — e.g.
+    ``[ambient, layer_1, ..., layer_n, substrate]``. A turning point is an
+    interior element that is a local max or min of the sequence (a sign change
+    in consecutive differences). Terminal media are never turning points. The
+    result is direction-agnostic (reversing ``layer_rhos`` gives the same set),
+    so the caller need not know the profile's z-orientation.
+    """
+    s = [float(v) for v in layer_rhos]
+    turns = []
+    for i in range(1, len(s) - 1):
+        d_prev = s[i] - s[i - 1]
+        d_next = s[i + 1] - s[i]
+        if d_prev == 0.0 or d_next == 0.0:
+            continue
+        if (d_prev > 0) != (d_next > 0):  # sign change -> local extremum
+            turns.append(s[i])
+    return turns
+
+
+def detect_profile_artifacts(
+    z,
+    rho,
+    layer_rhos,
+    *,
+    tol=None,
+    prominence_frac: float = 0.02,
+) -> Dict:
+    """Flag non-physical excursions in a fitted SLD profile.
+
+    A slab-plus-roughness model is physical (under *either* the discrete-layer
+    or the profile-parametrization interpretation) only if the resulting SLD
+    profile stays within the range reachable by the materials present: between
+    two media it must not dip below or overshoot beyond what a blend of the
+    adjacent slab SLDs can produce. A roughness whose error-function tail
+    reaches across a thin layer violates this — e.g. a distant low-SLD layer
+    pulling the profile *below the substrate SLD* just before the substrate.
+    Such an excursion is invisible in χ² and visible only in the profile.
+
+    Detection is direction-agnostic and needs no z-alignment. The physical
+    signal is an interior profile extremum whose SLD value matches none of the
+    slab sequence's legitimate turning-point values (nor a terminal medium):
+    a genuine layer produces an extremum *at its own SLD*, whereas an erf-tail
+    artifact produces one at a value no material has. The extremum *count*
+    (found vs. expected from ``layer_rhos``) is reported as a supporting
+    signal; the σ/thickness ratio is deliberately NOT used here, because a
+    large roughness is legitimate when the model parametrizes a graded profile.
+
+    Args:
+        z: profile depth array.
+        rho: profile SLD array (same length as ``z``).
+        layer_rhos: SLD sequence in stack order (ambient..substrate or the
+            reverse; direction does not matter), used to derive the legitimate
+            turning-point values and terminal media.
+        tol: absolute SLD tolerance for "matches a legitimate value". Defaults
+            to 5% of the SLD span of ``layer_rhos``.
+        prominence_frac: minimum extremum prominence as a fraction of that span.
+
+    Returns:
+        Dict with:
+          - has_artifact: bool
+          - excursions: list of {z, sld, kind, note}
+          - n_expected_extrema: int
+          - n_found_extrema: int
+          - notes: list of human-readable strings
+    """
+    z = np.asarray(z, dtype=float)
+    rho = np.asarray(rho, dtype=float)
+    empty = {
+        "has_artifact": False,
+        "excursions": [],
+        "n_expected_extrema": 0,
+        "n_found_extrema": 0,
+        "notes": [],
+    }
+    if len(rho) < 5 or len(z) != len(rho) or layer_rhos is None or len(layer_rhos) < 2:
+        return empty
+
+    media = [float(v) for v in layer_rhos]
+    span = max(media) - min(media)
+    if span <= 0:
+        return empty
+    if tol is None:
+        tol = 0.05 * span
+    prom = prominence_frac * span
+
+    # Legitimate interior turning values are the slab sequence's own extrema.
+    # Terminals are deliberately EXCLUDED: a monotone approach to a terminal
+    # produces no interior extremum, so any interior extremum sitting near a
+    # terminal value (e.g. a dip just below the substrate SLD) is an extra
+    # turning point — the erf-tail artifact — not a legitimate feature.
+    turning = _turning_point_slds(media)
+
+    extrema = _profile_extrema(z, rho, prom)
+    lo_bound, hi_bound = min(media) - tol, max(media) + tol
+
+    excursions = []
+    for idx, val, kind in extrema:
+        near_turning = any(abs(val - lvl) <= tol for lvl in turning)
+        out_of_range = val < lo_bound or val > hi_bound
+        if not near_turning:
+            note = (
+                "profile SLD leaves the range reachable by the bounding media"
+                if out_of_range
+                else "profile turns at an SLD no material provides "
+                "(erf-tail excursion across a thin layer)"
+            )
+            excursions.append(
+                {
+                    "z": float(z[idx]),
+                    "sld": val,
+                    "kind": kind,
+                    "note": note,
+                }
+            )
+
+    notes = []
+    n_expected = len(turning)
+    n_found = len(extrema)
+    if n_found > n_expected:
+        notes.append(
+            f"profile has {n_found} interior extrema but the slab sequence "
+            f"implies {n_expected}"
+        )
+
+    return {
+        "has_artifact": bool(excursions),
+        "excursions": excursions,
+        "n_expected_extrema": n_expected,
+        "n_found_extrema": n_found,
+        "notes": notes,
+    }
+
+
+def check_roughness_thickness_ratios(model: Dict, *, ratio: float = 0.5) -> List[Dict]:
+    """Informational σ/thickness check — NEVER an error on its own.
+
+    Reports each interface whose roughness exceeds ``ratio`` × the thickness of
+    an adjacent finite layer. A violation is only a *cue* to declare which
+    interpretation applies (discrete layer vs. profile parametrization); the
+    actual artifact test is :func:`detect_profile_artifacts`.
+
+    ``model`` is a ModelDefinition dict; only its ``layers`` (each with
+    ``thickness`` and ``roughness``) are read. Returns a list of
+    ``{layer, roughness, thickness, ratio}`` notes (empty if none).
+    """
+    layers = (model or {}).get("layers") or []
+    notes = []
+    for i, layer in enumerate(layers):
+        try:
+            sigma = float(layer.get("roughness"))
+            thick = float(layer.get("thickness"))
+        except (TypeError, ValueError):
+            continue
+        if thick > 0 and sigma > ratio * thick:
+            notes.append(
+                {
+                    "layer": layer.get("name", f"layer_{i}"),
+                    "roughness": sigma,
+                    "thickness": thick,
+                    "ratio": sigma / thick,
+                }
+            )
+    return notes
+
+
 if __name__ == "__main__":
     # Test with synthetic data
     print("Feature extraction tools ready.")
