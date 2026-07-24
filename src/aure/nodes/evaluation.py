@@ -281,6 +281,14 @@ def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
                 f"Range has been auto-expanded."
             )
 
+    # ========== SLD-Profile Artifact Detection ==========
+    # A χ²-optimal fit can still produce a physically impossible SLD profile
+    # (a roughness erf-tail dipping below/above the bounding media). Detect it
+    # from the fitted profile and, if real, raise an issue that drives a
+    # refinement pass. The σ/thickness ratio is surfaced as an informational
+    # concern only — a large roughness is legitimate for a graded profile.
+    _detect_profile_artifacts_into(analysis, latest_fit, current_model)
+
     latest_fit["issues"] = analysis["issues"]
     latest_fit["suggestions"] = analysis["suggestions"]
     latest_fit["next_action"] = analysis.get("next_action", "parameter_tweak")
@@ -932,6 +940,100 @@ def _format_evaluation(
         lines.append("*Attempting automatic refinement...*")
 
     return "\n".join(lines)
+
+
+def _ordered_slds_for_artifacts(model: dict, parameters: dict) -> list:
+    """Ordered SLD sequence [ambient, layers..., substrate] for artifact
+    detection, preferring fitted values from ``parameters`` (refl1d names each
+    material's SLD parameter ``"<name> rho"``) and falling back to model seeds.
+    """
+    if not isinstance(model, dict):
+        return []
+    params = parameters or {}
+
+    def _sld(info):
+        if not isinstance(info, dict):
+            return None
+        name = info.get("name")
+        if name and f"{name} rho" in params:
+            return float(params[f"{name} rho"])
+        val = info.get("sld")
+        return None if val is None else float(val)
+
+    seq = []
+    amb = _sld(model.get("ambient"))
+    if amb is not None:
+        seq.append(amb)
+    for layer in model.get("layers") or []:
+        v = _sld(layer)
+        if v is not None:
+            seq.append(v)
+    sub = _sld(model.get("substrate"))
+    if sub is not None:
+        seq.append(sub)
+    return seq
+
+
+def _detect_profile_artifacts_into(analysis: dict, fit_result: FitResult, model) -> None:
+    """Run the SLD-profile artifact detector and fold results into ``analysis``.
+
+    A genuine non-physical excursion becomes an ``issue`` (so the workflow
+    loops back to refinement) plus a targeted ``suggestion`` that offers both
+    remedies — tie the roughness (keep a layer interpretation) or accept the
+    diffuse transition as a profile parametrization. The extremum-count note
+    and the σ/thickness ratios are added to ``physical_concerns`` only.
+    """
+    z = fit_result.get("sld_z")
+    rho = fit_result.get("sld_rho")
+    if not z or not rho:
+        return
+    layer_rhos = _ordered_slds_for_artifacts(model, fit_result.get("parameters"))
+    if len(layer_rhos) < 2:
+        return
+
+    try:
+        from ..tools.feature_tools import (
+            detect_profile_artifacts,
+            check_roughness_thickness_ratios,
+        )
+    except Exception as e:  # pragma: no cover - import guard
+        logger.debug(f"[EVALUATION] Artifact detector import failed: {e}")
+        return
+
+    result = detect_profile_artifacts(z, rho, layer_rhos)
+    analysis.setdefault("physical_concerns", [])
+    analysis.setdefault("issues", [])
+    analysis.setdefault("suggestions", [])
+
+    if result.get("has_artifact"):
+        exc = result["excursions"][0]
+        where = ", ".join(
+            f"{e['kind']} SLD {e['sld']:.2f} at z={e['z']:.0f} Å"
+            for e in result["excursions"][:3]
+        )
+        analysis["issues"].append(
+            f"Non-physical SLD-profile excursion ({where}): "
+            f"{exc['note']}. The reflectivity χ² does not see this."
+        )
+        analysis["suggestions"].append(
+            "Resolve the profile excursion: either constrain the offending "
+            "interface roughness as a fraction of its layer thickness "
+            "(roughness_tie with fraction ≤ 0.5, keeping a discrete-layer "
+            "interpretation), or, if the diffuse transition is intended, keep "
+            "the roughness free and treat those slabs as a profile "
+            "parametrization (do not report them as distinct layers)."
+        )
+        logger.warning(f"[EVALUATION] SLD-profile artifact: {where}")
+
+    for note in result.get("notes", []):
+        analysis["physical_concerns"].append(note)
+
+    for r in check_roughness_thickness_ratios(model if isinstance(model, dict) else {}):
+        analysis["physical_concerns"].append(
+            f"roughness of '{r['layer']}' is {r['ratio']:.2f}× its thickness "
+            f"(σ={r['roughness']:.1f} Å, t={r['thickness']:.1f} Å) — verify this "
+            f"is an intended profile parametrization, not a spurious interface"
+        )
 
 
 def _check_boundary_hits(
