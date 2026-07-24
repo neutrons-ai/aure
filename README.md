@@ -13,6 +13,15 @@ to go from a raw data file and a plain-English sample description to a fitted
 
 ## What's new
 
+- **Thin-layer robustness** — thin layers sit on a contrast×thickness
+  degeneracy ridge where a single optimizer run can silently pick the wrong
+  basin (and BIC then rejects a real layer). AuRE now ships: an always-on
+  `thin-layer-degeneracy` skill teaching the lesson; an opt-in
+  `MODE_ENUMERATION` fitting step that enumerates discrete SLD seeds to find
+  the right basin; a deterministic **SLD-profile artifact detector** that
+  flags physically impossible roughness excursions a good χ² hides; and an
+  optional `roughness_tie` (σ = fraction × thickness) that keeps a thin layer's
+  interface from outgrowing it. See [docs/approach.md](docs/approach.md) §6.8.
 - **Adaptive, skill-driven hypothesis loop** — your stated hypothesis
   (`-h "there may be an oxide on top"`) is turned into top-ranked candidate
   structural changes at intake, and when a fit reveals an unexpected artifact
@@ -72,15 +81,22 @@ flowchart LR
    the parsed sample, the extracted features, the active
    [Agent Skills](src/aure/skills/), and the hypothesis list.
 4. **Fitting** — Runs the generated model through Refl1D's optimizer.
+   Optionally (`MODE_ENUMERATION=1`), a **thin-layer SLD mode enumeration**
+   step first re-seeds each thin layer's SLD across discrete levels and starts
+   the fit from the best basin — escaping the contrast×thickness-ridge local
+   minima that make a single optimizer run silently drop a real thin layer.
 5. **Evaluation** — Assesses the fit quality (χ², BIC, residual structure,
    parameter reasonableness) and decides whether to stop, re-fit with
    widened bounds only (a shortcut that saves one LLM call), or loop back
    to modeling for a real refinement. Automatic χ² and BIC *regression
    guardrails* revert the model if a refinement made things worse and mark
-   the tried hypothesis as rejected. When the fit stalls or the residuals
-   reveal an unmodeled layer, it also **re-selects skills from the observed
-   evidence and proposes/re-ranks new hypotheses** — the only place besides
-   intake that grows the candidate list.
+   the tried hypothesis as rejected. A deterministic **SLD-profile artifact
+   check** flags physically impossible roughness excursions (a profile dipping
+   below/above what its bounding media can produce) that a good χ² would
+   otherwise hide. When the fit stalls or the residuals reveal an unmodeled
+   layer, it also **re-selects skills from the observed evidence and
+   proposes/re-ranks new hypotheses** — the only place besides intake that
+   grows the candidate list.
 6. **Refinement** — When the evaluator decides a refinement is needed, it
    tells the modeling node whether to do a parameter tweak or to realize
    a specific structural hypothesis from the ranked list. The loop

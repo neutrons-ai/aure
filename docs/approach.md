@@ -227,9 +227,19 @@ DREAM/MCMC) on the current model. It returns best-fit parameter values,
 uncertainties, a final χ², the residuals, and whether the fit converged.
 This is ordinary numerical optimization — no LLM involved.
 
+Optionally (env `MODE_ENUMERATION=1`, single-file fits), the node runs a
+**thin-layer SLD mode enumeration** step *before* the main fit. Layers thinner
+than the resolution limit $2\pi/Q_\text{max}$ sit on a "contrast × thickness"
+degeneracy ridge (§6.8): several very different SLD values fit almost equally
+well, in separate local minima that a single optimizer run — even a global one
+— will not cross. The step re-seeds each thin layer's SLD across a few discrete
+levels spanning its allowed range, cheaply polishes each, and starts the main
+fit from the lowest-χ² basin. It is off by default, logs every seed it tries
+and the basin it picks, and never aborts the fit on error.
+
 ### 4.5 Evaluation
 
-The **evaluation** node is the decision-maker. It does four things:
+The **evaluation** node is the decision-maker. It does the following:
 
 1. **Auto-expand stuck bounds.** If any fitted parameter ended at its
    bound, the bound is widened by a factor (e.g. ×1.5 outward) and the
@@ -239,13 +249,30 @@ The **evaluation** node is the decision-maker. It does four things:
    residuals; if it shows a clear oscillation at a characteristic
    thickness, that thickness is reported to the LLM as a likely "missing
    layer" hint.
-3. **Call the LLM for a judgement.** The LLM sees the fit result, the
+3. **SLD-profile artifact detection.** A χ²-optimal fit can still produce a
+   *physically impossible* SLD profile — most often when a roughness's
+   error-function tail reaches across a thin layer and the profile dips below
+   (or overshoots above) the range its neighbouring materials can produce, e.g.
+   a dip *below the substrate SLD* just before the substrate. This defect is
+   invisible in χ² (it only shows up in the depth profile), so a deterministic
+   check (`detect_profile_artifacts`) inspects the fitted profile for interior
+   extrema that sit at an SLD no material in the stack provides. A genuine
+   excursion is treated as a deterministic guardrail: it **vetoes acceptance**
+   (overriding the LLM if it judged the fit acceptable on χ² alone) and becomes
+   an issue that routes the loop back to refinement, with a
+   two-branch suggestion — either tie the offending roughness to its layer
+   thickness (§6.8), or, if the diffuse transition is intended, keep the
+   roughness free and treat those slabs as a *profile parametrization* rather
+   than discrete layers. The σ/thickness ratio itself is reported only as an
+   informational concern, never an error, because a large roughness is
+   legitimate under the parametrization reading (§6.8).
+4. **Call the LLM for a judgement.** The LLM sees the fit result, the
    features, the residual analysis, the **χ² and BIC trajectory across
    all previous iterations**, and the **hypothesis list with statuses**.
    It responds with a JSON object containing `acceptable` (bool),
    `issues`, `suggestions`, `next_action`, and optionally a
    `proposed_hypothesis_id`.
-4. **Apply guardrails.** Two statistical guardrails run
+5. **Apply guardrails.** Two statistical guardrails run
    *independently of the LLM's opinion*:
    - **χ² regression guardrail.** If the current χ² is significantly
      worse than the best χ² seen so far, the node reverts the
@@ -262,7 +289,7 @@ The **evaluation** node is the decision-maker. It does four things:
      worth it. The node reverts to the best-BIC model and marks the
      hypothesis that was just tried as `rejected`.
 
-5. **Revise the hypotheses when the evidence demands it (gated).** When
+6. **Revise the hypotheses when the evidence demands it (gated).** When
    the fit is not acceptable *and* there is a concrete signal that the
    intake-time hypothesis list may be incomplete — residual fringes
    pointing to a missing layer, χ² stalled for two or more iterations, or
@@ -310,8 +337,9 @@ The skills currently shipped:
 
 | Skill | When it activates | What it knows |
 |---|---|---|
-| `neutron-reflectometry` | Always | Baseline SLD reference values, BIC guidance, Refl1D conventions |
+| `neutron-reflectometry` | Always | Baseline SLD reference values, BIC guidance, Refl1D conventions, and the two interpretations of roughness (discrete layer vs. profile parametrization) with the interpretation-independent rule that the profile must stay within the range its bounding media can produce |
 | `structural-hypothesis-ranking` | Always | How to generate and consume a ranked hypothesis list (§6) |
+| `thin-layer-degeneracy` | Always | Why thin layers are multimodal (the Δρ·t ridge), why a BIC comparison can wrongly reject a real thin layer via a local minimum, discrete SLD mode enumeration, and using a cleaner sibling/time-series measurement as a prior (§6.8) |
 | `metal-oxide-interfaces` | Samples with Cu, Ti, Fe, exposed metals | Native oxide thicknesses, SLDs, and when to add them |
 | `polymer-films` | Samples with polymers, PS, PMMA, etc. | Polymer SLDs, typical roughness, glass-transition effects |
 | `sei-layer-analysis` | Battery / electrolyte samples | Solid-electrolyte interphase layer conventions |
@@ -541,6 +569,19 @@ prompt-level biases:
   skill documents the `origin` provenance and the status-only restriction
   on the modeling node (§6.5).
 
+Later, the roughness guidance in
+[`neutron-reflectometry`](../src/aure/skills/neutron-reflectometry/SKILL.md)
+was rewritten again — this time to drop the blunt *"roughness must be less than
+half the adjacent thickness"* rule in favour of the two-interpretations framing
+of §6.8, and a new always-on skill was added:
+
+- [`thin-layer-degeneracy`](../src/aure/skills/thin-layer-degeneracy/SKILL.md)
+  teaches the reliability lesson behind §6.8: thin layers are multimodal, a BIC
+  "reject" of a physically-expected thin layer may be a missed global minimum
+  rather than evidence of absence, the mode-enumeration escape, and using a
+  cleaner sibling/time-series measurement as a prior. It is always-on because
+  the lesson is general to almost every fit.
+
 ### 6.7 Division of labour between LLM and code
 
 The table below summarises who decides what.
@@ -557,6 +598,8 @@ The table below summarises who decides what.
 | Realize a structural change | LLM | Modeling refinement prompt |
 | Update hypothesis status after realising a change | LLM | Modeling refinement prompt |
 | Auto-expand stuck bounds | Code | `_expand_model_bounds` in `evaluation.py` |
+| Detect non-physical SLD-profile excursions | Code | `detect_profile_artifacts` in `feature_tools.py` |
+| Escape thin-layer local minima before fitting | Code | mode enumeration in `fitting.py` (gated by `MODE_ENUMERATION`) |
 | Revert on χ² regression | Code | χ² regression guardrail |
 | Revert on BIC regression + mark hypothesis `rejected` | Code | BIC regression guardrail |
 | Enforce list membership (modeling = status-only) | Code | `merge_structural_hypotheses` guard |
@@ -566,6 +609,60 @@ The table below summarises who decides what.
 The pattern is: the LLM *proposes* and *explains*; code *enforces
 invariants*, *reverts regressions*, and *bookkeeps deterministic
 outcomes*.
+
+### 6.8 Thin layers: degeneracy, profile artifacts, and tied roughness
+
+Three related mechanisms address a family of failures that all trace back to
+*thin* layers — layers thinner than the real-space resolution limit
+$2\pi/Q_\text{max}$ (≈ 30 Å for a typical $Q_\text{max} = 0.2\,\text{Å}^{-1}$).
+
+**Why thin layers are hard.** Reflectivity constrains a thin layer mainly
+through the *product* of its contrast and thickness ($\Delta\rho \cdot t$), not
+$\rho$ and $t$ separately. Below the resolution limit, many $(\rho, t)$ pairs on
+a curve of constant $\Delta\rho \cdot t$ fit almost equally well, and they live
+in *distinct local minima* separated by barriers the optimizer will not cross.
+The consequence is dangerous for automated model selection: if the more complex
+candidate model landed in the wrong basin, its χ² is too high, its BIC looks
+too large, and a real layer gets rejected as "not justified." **A BIC verdict is
+only as trustworthy as the optimization behind it.**
+
+**Mode enumeration (fitting, §4.4).** The fix is not more optimizer effort but
+*discrete* exploration: seed the thin layer's SLD at a few levels spanning its
+range and polish each locally. This reliably finds the right basin where a
+single global run does not. Signatures of the local-minimum trap (worth
+recognising in the `thin-layer-degeneracy` skill) include an *adjacent* layer's
+parameter pinned at a bound, a roughness at a bound, or a tiny χ² gain for the
+added parameters. Notably, seeding the whole stack from a sibling measurement's
+converged structure does *not* work — the optimizer still slides into the wrong
+mode of the thin layer; the SLD mode must be enumerated explicitly.
+
+**Two interpretations of roughness.** A slab model with a roughness larger than
+half a layer's thickness is not automatically wrong. It means one of two things,
+and you must decide which:
+
+- *Discrete-layer interpretation* — the slab is a real layer with a physical
+  thickness and SLD. Here a large roughness that makes one slab's error-function
+  tail bleed across a thin neighbour is a modeling error.
+- *Profile-parametrization interpretation* — the slab stack is being used as a
+  flexible basis to represent a smoothly-varying / graded SLD profile. The
+  affected slabs are then **not** layers; one reports only the profile shape,
+  and a large roughness is expected and fine.
+
+The rule that holds under *both*: the resulting SLD profile must never leave the
+range physically reachable by its bounding media (no dip below / overshoot above
+what a blend of the two adjacent materials can produce). That excursion — not
+the roughness/thickness ratio — is the genuine artifact, and it is invisible in
+χ². The evaluation-node detector (§4.5) flags exactly this.
+
+**Tied roughness (the remedy, only under the layer interpretation).** When a
+discrete-layer reading is intended, the fix is not to cap or shrink the
+roughness (that just distorts the thickness) but to fit the *ratio*: a layer may
+carry a `roughness_tie` so its interface is built as $\sigma = f \cdot t$ with
+the fraction $f \le 0.5$ the fitted parameter. The interface then cannot outgrow
+its layer as the thickness moves. If instead the diffuse transition is intended,
+the roughness stays free and the region is re-labelled as a profile
+parametrization — the detector's suggestion offers both branches and leaves the
+choice to the modeling step.
 
 ---
 

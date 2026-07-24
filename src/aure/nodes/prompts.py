@@ -967,7 +967,8 @@ You must output a COMPLETE, valid JSON object matching this schema:
       "thickness_min": <min thickness Å>,
       "thickness_max": <max thickness Å>,
       "roughness": <roughness Å>,
-      "roughness_max": <max roughness Å>
+      "roughness_max": <max roughness Å>,
+      "roughness_tie": {{"fraction_max": <≤ 0.5>}}
     }}
   ],
   "ambient": {{
@@ -1010,6 +1011,15 @@ Rules:
 2. You may add layers, remove layers, change materials, adjust SLD values, or change parameter bounds.
 3. If parameters are hitting their bounds, widen those bounds (sld_min/sld_max, thickness_min/thickness_max).
 4. If there are systematic residuals, consider adding a layer.
+4b. `roughness_tie` is OPTIONAL and should be OMITTED for normal layers. Add it
+    only when an issue reports a non-physical SLD-profile excursion (an
+    erf-tail artifact — the profile dipping below or overshooting above the
+    range its bounding materials can produce) AND you intend the affected slab
+    as a real discrete layer: then set `"roughness_tie": {{"fraction_max": 0.5}}`
+    on that layer so its interface is fit as σ = fraction × thickness and can
+    never outgrow the layer. If instead the diffuse transition is physically
+    intended, leave roughness free and treat those slabs as a profile
+    parametrization (do not add roughness_tie).
 5. Use best-fit parameter values as starting points where physically reasonable.
 6. Unless the data is stated as perfectly normalized, keep intensity varying (fixed: false).
 7. Apply all domain-specific rules from the Domain Knowledge section above.

@@ -1015,6 +1015,14 @@ def _detect_profile_artifacts_into(analysis: dict, fit_result: FitResult, model)
             f"Non-physical SLD-profile excursion ({where}): "
             f"{exc['note']}. The reflectivity χ² does not see this."
         )
+        # Veto acceptance: a physically impossible profile must not be accepted
+        # on the strength of χ² alone. Forcing acceptable=False routes the loop
+        # back to refinement so the excursion is resolved.
+        if analysis.get("acceptable"):
+            logger.info(
+                "[EVALUATION] Overriding acceptable=True: SLD-profile artifact present"
+            )
+        analysis["acceptable"] = False
         analysis["suggestions"].append(
             "Resolve the profile excursion: either constrain the offending "
             "interface roughness as a fraction of its layer thickness "
