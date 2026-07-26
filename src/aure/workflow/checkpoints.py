@@ -19,7 +19,7 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 # Node execution order for reference
-NODE_ORDER = ["intake", "analysis", "modeling", "fitting", "evaluation"]
+NODE_ORDER = ["intake", "analysis", "modeling", "fitting", "evaluation", "finalize"]
 
 
 class CheckpointManager:
@@ -245,8 +245,11 @@ class CheckpointManager:
         """Copy the best fit's serialized FitProblem JSON to the top-level
         output directory as ``problem.json``.
 
-        Locates the fit iteration that produced the best chi-squared, then
-        finds the exported FitProblem JSON in
+        Prefers the iteration the ``finalize`` node selected, so this artifact
+        can never disagree with ``current_model`` in ``final_state.json``.
+        Falls back to the best-chi-squared iteration for states written before
+        that node existed (e.g. a resumed legacy run). Then finds the exported
+        FitProblem JSON in
         ``refl1d_output/fit_iter{N}_{method}/``. bumps names that file after
         the problem (``<model_name>.json``, or ``None.json`` when unnamed), not
         literally ``problem.json`` — so we resolve it by name and fall back to
@@ -258,16 +261,26 @@ class CheckpointManager:
         if not fit_results:
             return
 
-        best_chi2 = state.get("best_chi2")
-        if best_chi2 is None:
-            return
-
-        # Find the fit result that matches best_chi2
         best_fit = None
-        for fr in fit_results:
-            if fr.get("chi_squared") == best_chi2:
-                best_fit = fr
-                break
+
+        # Preferred: whichever iteration the finalize node selected.
+        selection = state.get("final_selection") or {}
+        if selection.get("selected"):
+            sel_iter = selection.get("iteration")
+            for fr in fit_results:
+                if fr.get("iteration") == sel_iter:
+                    best_fit = fr
+                    break
+
+        if best_fit is None:
+            best_chi2 = state.get("best_chi2")
+            if best_chi2 is None:
+                return
+            # Find the fit result that matches best_chi2
+            for fr in fit_results:
+                if fr.get("chi_squared") == best_chi2:
+                    best_fit = fr
+                    break
 
         # Fallback: pick the fit with the lowest chi_squared
         if best_fit is None:

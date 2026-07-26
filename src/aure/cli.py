@@ -417,6 +417,13 @@ def check_llm(output_json: bool, no_test: bool, fix: bool):
     help="Output directory for checkpoints and results",
 )
 @click.option(
+    "--model-name",
+    "-n",
+    default=None,
+    help="Basename for the exported refl1d/bumps files (default: the "
+    "output-dir name, then the data-file stem)",
+)
+@click.option(
     "--json",
     "output_json",
     is_flag=True,
@@ -450,6 +457,7 @@ def analyze(
     extra_data: tuple,
     max_refinements: Optional[int],
     output_dir: Optional[str],
+    model_name: Optional[str],
     output_json: bool,
     verbose: bool,
     config_file: Optional[str],
@@ -524,6 +532,11 @@ def analyze(
         setup["hypothesis"] = hypothesis
     if max_refinements is not None:
         setup["max_refinements"] = max_refinements
+    if model_name:
+        # Highest-priority candidate in _resolve_model_name, so the refl1d
+        # export files are <model_name>-* instead of being named after the
+        # output directory (or, unnamed, None-*).
+        setup["model_name"] = model_name
 
     # ── Resolve data files ────────────────────────────────────────
     # Three mutually exclusive paths:
@@ -762,9 +775,17 @@ def _print_analysis_results(result: dict, output_dir: Optional[str] = None):
         #        click.echo(f"    Script: {len(model_lines)} lines")
         click.echo()
 
-    # Fit results — pull from fit_results list (last entry is the final fit)
+    # Fit results — the finalize node records which iteration was selected as
+    # the run's answer; without it (legacy state) fall back to the last fit.
     fit_list = result.get("fit_results") or []
-    fit = fit_list[-1] if fit_list else None
+    selection = result.get("final_selection") or {}
+    fit = None
+    if fit_list:
+        sel_index = selection.get("index") if selection.get("selected") else None
+        if isinstance(sel_index, int) and 0 <= sel_index < len(fit_list):
+            fit = fit_list[sel_index]
+        else:
+            fit = fit_list[-1]
 
     # Also grab the top-level chi² fields set by the workflow
     current_chi2 = result.get("current_chi2")
@@ -782,6 +803,19 @@ def _print_analysis_results(result: dict, output_dir: Optional[str] = None):
             click.echo(f"    Best χ²: {best_chi2:.4f}")
         click.echo(f"    Method: {fit.get('method', 'unknown')}")
         click.echo(f"    Iterations: {len(fit_list)}")
+        if selection.get("selected"):
+            click.echo(f"    Selected iteration: {selection.get('iteration')}")
+            if selection.get("superseded_last_iteration"):
+                from .nodes.finalize import _fmt_chi2
+
+                last_chi2 = _fmt_chi2(selection.get("last_iteration_chi2"))
+                click.echo(
+                    click.style(
+                        f"    ↳ chosen over the last iteration fitted "
+                        f"(χ² = {last_chi2})",
+                        fg="yellow",
+                    )
+                )
 
         if fit.get("parameters"):
             click.echo("    Parameters:")

@@ -15,7 +15,15 @@ The graph defines:
 from langgraph.graph import StateGraph, START, END
 
 from ..state import ReflectivityState
-from ..nodes import intake, analysis, modeling, fitting, evaluation, routing
+from ..nodes import (
+    intake,
+    analysis,
+    modeling,
+    fitting,
+    evaluation,
+    finalize,
+    routing,
+)
 
 
 def create_workflow(include_fitting: bool = True) -> StateGraph:
@@ -40,6 +48,12 @@ def create_workflow(include_fitting: bool = True) -> StateGraph:
     if include_fitting:
         workflow.add_node("fitting", fitting.fitting_node)
         workflow.add_node("evaluation", evaluation.evaluation_node)
+        # Terminal packaging step: pick the best fit of the run and promote it
+        # to current_model / current_chi2. Every exit from the fitting portion
+        # of the graph goes through it — including the error edges, because a
+        # late LLM failure still leaves a run's worth of good fits to choose
+        # from. It no-ops when there is nothing to select.
+        workflow.add_node("finalize", finalize.finalize_node)
 
     # ========== Add Edges ==========
     # Start → Intake
@@ -66,13 +80,14 @@ def create_workflow(include_fitting: bool = True) -> StateGraph:
     )
 
     if include_fitting:
-        # Modeling → Fitting
+        # Modeling → Fitting (a refinement-iteration error can still have
+        # earlier successful fits to package, so route it through finalize)
         workflow.add_conditional_edges(
             "modeling",
             routing.route_after_modeling,
             {
                 "fitting": "fitting",
-                "error": END,
+                "error": "finalize",
             },
         )
 
@@ -82,21 +97,24 @@ def create_workflow(include_fitting: bool = True) -> StateGraph:
             routing.route_after_fitting,
             {
                 "evaluation": "evaluation",
-                "error": END,
+                "error": "finalize",
             },
         )
 
-        # Evaluation → Modeling (loop back for refinement) or Complete
+        # Evaluation → Modeling (loop back for refinement) or Finalize
         workflow.add_conditional_edges(
             "evaluation",
             routing.route_after_evaluation,
             {
                 "modeling": "modeling",
                 "fitting": "fitting",
-                "complete": END,
-                "error": END,
+                "complete": "finalize",
+                "error": "finalize",
             },
         )
+
+        # Finalize is terminal
+        workflow.add_edge("finalize", END)
     else:
         # Without fitting, modeling is the end
         workflow.add_edge("modeling", END)

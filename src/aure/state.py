@@ -377,6 +377,13 @@ class ReflectivityState(TypedDict):
     best_model: Optional[dict]  # ModelDefinition that produced the best χ²
     best_bic: Optional[float]  # Lowest BIC (complexity-penalized score)
     best_bic_model: Optional[dict]  # ModelDefinition that produced the best BIC
+    # Set by the terminal `finalize` node once the refinement loop has stopped.
+    # `finalized` makes that node idempotent (the runner also calls it
+    # defensively on loop-exit paths that never route through a node);
+    # `final_selection` records which fit iteration was chosen as the run's
+    # answer and why, so the decision is auditable from a checkpoint.
+    finalized: bool
+    final_selection: Optional[dict]
 
     # ========== Conversation ==========
     messages: Annotated[List[Message], operator.add]
@@ -463,6 +470,8 @@ def create_initial_state(
         best_model=None,
         best_bic=None,
         best_bic_model=None,
+        finalized=False,
+        final_selection=None,
         # Conversation
         messages=[],
         # LLM call tracking

@@ -459,7 +459,17 @@ class RunData:
                 best_chi2 = c
                 best_idx = i
 
-        idx = iteration if iteration is not None else best_idx
+        # The finalize node's choice is the run's answer — default to it so the
+        # table agrees with final_state.json and the exported problem.json. It
+        # can differ from best_idx via the parsimony tie-break.
+        default_idx = best_idx
+        selection = state.get("final_selection") or {}
+        if selection.get("selected"):
+            sel_index = selection.get("index")
+            if isinstance(sel_index, int) and 0 <= sel_index < len(fit_results):
+                default_idx = sel_index
+
+        idx = iteration if iteration is not None else default_idx
         idx = max(0, min(idx, len(fit_results) - 1))
 
         selected = fit_results[idx]

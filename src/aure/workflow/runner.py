@@ -13,7 +13,15 @@ from typing import Optional, Callable, Dict, Any
 from pathlib import Path
 
 from ..state import ReflectivityState, Message, create_initial_state
-from ..nodes import intake, analysis, modeling, fitting, evaluation, routing
+from ..nodes import (
+    intake,
+    analysis,
+    modeling,
+    fitting,
+    evaluation,
+    finalize,
+    routing,
+)
 from .checkpoints import CheckpointManager, get_node_after
 from .tracing import get_trace_context, run_with_tracing, TracedWorkflow
 
@@ -33,8 +41,10 @@ def _rejoin_messages(data: object) -> None:
 logger = logging.getLogger(__name__)
 
 
-# Node execution order (evaluation routes back to modeling for refinement)
-NODE_ORDER = ["intake", "analysis", "modeling", "fitting", "evaluation"]
+# Node execution order (evaluation routes back to modeling for refinement;
+# finalize is the terminal packaging step and is listed so it is a legal
+# ``start_node`` — re-running selection on an old run needs no refitting)
+NODE_ORDER = ["intake", "analysis", "modeling", "fitting", "evaluation", "finalize"]
 
 # Node function registry
 NODE_FUNCTIONS = {
@@ -43,9 +53,11 @@ NODE_FUNCTIONS = {
     "modeling": modeling.modeling_node,
     "fitting": fitting.fitting_node,
     "evaluation": evaluation.evaluation_node,
+    "finalize": finalize.finalize_node,
 }
 
-# Routing function registry
+# Routing function registry. ``finalize`` deliberately has no entry: the loop
+# breaks when a node has no router, which is exactly what makes it terminal.
 ROUTING_FUNCTIONS = {
     "intake": routing.route_after_intake,
     "analysis": routing.route_after_analysis,
@@ -307,15 +319,33 @@ def run_workflow_with_checkpoints(
                             # Restore model and fit state from checkpoint
                             for key in (
                                 "current_model",
-                                "best_model",
-                                "best_chi2",
                                 "current_chi2",
                                 "iteration",
                                 "fit_results",
                             ):
                                 if key in cp_state:
                                     state[key] = cp_state[key]
+                            # model_history is append-only, so rewinding
+                            # fit_results without it would leave abandoned
+                            # branches on record — and the terminal model
+                            # selection resolves a fit's structure through
+                            # model_history. Truncate the two together.
+                            if "model_history" in cp_state:
+                                state["model_history"] = cp_state["model_history"]
+                            # best_* is the run's regression baseline and the
+                            # input to final model selection — rewinding to an
+                            # earlier checkpoint must not make it worse, or the
+                            # true best found is lost for good.
+                            cp_best = cp_state.get("best_chi2")
+                            incumbent = state.get("best_chi2")
+                            if cp_best is not None and (
+                                incumbent is None or cp_best < incumbent
+                            ):
+                                state["best_chi2"] = cp_best
+                                if "best_model" in cp_state:
+                                    state["best_model"] = cp_state["best_model"]
                             state["workflow_complete"] = False
+                            state["finalized"] = False
                             state["error"] = None
                             logger.info(
                                 "[RUNNER] Restored state from checkpoint iteration %d",
@@ -369,6 +399,25 @@ def run_workflow_with_checkpoints(
             # Try to find matching node
             current_node = next_route if next_route in NODE_FUNCTIONS else None
 
+    # ---- Terminal packaging -----------------------------------------
+    # The loop has six exits and only two of them consult a routing function:
+    # the `complete` / `error` routes, the interactive __STOP__ break, the
+    # `stop_after` break, the max_total_iterations cap on the `while` itself,
+    # and the missing-router break. On top of that, `workflow_complete` breaks
+    # out immediately after evaluation, before routing runs at all. Wiring
+    # finalize as an edge would therefore miss most of them, so run it here
+    # where every exit converges. `finalize_node` is idempotent via the
+    # `finalized` flag, so this is a no-op if it already ran as a node.
+    if not state.get("finalized") and not stop_after:
+        updates = run_with_tracing(
+            NODE_FUNCTIONS["finalize"], state, "node_finalize", trace_ctx
+        )
+        _merge_state_updates(state, updates)
+        if checkpoint_mgr:
+            checkpoint_mgr.save_checkpoint(state, "finalize")
+        if checkpoint_callback:
+            checkpoint_callback(state, "finalize")
+
     # Save final state
     if checkpoint_mgr:
         checkpoint_mgr.save_final_state(state)
@@ -410,6 +459,9 @@ def prepare_state_for_restart(
     # ---- Clear completion / error flags ----------------------------
     new_state["workflow_complete"] = False
     new_state["error"] = None
+    # The restarted run must pick its own winner over the extended set of
+    # iterations, so drop the previous run's terminal selection.
+    new_state["finalized"] = False
 
     # ---- Grant more iteration budget -------------------------------
     used = new_state.get("iteration", 0)
@@ -460,8 +512,10 @@ def run_from_checkpoint(
     state = checkpoint_data["state"]
     completed_node = checkpoint_data["node"]
 
-    # Clear any error from previous run
+    # Clear any error from previous run, and let the resumed run re-select its
+    # final model over whatever iterations it ends up with.
     state["error"] = None
+    state["finalized"] = False
 
     # Determine the next node to run
     next_node = get_node_after(completed_node)
