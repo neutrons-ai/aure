@@ -192,6 +192,46 @@ def build_experiment(definition: dict):
     return experiment
 
 
+_OUTER_ROUGHNESS_MAX_DEFAULT = 30.0
+
+
+def _outer_roughness_max(layers_info: list) -> float:
+    """Upper bound for the outermost (fronting-side) interface roughness.
+
+    In back reflection the stack is assembled ambient-first, so
+    ``sample[0].interface`` is the boundary between the ambient and the
+    *topmost* layer — that layer's own outer interface. Its seed value already
+    comes from ``layers_info[-1]["roughness"]``, so its ceiling is taken from the
+    same layer's ``roughness_max`` for consistency, and stays overridable with
+    ``ROUGHNESS_MAX_OUTER`` for batch/validation runs.
+
+    This used to be hardcoded at 30 A, which silently capped genuinely diffuse
+    interfaces: a solvent-swollen SEI is not a sharp slab, and against expert
+    reference fits of Cu-in-THF electrodes the outer roughness exceeds 30 A in
+    40 of 51 measured runs, reaching 209 A. No amount of adjustment elsewhere in
+    the model can absorb that, so the fit lands in a systematically wrong basin.
+
+    The default is unchanged, so behaviour only differs when a model (or the
+    environment) explicitly asks for a wider bound.
+    """
+    override = os.environ.get("ROUGHNESS_MAX_OUTER")
+    if override:
+        try:
+            return float(override)
+        except ValueError:
+            logger.warning(
+                "[MODEL] Ignoring non-numeric ROUGHNESS_MAX_OUTER=%r", override
+            )
+    if layers_info:
+        try:
+            return float(
+                layers_info[-1].get("roughness_max", _OUTER_ROUGHNESS_MAX_DEFAULT)
+            )
+        except (TypeError, ValueError):
+            pass
+    return _OUTER_ROUGHNESS_MAX_DEFAULT
+
+
 def _build_sample(definition: dict):
     """Build a refl1d sample stack with parameter ranges from a ModelDefinition.
 
@@ -284,7 +324,7 @@ def _build_sample(definition: dict):
             sample[idx].interface.range(r_min, r_max)
 
     if back_reflection:
-        sample[0].interface.range(0, 30.0)
+        sample[0].interface.range(0, _outer_roughness_max(layers_info))
     else:
         sub_rough_max = substrate_info.get("roughness_max", 15.0)
         sample[0].interface.range(0, sub_rough_max)
