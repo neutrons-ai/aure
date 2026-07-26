@@ -8,15 +8,43 @@ in :func:`create_openai_compatible`.
 
 from __future__ import annotations
 
+import logging
+import os
 from typing import Optional
 
 from ..config import get_llm_timeout
 from .alcf_auth import get_token
 
+logger = logging.getLogger(__name__)
+
 ALCF_CLUSTER_PATHS: dict[str, str] = {
     "sophia": "/resource_server/sophia/vllm/v1",
     "metis": "/resource_server/metis/api/v1",
 }
+
+# Transient connection failures are routine against a local server: Ollama
+# evicts an idle model after ~5 min, and AuRE's refl1d fits run far longer than
+# that, so the call that follows a fit often arrives while the model is being
+# reloaded from disk. With no retry a single such blip aborts the whole analysis
+# — in one 23-case validation sweep it cost 12 cases, and one of those still
+# emitted a degenerate fallback model that looked like a (terrible) answer.
+_DEFAULT_MAX_RETRIES = 2
+
+
+def _max_retries() -> int:
+    """How many times to retry a failed LLM call (``LLM_MAX_RETRIES``).
+
+    Set to 0 to restore the previous fail-fast behaviour. Each retry is bounded
+    by the same per-call timeout, so the worst case stays predictable.
+    """
+    raw = os.environ.get("LLM_MAX_RETRIES")
+    if raw is None or raw == "":
+        return _DEFAULT_MAX_RETRIES
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        logger.warning("[LLM] Ignoring non-numeric LLM_MAX_RETRIES=%r", raw)
+        return _DEFAULT_MAX_RETRIES
 
 
 def create_openai_compatible(
@@ -36,7 +64,7 @@ def create_openai_compatible(
         model=config["model"],
         temperature=temperature,
         api_key=api_key,
-        max_retries=0,
+        max_retries=_max_retries(),
         timeout=float(get_llm_timeout()),
     )
     if base_url:

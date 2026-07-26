@@ -1071,17 +1071,36 @@ def _format_fit_result(result: FitResult) -> str:
     return "\n".join(lines)
 
 
+def _find_profile_dat(export_dir: str):
+    """Locate refl1d's ``*-1-profile.dat`` in an export directory.
+
+    The basename is the FitProblem's name, which :func:`_name_problem` sets from
+    ``model_name`` — so it is only ``problem-1-profile.dat`` when the problem was
+    left unnamed. Looking for that one fixed name silently found nothing on every
+    named run, which left ``sld_z``/``sld_rho`` empty and thereby disabled the
+    SLD-profile artifact detector in evaluation (it returns early without a
+    profile). Prefer the documented name, then fall back to whatever refl1d
+    actually wrote.
+    """
+    d = Path(export_dir)
+    default = d / "problem-1-profile.dat"
+    if default.exists():
+        return default
+    hits = sorted(d.glob("*-1-profile.dat"))
+    return hits[0] if hits else None
+
+
 def _read_profile_dat(
     export_dir: Optional[str],
 ) -> tuple:
-    """Read SLD profile from refl1d ``problem-1-profile.dat``.
+    """Read SLD profile from refl1d's ``*-1-profile.dat``.
 
     Returns (z_list, rho_list) or (None, None) if unavailable.
     """
     if not export_dir:
         return None, None
-    profile_file = Path(export_dir) / "problem-1-profile.dat"
-    if not profile_file.exists():
+    profile_file = _find_profile_dat(export_dir)
+    if profile_file is None:
         return None, None
     try:
         z_vals = []
