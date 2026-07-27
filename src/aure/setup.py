@@ -23,6 +23,7 @@ Synonyms (kept for ``analyzer plan-data`` interop):
 from __future__ import annotations
 
 import logging
+import math
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TypedDict
 
@@ -71,9 +72,14 @@ class SetupConfig(TypedDict, total=False):
     command: str  # "analyze" | "prepare"
     output_root: str  # parent for the output directory
     max_refinements: int
+    chi2_max: float  # a fit at or below this χ² ends the refinement loop
     fit_method: str  # "lm" | "de" | "dream"
     fit_steps: int
     fit_burn: int
+    fit_method_final: str  # optional final uncertainty fit; unset → off
+    fit_steps_final: int
+    fit_burn_final: int
+    final_fit_chi2_max: float  # skip the final fit above this χ²
 
     # Job-runner switches (batch only — ignored by analyze)
     verbose: bool
@@ -114,9 +120,14 @@ _KNOWN_TOP_LEVEL = {
     "command",
     "output_root",
     "max_refinements",
+    "chi2_max",
     "fit_method",
     "fit_steps",
     "fit_burn",
+    "fit_method_final",
+    "fit_steps_final",
+    "fit_burn_final",
+    "final_fit_chi2_max",
     "verbose",
     "json",
     "llm_provider",
@@ -129,6 +140,11 @@ _KNOWN_TOP_LEVEL = {
     "alcf_access_token",
     "metadata",
 }
+
+# Float-valued keys. A χ² threshold ≤ 0 (or non-finite) can never be met,
+# which would silently disable acceptance — reject it at load time instead.
+_FLOAT_KEYS = ("chi2_max", "final_fit_chi2_max", "llm_temperature")
+_POSITIVE_FLOAT_KEYS = frozenset({"chi2_max", "final_fit_chi2_max"})
 
 # Keys that the legacy schema used at the top level (or in a job entry)
 # but which are no longer supported. Loaders raise a migration error
@@ -245,22 +261,45 @@ def _setup_from_dict(
     if desc:
         out["sample_description"] = str(desc)
 
-    for opt_str in ("hypothesis", "model_name", "command", "output_root", "fit_method"):
+    for opt_str in (
+        "hypothesis",
+        "model_name",
+        "command",
+        "output_root",
+        "fit_method",
+        "fit_method_final",
+    ):
         if raw.get(opt_str):
             out[opt_str] = str(raw[opt_str])  # type: ignore[literal-required]
 
-    for opt_int in ("max_refinements", "fit_steps", "fit_burn", "llm_timeout"):
+    for opt_int in (
+        "max_refinements",
+        "fit_steps",
+        "fit_burn",
+        "fit_steps_final",
+        "fit_burn_final",
+        "llm_timeout",
+    ):
         if opt_int in raw and raw[opt_int] is not None:
             try:
                 out[opt_int] = int(raw[opt_int])  # type: ignore[literal-required]
             except (TypeError, ValueError) as exc:
                 raise ConfigError(f"{source}: `{opt_int}` must be an integer") from exc
 
-    if "llm_temperature" in raw and raw["llm_temperature"] is not None:
-        try:
-            out["llm_temperature"] = float(raw["llm_temperature"])
-        except (TypeError, ValueError) as exc:
-            raise ConfigError(f"{source}: `llm_temperature` must be a number") from exc
+    for opt_float in _FLOAT_KEYS:
+        if opt_float in raw and raw[opt_float] is not None:
+            try:
+                value = float(raw[opt_float])
+            except (TypeError, ValueError) as exc:
+                raise ConfigError(f"{source}: `{opt_float}` must be a number") from exc
+            if opt_float in _POSITIVE_FLOAT_KEYS and not (
+                math.isfinite(value) and value > 0
+            ):
+                raise ConfigError(
+                    f"{source}: `{opt_float}` must be a finite positive number, "
+                    f"got {raw[opt_float]!r}"
+                )
+            out[opt_float] = value  # type: ignore[literal-required]
 
     for opt_str in (
         "llm_provider",
@@ -344,9 +383,14 @@ _DUMP_ORDER: tuple[str, ...] = (
     "command",
     "output_root",
     "max_refinements",
+    "chi2_max",
     "fit_method",
     "fit_steps",
     "fit_burn",
+    "fit_method_final",
+    "fit_steps_final",
+    "fit_burn_final",
+    "final_fit_chi2_max",
     "shared_parameters",
     "unshared_parameters",
     "distinct_sample",

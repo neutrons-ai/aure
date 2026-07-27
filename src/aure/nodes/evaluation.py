@@ -37,6 +37,42 @@ def _get_chi2_max() -> float:
         return 5.0
 
 
+def _clamp_acceptance_to_chi2(analysis: dict, *, chi2: float, chi2_max: float) -> bool:
+    """Force acceptance when χ² already meets the run's threshold.
+
+    ``CHI2_MAX`` is the run's contract with the user, so a fit that meets it
+    must stop reproducibly rather than at the LLM's discretion — otherwise the
+    refinement loop spends fit and LLM budget re-litigating a fit that already
+    passed. The LLM's objections are not discarded: they stay in
+    ``analysis["issues"]`` and are reported as notes, and the improvement ideas
+    the run never got to are listed by the finalize node.
+
+    The SLD-profile artifact veto outranks this clamp — a physically impossible
+    profile is invisible to χ² and must never be accepted on χ² alone.
+
+    Returns:
+        True if the verdict was flipped to acceptable.
+    """
+    if analysis.get("acceptable"):
+        return False
+    if isinstance(chi2, bool) or not isinstance(chi2, (int, float)):
+        return False
+    if not np.isfinite(chi2) or chi2 > chi2_max:
+        return False
+    if analysis.get("_profile_artifact"):
+        return False
+
+    analysis["acceptable"] = True
+    analysis["_chi2_clamped"] = True
+    logger.warning(
+        "[EVALUATION] Overriding acceptable=False: χ²=%.3f already meets the "
+        "acceptance threshold χ² ≤ %.3f",
+        chi2,
+        chi2_max,
+    )
+    return True
+
+
 def _count_free_params(model: dict) -> int:
     """Count the number of free parameters in a ModelDefinition dict."""
     n = 0
@@ -288,6 +324,11 @@ def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
     # refinement pass. The σ/thickness ratio is surfaced as an informational
     # concern only — a large roughness is legitimate for a graded profile.
     _detect_profile_artifacts_into(analysis, latest_fit, current_model)
+
+    # ========== Deterministic χ² Accept Clamp ==========
+    # The threshold is enforced here, not left to the LLM's verdict. Must run
+    # after the artifact detector so the profile veto keeps precedence.
+    _clamp_acceptance_to_chi2(analysis, chi2=chi2, chi2_max=chi2_max)
 
     latest_fit["issues"] = analysis["issues"]
     latest_fit["suggestions"] = analysis["suggestions"]
@@ -852,6 +893,14 @@ def _format_success(fit_result: FitResult, analysis: Dict) -> str:
     lines.append(f"**Final χ² = {fit_result['chi_squared']:.2f}**")
     lines.append("")
 
+    if analysis.get("_chi2_clamped"):
+        lines.append(
+            f"The run stopped here because χ² met the acceptance threshold "
+            f"(χ² ≤ {_get_chi2_max():.2f}). The notes below were raised during "
+            f"evaluation but were not acted on."
+        )
+        lines.append("")
+
     if fit_result["parameters"]:
         lines.append("### Best-fit Structure:")
         lines.append("")
@@ -974,7 +1023,9 @@ def _ordered_slds_for_artifacts(model: dict, parameters: dict) -> list:
     return seq
 
 
-def _detect_profile_artifacts_into(analysis: dict, fit_result: FitResult, model) -> None:
+def _detect_profile_artifacts_into(
+    analysis: dict, fit_result: FitResult, model
+) -> None:
     """Run the SLD-profile artifact detector and fold results into ``analysis``.
 
     A genuine non-physical excursion becomes an ``issue`` (so the workflow
@@ -1023,6 +1074,7 @@ def _detect_profile_artifacts_into(analysis: dict, fit_result: FitResult, model)
                 "[EVALUATION] Overriding acceptable=True: SLD-profile artifact present"
             )
         analysis["acceptable"] = False
+        analysis["_profile_artifact"] = True
         analysis["suggestions"].append(
             "Resolve the profile excursion: either constrain the offending "
             "interface roughness as a fraction of its layer thickness "

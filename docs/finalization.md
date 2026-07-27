@@ -208,6 +208,7 @@ Env vars (also settable as setup-YAML keys via `_build_env_overrides`, mapped
 
 | Env var | YAML key | Default | Meaning |
 |---|---|---|---|
+| `CHI2_MAX` | `chi2_max` | `5.0` | χ² acceptance threshold — also the refinement loop's stop condition |
 | `FIT_METHOD` | `fit_method` | `dream` | Exploration / refinement-loop method |
 | `FIT_STEPS` / `FIT_BURN` | `fit_steps` / `fit_burn` | `1000` | Exploration budget |
 | `FIT_METHOD_FINAL` | `fit_method_final` | *(unset → off)* | Final polish method; must differ from `FIT_METHOD` to run |

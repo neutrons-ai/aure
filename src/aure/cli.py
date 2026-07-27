@@ -7,6 +7,7 @@ Usage:
     python -m aure.cli mcp-server
 """
 
+import contextlib
 import json
 import logging
 import subprocess
@@ -520,7 +521,10 @@ def analyze(
     # ── Merge positional overrides into the setup ─────────────────
     # Rule: positional args win over setup values, but warn if both supplied.
     if sample_description:
-        if setup.get("sample_description") and setup["sample_description"] != sample_description:
+        if (
+            setup.get("sample_description")
+            and setup["sample_description"] != sample_description
+        ):
             click.echo(
                 click.style(
                     "  Note: positional SAMPLE_DESCRIPTION overrides the setup file.",
@@ -607,83 +611,94 @@ def analyze(
     data_file = primary_data_file(setup)
     data_files = None  # multi-state path: runner reads from `states`
 
-    if not output_json:
-        click.echo(click.style("═" * 60, fg="blue"))
-        click.echo(
-            click.style("  Reflectivity Analysis Workflow", fg="blue", bold=True)
-        )
-        click.echo(click.style("═" * 60, fg="blue"))
-        click.echo()
-
-        # Check LLM status first
-        llm_ok, llm_msg = _check_llm_status(quiet=False, test_connection=True)
-        click.echo()
-
-        click.echo(f"  Data file: {data_file}")
-        n_files = sum(len(s.get("data_files", [])) for s in states)
-        if len(states) > 1:
-            for st in states:
-                names = ", ".join(ds["label"] for ds in st.get("data_files", []))
-                click.echo(f"  State {st['name']}: {names}")
-            click.echo(
-                f"  Multi-state co-refinement: {len(states)} states, "
-                f"{n_files} files"
-            )
-        elif n_files > 1:
-            for ds in states[0].get("data_files", []):
-                click.echo(f"  + {ds['file']}")
-            click.echo(f"  Co-refinement: {n_files} files (shared structure)")
-        click.echo(f"  Sample: {sample_description}")
-        if hypothesis:
-            click.echo(f"  Hypothesis: {hypothesis}")
-        click.echo()
-    else:
-        # Still check LLM in quiet mode for JSON output
-        llm_ok, llm_msg = _check_llm_status(quiet=True, test_connection=True)
-
-    # Stop if LLM is not available
-    if not llm_ok:
-        if output_json:
-            click.echo(
-                json.dumps(
-                    {"error": f"LLM not available: {llm_msg}", "llm": get_llm_info()}
-                )
-            )
-        else:
-            click.echo(click.style(f"  Cannot proceed: {llm_msg}", fg="red"))
-            click.echo("  Please configure a working LLM provider in .env")
-        sys.exit(1)
-
-    # Create checkpoint callback for progress reporting
-    def checkpoint_callback(state, node_name):
+    # The setup's run controls (chi2_max, fit budgets, LLM settings) reach the
+    # workflow as environment variables, so they must be in force before the
+    # banner reads them back and before the runner starts.
+    with _applied_env_overrides(setup):
         if not output_json:
-            status = "✓" if not state.get("error") else "✗"
+            click.echo(click.style("═" * 60, fg="blue"))
             click.echo(
-                click.style(
-                    f"  [{status}] {node_name.title()}",
-                    fg="green" if status == "✓" else "red",
-                )
+                click.style("  Reflectivity Analysis Workflow", fg="blue", bold=True)
             )
+            click.echo(click.style("═" * 60, fg="blue"))
+            click.echo()
 
-    # Run analysis
-    try:
-        result = run_analysis(
-            data_file=data_file,
-            sample_description=sample_description,
-            hypothesis=hypothesis,
-            max_iterations=max_refinements,
-            output_dir=output_dir,
-            checkpoint_callback=checkpoint_callback if not output_json else None,
-            user_config=user_config,
-            data_files=data_files,
-            states=states,
-        )
-    except Exception as e:
-        if output_json:
-            click.echo(json.dumps({"error": str(e)}))
+            # Check LLM status first
+            llm_ok, llm_msg = _check_llm_status(quiet=False, test_connection=True)
+            click.echo()
+
+            click.echo(f"  Data file: {data_file}")
+            n_files = sum(len(s.get("data_files", [])) for s in states)
+            if len(states) > 1:
+                for st in states:
+                    names = ", ".join(ds["label"] for ds in st.get("data_files", []))
+                    click.echo(f"  State {st['name']}: {names}")
+                click.echo(
+                    f"  Multi-state co-refinement: {len(states)} states, "
+                    f"{n_files} files"
+                )
+            elif n_files > 1:
+                for ds in states[0].get("data_files", []):
+                    click.echo(f"  + {ds['file']}")
+                click.echo(f"  Co-refinement: {n_files} files (shared structure)")
+            click.echo(f"  Sample: {sample_description}")
+            if hypothesis:
+                click.echo(f"  Hypothesis: {hypothesis}")
+
+            from .nodes.evaluation import _get_chi2_max
+
+            click.echo(f"  Accept when χ² ≤ {_get_chi2_max():g}")
+            click.echo()
         else:
-            click.echo(click.style(f"Error: {e}", fg="red"))
-        sys.exit(1)
+            # Still check LLM in quiet mode for JSON output
+            llm_ok, llm_msg = _check_llm_status(quiet=True, test_connection=True)
+
+        # Stop if LLM is not available
+        if not llm_ok:
+            if output_json:
+                click.echo(
+                    json.dumps(
+                        {
+                            "error": f"LLM not available: {llm_msg}",
+                            "llm": get_llm_info(),
+                        }
+                    )
+                )
+            else:
+                click.echo(click.style(f"  Cannot proceed: {llm_msg}", fg="red"))
+                click.echo("  Please configure a working LLM provider in .env")
+            sys.exit(1)
+
+        # Create checkpoint callback for progress reporting
+        def checkpoint_callback(state, node_name):
+            if not output_json:
+                status = "✓" if not state.get("error") else "✗"
+                click.echo(
+                    click.style(
+                        f"  [{status}] {node_name.title()}",
+                        fg="green" if status == "✓" else "red",
+                    )
+                )
+
+        # Run analysis
+        try:
+            result = run_analysis(
+                data_file=data_file,
+                sample_description=sample_description,
+                hypothesis=hypothesis,
+                max_iterations=max_refinements,
+                output_dir=output_dir,
+                checkpoint_callback=checkpoint_callback if not output_json else None,
+                user_config=user_config,
+                data_files=data_files,
+                states=states,
+            )
+        except Exception as e:
+            if output_json:
+                click.echo(json.dumps({"error": str(e)}))
+            else:
+                click.echo(click.style(f"Error: {e}", fg="red"))
+            sys.exit(1)
 
     # Check for errors
     if result.get("error"):
@@ -850,6 +865,25 @@ def _print_analysis_results(result: dict, output_dir: Optional[str] = None):
             click.echo("    Suggestions:")
             for sug in evaluation["suggestions"]:
                 click.echo(f"      - {sug}")
+
+    # Untried structural hypotheses. A run that clears the χ² threshold stops
+    # with candidates still on the backlog — this is the only place they surface.
+    hypotheses = result.get("structural_hypotheses") or []
+    pending = [h for h in hypotheses if h.get("status") == "pending"]
+    if pending:
+        click.echo()
+        click.echo(click.style("  Possible further improvements", fg="cyan", bold=True))
+        for hyp in pending:
+            click.echo(f"    [{hyp.get('id', '?')}] {hyp.get('title', '(untitled)')}")
+            if hyp.get("change"):
+                click.echo(f"        → {hyp['change']}")
+        attempted = sum(1 for h in hypotheses if h.get("status") != "pending")
+        confirmed = sum(1 for h in hypotheses if h.get("status") == "confirmed")
+        rejected = sum(1 for h in hypotheses if h.get("status") == "rejected")
+        click.echo(
+            f"    ({attempted} of {len(hypotheses)} attempted — "
+            f"{confirmed} confirmed, {rejected} rejected)"
+        )
 
     # Output directory info
     if output_dir:
@@ -1045,78 +1079,82 @@ def prepare(
     resolved_model_name = setup.get("model_name") or Path(data_file).stem
     resolved_output_dir = output_dir or str(Path("output") / resolved_model_name)
 
-    if not output_json:
-        click.echo(click.style("═" * 60, fg="blue"))
-        click.echo(
-            click.style("  Reflectivity Analysis — Prepare", fg="blue", bold=True)
-        )
-        click.echo(click.style("═" * 60, fg="blue"))
-        click.echo()
-
-        llm_ok, llm_msg = _check_llm_status(quiet=False, test_connection=True)
-        click.echo()
-
-        click.echo(f"  Data file:  {data_file}")
-        n_files = sum(len(s.get("data_files", [])) for s in states)
-        if len(states) > 1:
-            for st in states:
-                names = ", ".join(ds["label"] for ds in st.get("data_files", []))
-                click.echo(f"  State {st['name']}: {names}")
-            click.echo(
-                f"  Multi-state co-refinement: {len(states)} states, "
-                f"{n_files} files"
-            )
-        elif n_files > 1:
-            for ds in states[0].get("data_files", []):
-                click.echo(f"  + {ds['file']}")
-            click.echo(f"  Co-refinement: {n_files} files (shared structure)")
-        click.echo(f"  Sample:     {sample_description}")
-        if hypothesis:
-            click.echo(f"  Hypothesis: {hypothesis}")
-        click.echo(f"  Model name: {resolved_model_name}")
-        click.echo(f"  Output dir: {resolved_output_dir}")
-        click.echo()
-    else:
-        llm_ok, llm_msg = _check_llm_status(quiet=True, test_connection=True)
-
-    if not llm_ok:
-        if output_json:
-            click.echo(
-                json.dumps(
-                    {"error": f"LLM not available: {llm_msg}", "llm": get_llm_info()}
-                )
-            )
-        else:
-            click.echo(click.style(f"  Cannot proceed: {llm_msg}", fg="red"))
-        sys.exit(1)
-
-    def checkpoint_callback(state, node_name):
+    with _applied_env_overrides(setup):
         if not output_json:
-            status = "✓" if not state.get("error") else "✗"
+            click.echo(click.style("═" * 60, fg="blue"))
             click.echo(
-                click.style(
-                    f"  [{status}] {node_name.title()}",
-                    fg="green" if status == "✓" else "red",
-                )
+                click.style("  Reflectivity Analysis — Prepare", fg="blue", bold=True)
             )
+            click.echo(click.style("═" * 60, fg="blue"))
+            click.echo()
 
-    try:
-        result = run_prepare(
-            data_file=data_file,
-            sample_description=sample_description,
-            hypothesis=hypothesis,
-            output_dir=resolved_output_dir,
-            checkpoint_callback=checkpoint_callback if not output_json else None,
-            user_config=user_config,
-            data_files=data_files,
-            states=states or None,
-        )
-    except Exception as e:
-        if output_json:
-            click.echo(json.dumps({"error": str(e)}))
+            llm_ok, llm_msg = _check_llm_status(quiet=False, test_connection=True)
+            click.echo()
+
+            click.echo(f"  Data file:  {data_file}")
+            n_files = sum(len(s.get("data_files", [])) for s in states)
+            if len(states) > 1:
+                for st in states:
+                    names = ", ".join(ds["label"] for ds in st.get("data_files", []))
+                    click.echo(f"  State {st['name']}: {names}")
+                click.echo(
+                    f"  Multi-state co-refinement: {len(states)} states, "
+                    f"{n_files} files"
+                )
+            elif n_files > 1:
+                for ds in states[0].get("data_files", []):
+                    click.echo(f"  + {ds['file']}")
+                click.echo(f"  Co-refinement: {n_files} files (shared structure)")
+            click.echo(f"  Sample:     {sample_description}")
+            if hypothesis:
+                click.echo(f"  Hypothesis: {hypothesis}")
+            click.echo(f"  Model name: {resolved_model_name}")
+            click.echo(f"  Output dir: {resolved_output_dir}")
+            click.echo()
         else:
-            click.echo(click.style(f"Error: {e}", fg="red"))
-        sys.exit(1)
+            llm_ok, llm_msg = _check_llm_status(quiet=True, test_connection=True)
+
+        if not llm_ok:
+            if output_json:
+                click.echo(
+                    json.dumps(
+                        {
+                            "error": f"LLM not available: {llm_msg}",
+                            "llm": get_llm_info(),
+                        }
+                    )
+                )
+            else:
+                click.echo(click.style(f"  Cannot proceed: {llm_msg}", fg="red"))
+            sys.exit(1)
+
+        def checkpoint_callback(state, node_name):
+            if not output_json:
+                status = "✓" if not state.get("error") else "✗"
+                click.echo(
+                    click.style(
+                        f"  [{status}] {node_name.title()}",
+                        fg="green" if status == "✓" else "red",
+                    )
+                )
+
+        try:
+            result = run_prepare(
+                data_file=data_file,
+                sample_description=sample_description,
+                hypothesis=hypothesis,
+                output_dir=resolved_output_dir,
+                checkpoint_callback=checkpoint_callback if not output_json else None,
+                user_config=user_config,
+                data_files=data_files,
+                states=states or None,
+            )
+        except Exception as e:
+            if output_json:
+                click.echo(json.dumps({"error": str(e)}))
+            else:
+                click.echo(click.style(f"Error: {e}", fg="red"))
+            sys.exit(1)
 
     if result.get("error"):
         if output_json:
@@ -1262,9 +1300,7 @@ def batch(manifest: str, job: tuple, dry_run: bool, data_dir: Optional[str]):
 
     if job and len(jobs) == 1 and not loaded["defaults"]:
         # A flat setup has nothing to filter; refuse politely.
-        raise click.BadParameter(
-            "--job filter is only valid for multi-job manifests."
-        )
+        raise click.BadParameter("--job filter is only valid for multi-job manifests.")
 
     # Filter by --job if specified
     if job:
@@ -1302,9 +1338,7 @@ def batch(manifest: str, job: tuple, dry_run: bool, data_dir: Optional[str]):
     for j in jobs:
         name = j["name"]
         command = j["command"]
-        output_root = _resolve_path(
-            j.get("output_root", "./output"), manifest_dir
-        )
+        output_root = _resolve_path(j.get("output_root", "./output"), manifest_dir)
         output_dir = str(Path(output_root) / name)
         states = j.get("states", [])
         click.echo(f"  • {name}")
@@ -1353,9 +1387,7 @@ def batch(manifest: str, job: tuple, dry_run: bool, data_dir: Optional[str]):
     for idx, j in enumerate(jobs, 1):
         name = j["name"]
         command = j["command"]
-        output_root = _resolve_path(
-            j.get("output_root", "./output"), manifest_dir
-        )
+        output_root = _resolve_path(j.get("output_root", "./output"), manifest_dir)
         output_dir = str(Path(output_root) / name)
 
         states = j.get("states") or []
@@ -1558,6 +1590,8 @@ def _build_env_overrides(merged: dict) -> dict[str, str]:
     the .env / ambient environment is left alone for anything unspecified.
     """
     mapping = {
+        # χ² acceptance threshold — the refinement loop's stop condition.
+        "chi2_max": "CHI2_MAX",
         "fit_method": "FIT_METHOD",
         "fit_steps": "FIT_STEPS",
         "fit_burn": "FIT_BURN",
@@ -1582,6 +1616,29 @@ def _build_env_overrides(merged: dict) -> dict[str, str]:
         if yaml_key in merged:
             overrides[env_key] = str(merged[yaml_key])
     return overrides
+
+
+@contextlib.contextmanager
+def _applied_env_overrides(setup: dict):
+    """Apply a setup's env-mapped run controls for the duration of a run.
+
+    The previous environment is restored on exit — keys that were absent are
+    unset again, not left as empty strings — so an in-process caller (tests,
+    the web UI, a follow-up command) never inherits one run's overrides.
+    """
+    import os
+
+    overrides = _build_env_overrides(setup)
+    saved = {k: os.environ.get(k) for k in overrides}
+    os.environ.update(overrides)
+    try:
+        yield overrides
+    finally:
+        for key, previous in saved.items():
+            if previous is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = previous
 
 
 # ============================================================================
@@ -2566,8 +2623,7 @@ def import_refl1d_cmd(
 
     click.echo(click.style("  Imported successfully", fg="green", bold=True))
     click.echo(
-        f"    states     : {len(summary['states'])} "
-        f"({', '.join(summary['states'])})"
+        f"    states     : {len(summary['states'])} ({', '.join(summary['states'])})"
     )
     click.echo(f"    files      : {summary['n_files']}")
     click.echo(f"    χ²         : {summary['chi_squared']:.4f}")
@@ -2579,9 +2635,7 @@ def import_refl1d_cmd(
         tied = summary.get("tied_parameters") or []
         untied = summary.get("untied_parameters") or []
         click.echo(f"    tied       : {', '.join(tied) if tied else '(none)'}")
-        click.echo(
-            f"    untied     : {', '.join(untied) if untied else '(none)'}"
-        )
+        click.echo(f"    untied     : {', '.join(untied) if untied else '(none)'}")
 
     # Warnings (constraint-expression ties, etc.)
     for w in summary.get("warnings") or []:

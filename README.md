@@ -239,6 +239,26 @@ Multi-state: declare multiple states. The default tied set
 (when neither `shared_parameters` nor `unshared_parameters` is supplied) ties
 thickness, SLD, and interface for every layer plus the substrate interface.
 
+#### χ² acceptance threshold
+
+`chi2_max:` is a per-run setup key. What counts as a good enough fit commonly
+changes from one dataset to the next, so it belongs in the YAML next to
+`max_refinements:` rather than only in `.env`; the `CHI2_MAX` environment
+variable stays the fallback default and the YAML key overrides it for that run.
+
+```yaml
+max_refinements: 5
+chi2_max: 2.5          # default 5.0
+```
+
+A fit at or below the threshold ends the refinement loop immediately instead of
+spending further iterations re-litigating a fit that already passed. The
+structural hypotheses the run never got to are listed at the end of the report
+(and in `final_state.json`), so nothing is lost — a follow-up run can pursue
+them with a tighter `chi2_max`. One exception: a fit whose SLD profile is
+physically impossible is never accepted on χ² alone — the profile-artifact check
+sends it back for refinement regardless of how low χ² is.
+
 #### Locating data files
 
 Relative `data_files` paths are resolved against the first directory that
@@ -393,6 +413,12 @@ aure analyze [DATA_FILE] [SAMPLE_DESCRIPTION] [OPTIONS]
 supplies them (the YAML's `states:` block carries the data files, its
 `sample_description:` field carries the description). When both positional
 arguments and the setup file specify the same field, positionals win.
+
+`-m/--max-refinements` is a ceiling, not a target: the loop also stops as soon
+as χ² reaches the acceptance threshold — `chi2_max:` in the setup YAML, else the
+`CHI2_MAX` environment variable. The threshold in force is echoed in the run
+banner, and any untried structural hypotheses are listed at the end of the
+report.
 
 | Option | Description |
 |--------|-------------|

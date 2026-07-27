@@ -33,6 +33,14 @@ Selection rule (deterministic — no LLM):
 the loop's own regression baseline, and a later ``aure resume`` compares
 against them.
 
+The node has a second, reporting-only responsibility: it lists the run's
+**untried improvement ideas**. A run now stops as soon as χ² meets the
+acceptance threshold, so the ranked ``structural_hypotheses`` backlog is
+normally not exhausted — the leftovers, plus the outcomes of everything that
+*was* attempted, are emitted as their own message so the reader can see what to
+try next (and what was already ruled out) without opening a checkpoint.
+Statuses are reported exactly as they stand; this node never re-derives them.
+
 Idempotent: sets ``finalized`` and no-ops when it is already set, so the runner
 can call it defensively on loop-exit paths that never route through a node.
 """
@@ -402,7 +410,7 @@ def _select(
 
 def finalize_node(state: ReflectivityState) -> Dict[str, Any]:
     """
-    Select the best fit of the run and promote it to the current model.
+    Select the best fit of the run, promote it, and report the untried ideas.
 
     Args:
         state: Current workflow state
@@ -420,6 +428,8 @@ def finalize_node(state: ReflectivityState) -> Dict[str, Any]:
         "finalized": True,
     }
 
+    improvements = _format_remaining_improvements(state.get("structural_hypotheses"))
+
     fit_results = state.get("fit_results") or []
     scored = _scored_fits(fit_results)
     if not scored:
@@ -428,6 +438,10 @@ def finalize_node(state: ReflectivityState) -> Dict[str, Any]:
             "selected": False,
             "reason": "no fit results with a finite, positive chi-squared",
         }
+        if improvements:
+            updates["messages"] = [
+                Message(role="assistant", content=improvements, timestamp=None)
+            ]
         return updates
 
     index, fit, definition, decision = _select(state, scored)
@@ -491,13 +505,16 @@ def finalize_node(state: ReflectivityState) -> Dict[str, Any]:
             ", ".join(unapplied[:8]),
         )
 
-    updates["messages"] = [
+    messages = [
         Message(
             role="assistant",
             content=_format_selection(updates["final_selection"]),
             timestamp=None,
         )
     ]
+    if improvements:
+        messages.append(Message(role="assistant", content=improvements, timestamp=None))
+    updates["messages"] = messages
     return updates
 
 
@@ -538,3 +555,58 @@ def _format_selection(sel: dict) -> str:
             + "."
         )
     return " ".join(lines)
+
+
+_ATTEMPTED_LABELS = (
+    ("confirmed", "confirmed"),
+    ("rejected", "rejected"),
+    ("tried", "tried, inconclusive"),
+)
+
+
+def _format_remaining_improvements(hypotheses: Optional[List[dict]]) -> str:
+    """Human-readable state of the structural-hypothesis backlog at the end.
+
+    The ``pending`` entries are the ideas the refinement loop never got to, in
+    rank order (which is list position). The attempted ones are summarized in a
+    single line so a reader does not re-propose something the run already ruled
+    out. Statuses are reported as they stand — nothing is re-derived here.
+
+    ``tried`` is not a failure: it means the change was realized but neither
+    confirmed nor reverted, either because the χ² verdict was ambiguous or
+    because the run accepted the fit in that same iteration, which skips
+    ``evaluation``'s outcome bookkeeping entirely.
+
+    Returns "" when there is nothing worth saying.
+    """
+    if not hypotheses:
+        return ""
+
+    lines: List[str] = []
+    pending = [h for h in hypotheses if h.get("status") == "pending"]
+    if pending:
+        lines.append("**Possible further improvements (not tried):**")
+        for h in pending:
+            lines.append(
+                f"{h.get('id', '?')}. **{h.get('title') or 'untitled'}** — "
+                f"{h.get('change') or 'no concrete change recorded'}"
+            )
+            if h.get("rationale"):
+                source = h.get("skill_source") or h.get("origin") or "?"
+                lines.append(f"   _Rationale ({source}):_ {h['rationale']}")
+
+    attempted = []
+    for status, label in _ATTEMPTED_LABELS:
+        group = [h for h in hypotheses if h.get("status") == status]
+        if group:
+            titles = ", ".join(
+                str(h.get("title") or f"#{h.get('id', '?')}") for h in group
+            )
+            attempted.append(f"{label} ({len(group)}): {titles}")
+    if attempted:
+        # Blank line, or markdown absorbs this into the numbered list above.
+        if lines:
+            lines.append("")
+        lines.append("**Already attempted:** " + "; ".join(attempted) + ".")
+
+    return "\n".join(lines)

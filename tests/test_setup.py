@@ -13,7 +13,6 @@ Coverage:
 
 from __future__ import annotations
 
-import json
 import os
 import tempfile
 from pathlib import Path
@@ -634,7 +633,9 @@ def test_setup_to_user_config_carries_model_name():
     (otherwise bumps exports None-*.dat / None.json)."""
     from aure.setup import setup_to_user_config
 
-    uc = setup_to_user_config({"model_name": "sample5_ocv_226642", "sample_description": "x"})
+    uc = setup_to_user_config(
+        {"model_name": "sample5_ocv_226642", "sample_description": "x"}
+    )
     assert uc["model_name"] == "sample5_ocv_226642"
 
     # Absent / blank model_name is simply not carried (no None leak).
@@ -666,9 +667,7 @@ def test_aure_batch_dry_run_with_flat_setup(tmp_path, data_file):
     assert "1" in result.output  # Jobs : 1
 
 
-def test_aure_batch_legacy_data_file_errors_with_migration_hint(
-    tmp_path, data_file
-):
+def test_aure_batch_legacy_data_file_errors_with_migration_hint(tmp_path, data_file):
     """A pre-states manifest must fail with a helpful migration message."""
     from aure.cli import cli
 
