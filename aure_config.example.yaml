@@ -106,9 +106,21 @@ states:
 # Refinement controls (optional)
 # --------------------------------------------------------------------------
 # max_refinements: 5          # default 5
-# fit_method: dream           # lm | de | dream
+# fit_method: dream           # lm | de | dream  (exploration / refinement loop)
 # fit_steps: 1000
 # fit_burn: 1000
+#
+# Optional final uncertainty fit. Explore fast with `fit_method` (e.g. amoeba),
+# then run ONE MCMC fit on the finalize-selected model to get proper 1σ error
+# bars. Off unless `fit_method_final` is set and differs from `fit_method`.
+# Give it a much larger budget than exploration — a small step count yields
+# plausible-looking but meaningless uncertainties. Skipped when the selected χ²
+# is above the gate (final_fit_chi2_max, default = chi2_max): no point
+# characterizing a poor fit. See docs/finalization.md.
+# fit_method_final: dream     # lm | de | dream  (final polish only)
+# fit_steps_final: 10000      # default 10000
+# fit_burn_final: 10000       # default = fit_steps_final
+# final_fit_chi2_max: 1.5     # default = chi2_max acceptance threshold
 
 # --------------------------------------------------------------------------
 # Evaluation criteria  (extra rules the LLM applies when judging the fit)

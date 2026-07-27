@@ -133,11 +133,22 @@ nr-isaac-format `architecture.md` for the store/representation contract.
    for a multi-state fit.
 4. **ISAAC is delegated**, not reimplemented: export goes through `ingest-workflow` →
    `convert-ingest`. Keep AuRE's coupling to those CLIs (the `export` extra) thin.
+5. **The reported model is chosen in the runner's terminal block**, not the last
+   loop iteration and not a graph edge: `finalize` selects (lowest χ² + parsimony),
+   the optional `final_fit` polishes for uncertainties, then `save_final_state`
+   writes `final_state.json` + `problem.json`. `best_model`/`best_chi2` stay the
+   loop's regression baseline. See [docs/finalization.md](docs/finalization.md).
 
 ## 7. Code map
 
 - `nodes/` — pipeline nodes (intake, analysis, modeling, fitting, evaluation, refinement).
-- `workflow/` — `runner.py` (orchestration), `checkpoints.py` (run dir + `run_info.json`).
+  The terminal `finalize` (select the reported model) and optional `final_fit`
+  (MCMC uncertainty polish) run in the runner's terminal block, not the graph —
+  see **[docs/finalization.md](docs/finalization.md)**.
+- `workflow/` — `runner.py` (orchestration + terminal finalize/final_fit/save),
+  `checkpoints.py` (run dir + `run_info.json` + `final_state.json`/`problem.json`),
+  `graph.py` (the compiled LangGraph — a spec + the no-fitting MCP path, **not** the
+  production fitting path).
 - `config.py` / `setup.py` / `state.py` — states, ties, and setup-YAML (de)serialization.
 - `refl1d_import.py` / `nodes/model_builder.py` — build the refl1d problem; cross-state tying.
 - `web/` — Flask routes (`routes.py`), `static/setup.js`, templates.

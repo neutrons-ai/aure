@@ -1329,6 +1329,12 @@ def batch(manifest: str, job: tuple, dry_run: bool, data_dir: Optional[str]):
                 f"steps={j.get('fit_steps', 1000)} "
                 f"burn={j.get('fit_burn', 1000)}"
             )
+            if j.get("fit_method_final"):
+                click.echo(
+                    f"      final  : {j['fit_method_final']} "
+                    f"steps={j.get('fit_steps_final', 10000)} "
+                    f"burn={j.get('fit_burn_final', j.get('fit_steps_final', 10000))}"
+                )
             click.echo(f"      refine : max {j.get('max_refinements', 5)}")
         else:
             click.echo(f"      model  : {j.get('model_name', name)}")
@@ -1555,6 +1561,13 @@ def _build_env_overrides(merged: dict) -> dict[str, str]:
         "fit_method": "FIT_METHOD",
         "fit_steps": "FIT_STEPS",
         "fit_burn": "FIT_BURN",
+        # Optional final uncertainty fit: run this method (typically "dream")
+        # once on the finalize-selected model, with its own larger budget, to
+        # attach uncertainties the fast exploration method does not produce.
+        "fit_method_final": "FIT_METHOD_FINAL",
+        "fit_steps_final": "FIT_STEPS_FINAL",
+        "fit_burn_final": "FIT_BURN_FINAL",
+        "final_fit_chi2_max": "FINAL_FIT_CHI2_MAX",
         "llm_provider": "LLM_PROVIDER",
         "llm_model": "LLM_MODEL",
         "llm_api_key": "LLM_API_KEY",

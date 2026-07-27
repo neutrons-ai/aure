@@ -6,6 +6,7 @@ from .modeling import modeling_node
 from .fitting import fitting_node
 from .evaluation import evaluation_node
 from .finalize import finalize_node
+from .final_fit import final_fit_node
 from .routing import (
     route_after_intake,
     route_after_analysis,
@@ -21,6 +22,7 @@ __all__ = [
     "fitting_node",
     "evaluation_node",
     "finalize_node",
+    "final_fit_node",
     "route_after_intake",
     "route_after_analysis",
     "route_after_modeling",

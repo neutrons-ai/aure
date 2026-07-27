@@ -20,6 +20,7 @@ from ..nodes import (
     fitting,
     evaluation,
     finalize,
+    final_fit,
     routing,
 )
 from .checkpoints import CheckpointManager, get_node_after
@@ -46,7 +47,9 @@ logger = logging.getLogger(__name__)
 # ``start_node`` — re-running selection on an old run needs no refitting)
 NODE_ORDER = ["intake", "analysis", "modeling", "fitting", "evaluation", "finalize"]
 
-# Node function registry
+# Node function registry. ``final_fit`` is intentionally absent from NODE_ORDER
+# and ROUTING_FUNCTIONS: it is not a loop node and can never be routed to. It is
+# invoked once, explicitly, in the terminal block after finalize.
 NODE_FUNCTIONS = {
     "intake": intake.intake_node,
     "analysis": analysis.analysis_node,
@@ -54,6 +57,7 @@ NODE_FUNCTIONS = {
     "fitting": fitting.fitting_node,
     "evaluation": evaluation.evaluation_node,
     "finalize": finalize.finalize_node,
+    "final_fit": final_fit.final_fit_node,
 }
 
 # Routing function registry. ``finalize`` deliberately has no entry: the loop
@@ -408,15 +412,41 @@ def run_workflow_with_checkpoints(
     # finalize as an edge would therefore miss most of them, so run it here
     # where every exit converges. `finalize_node` is idempotent via the
     # `finalized` flag, so this is a no-op if it already ran as a node.
-    if not state.get("finalized") and not stop_after:
-        updates = run_with_tracing(
-            NODE_FUNCTIONS["finalize"], state, "node_finalize", trace_ctx
-        )
-        _merge_state_updates(state, updates)
-        if checkpoint_mgr:
-            checkpoint_mgr.save_checkpoint(state, "finalize")
-        if checkpoint_callback:
-            checkpoint_callback(state, "finalize")
+    if not stop_after:
+        if not state.get("finalized"):
+            updates = run_with_tracing(
+                NODE_FUNCTIONS["finalize"], state, "node_finalize", trace_ctx
+            )
+            _merge_state_updates(state, updates)
+            if checkpoint_mgr:
+                checkpoint_mgr.save_checkpoint(state, "finalize")
+            if checkpoint_callback:
+                checkpoint_callback(state, "finalize")
+
+        # ---- Optional final uncertainty fit ---------------------------
+        # After finalize has selected the winning model, optionally run one
+        # more fit (``FIT_METHOD_FINAL``, typically dream) on it to attach the
+        # uncertainties a fast exploration optimizer does not produce. The node
+        # self-gates on the env var, so this is an inert, un-checkpointed no-op
+        # ({} update) unless the feature is requested. Runs here — the single
+        # path both the CLI and the web UI take — so it needs no graph edge. A
+        # failure inside is never fatal (it returns a skip record, not a raise),
+        # so the run still reports the finalize-selected model.
+        #
+        # Looked up leniently (unlike the required ``finalize``): it is an
+        # optional terminal step, so a caller that swaps in a partial
+        # NODE_FUNCTIONS registry simply skips it rather than crashing.
+        final_fit_fn = NODE_FUNCTIONS.get("final_fit")
+        if final_fit_fn is not None:
+            updates = run_with_tracing(
+                final_fit_fn, state, "node_final_fit", trace_ctx
+            )
+            if updates:
+                _merge_state_updates(state, updates)
+                if checkpoint_mgr:
+                    checkpoint_mgr.save_checkpoint(state, "final_fit")
+                if checkpoint_callback:
+                    checkpoint_callback(state, "final_fit")
 
     # Save final state
     if checkpoint_mgr:

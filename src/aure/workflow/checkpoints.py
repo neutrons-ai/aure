@@ -245,21 +245,50 @@ class CheckpointManager:
         """Copy the best fit's serialized FitProblem JSON to the top-level
         output directory as ``problem.json``.
 
-        Prefers the iteration the ``finalize`` node selected, so this artifact
-        can never disagree with ``current_model`` in ``final_state.json``.
-        Falls back to the best-chi-squared iteration for states written before
-        that node existed (e.g. a resumed legacy run). Then finds the exported
-        FitProblem JSON in
-        ``refl1d_output/fit_iter{N}_{method}/``. bumps names that file after
-        the problem (``<model_name>.json``, or ``None.json`` when unnamed), not
-        literally ``problem.json`` — so we resolve it by name and fall back to
-        the largest non-``*-expt.json`` / non-``*_definition.json`` JSON.
+        Order of preference:
+
+        1. the adopted final ``dream`` polish (``final_fit``), when it ran and
+           its refined values were written into ``current_model`` — this
+           artifact must track the model actually reported;
+        2. otherwise the iteration the ``finalize`` node selected, so this
+           artifact can never disagree with ``current_model``;
+        3. otherwise the best-chi-squared iteration (states written before the
+           finalize node existed, e.g. a resumed legacy run);
+        4. otherwise the lowest-χ² fit outright.
+
+        The exported FitProblem JSON lives in ``refl1d_output/<fit dir>/``. bumps
+        names that file after the problem (``<model_name>.json``, or
+        ``None.json`` when unnamed), not literally ``problem.json`` — so we
+        resolve it by name and fall back to the largest non-``*-expt.json`` /
+        non-``*_definition.json`` JSON.
         """
         import shutil
 
         fit_results = state.get("fit_results") or []
         if not fit_results:
             return
+
+        # Preferred: the adopted final uncertainty fit. When the dream polish is
+        # adopted, current_model carries its values, so problem.json must point
+        # at the dream export (a fixed ``final_<method>`` dir), not the
+        # exploration export the finalize selection refers to.
+        final_fit = state.get("final_fit") or {}
+        if final_fit.get("adopted") and final_fit.get("export_dir"):
+            src = self._find_problem_json(Path(final_fit["export_dir"]), state)
+            if src is not None:
+                dst = self.output_dir / "problem.json"
+                shutil.copy2(src, dst)
+                logger.info(
+                    "[CHECKPOINT] Copied final-fit problem.json (%s) → %s",
+                    src.name,
+                    dst,
+                )
+                return
+            logger.warning(
+                "[CHECKPOINT] Adopted final-fit JSON not found in %s; "
+                "falling back to the selected iteration",
+                final_fit["export_dir"],
+            )
 
         best_fit = None
 

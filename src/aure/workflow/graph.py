@@ -113,7 +113,16 @@ def create_workflow(include_fitting: bool = True) -> StateGraph:
             },
         )
 
-        # Finalize is terminal
+        # Finalize is terminal.
+        #
+        # NOTE: this compiled graph is NOT the production fitting path — both the
+        # CLI and the web UI run fitting through
+        # ``runner.run_workflow_with_checkpoints`` (for checkpointing, resume,
+        # and interactive pause). That runner's terminal block also runs the
+        # optional ``final_fit`` uncertainty polish after finalize. A fitting run
+        # driven straight through this graph would stop at finalize and skip that
+        # polish; if this path ever becomes load-bearing, wire ``final_fit`` in
+        # here as ``finalize -> final_fit -> END`` to match the runner.
         workflow.add_edge("finalize", END)
     else:
         # Without fitting, modeling is the end

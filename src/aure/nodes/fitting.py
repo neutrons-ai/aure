@@ -102,37 +102,16 @@ def fitting_node(state: ReflectivityState) -> Dict[str, Any]:
             except Exception as e:  # pragma: no cover - safety net
                 logger.warning(f"[FITTING] Mode enumeration skipped: {e}")
 
-        if is_multi_state:
-            result = run_states_refl1d_fit(
-                model_definition=model,
-                method=method,
-                iteration=iteration,
-                steps=steps,
-                burn=burn,
-                export_dir=export_dir,
-                model_name=model_name,
-            )
-        elif is_multi:
-            result = run_multi_refl1d_fit(
-                model_definition=model,
-                data_files=data_files,
-                method=method,
-                iteration=iteration,
-                steps=steps,
-                burn=burn,
-                export_dir=export_dir,
-                model_name=model_name,
-            )
-        else:
-            result = run_refl1d_fit(
-                model_definition=model,
-                method=method,
-                iteration=iteration,
-                steps=steps,
-                burn=burn,
-                export_dir=export_dir,
-                model_name=model_name,
-            )
+        result = run_fit_for_model(
+            model=model,
+            data_files=data_files,
+            method=method,
+            iteration=iteration,
+            steps=steps,
+            burn=burn,
+            export_dir=export_dir,
+            model_name=model_name,
+        )
 
         updates["fit_results"] = [result]
         updates["current_chi2"] = result["chi_squared"]
@@ -191,6 +170,62 @@ def fitting_node(state: ReflectivityState) -> Dict[str, Any]:
         ]
 
     return updates
+
+
+def run_fit_for_model(
+    model: dict,
+    data_files: list,
+    method: str,
+    iteration: int,
+    steps: int,
+    burn: int,
+    export_dir: Optional[str] = None,
+    model_name: Optional[str] = None,
+) -> FitResult:
+    """Dispatch to the fitter that matches a model's shape.
+
+    Chooses among the single-experiment, multi-file co-refinement, and
+    multi-state co-refinement fitters using exactly the same predicates as
+    :func:`fitting_node`, so the exploration loop and the terminal
+    ``final_fit`` polish build an identical ``FitProblem`` for the same model.
+
+    Deliberately does NOT run thin-layer SLD mode enumeration: that is an
+    exploration-seeding step for escaping local minima, not part of
+    characterising an already-selected model.
+    """
+    is_multi_state = isinstance(model, dict) and needs_states_problem(model)
+    is_multi = len(data_files) > 1 and isinstance(model, dict) and not is_multi_state
+
+    if is_multi_state:
+        return run_states_refl1d_fit(
+            model_definition=model,
+            method=method,
+            iteration=iteration,
+            steps=steps,
+            burn=burn,
+            export_dir=export_dir,
+            model_name=model_name,
+        )
+    if is_multi:
+        return run_multi_refl1d_fit(
+            model_definition=model,
+            data_files=data_files,
+            method=method,
+            iteration=iteration,
+            steps=steps,
+            burn=burn,
+            export_dir=export_dir,
+            model_name=model_name,
+        )
+    return run_refl1d_fit(
+        model_definition=model,
+        method=method,
+        iteration=iteration,
+        steps=steps,
+        burn=burn,
+        export_dir=export_dir,
+        model_name=model_name,
+    )
 
 
 def _mode_enumeration_enabled() -> bool:

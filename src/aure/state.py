@@ -384,6 +384,12 @@ class ReflectivityState(TypedDict):
     # answer and why, so the decision is auditable from a checkpoint.
     finalized: bool
     final_selection: Optional[dict]
+    # Set by the optional `final_fit` step (runner terminal block) when
+    # `FIT_METHOD_FINAL` requests an MCMC (dream) polish of the finalize-selected
+    # model to attach uncertainties the fast exploration optimizer cannot
+    # produce. Records whether it ran, the export directory (so problem.json can
+    # follow it), and the before/after χ². None when the feature is disabled.
+    final_fit: Optional[dict]
 
     # ========== Conversation ==========
     messages: Annotated[List[Message], operator.add]
@@ -472,6 +478,7 @@ def create_initial_state(
         best_bic_model=None,
         finalized=False,
         final_selection=None,
+        final_fit=None,
         # Conversation
         messages=[],
         # LLM call tracking
