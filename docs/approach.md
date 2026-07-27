@@ -86,10 +86,9 @@ Markov-chain optimizer — are ordinary Python code.
 This is sometimes called an *agentic* workflow. What makes it an agent,
 rather than just a one-shot LLM prompt, is that the LLM sees the *results
 of its previous actions* (fit quality, residuals, parameter values at
-bounds) and chooses its next action in response. AuRE runs this loop under
-the [LangGraph](https://github.com/langchain-ai/langgraph) framework,
-which provides the machinery for passing state between steps and
-check-pointing progress.
+bounds) and chooses its next action in response. AuRE runs this loop as a
+hand-written state machine ([`workflow/runner.py`](../src/aure/workflow/runner.py)),
+which passes state between steps and check-points progress.
 
 ---
 
@@ -735,8 +734,6 @@ or in code, not in a skill).
 - **BIC**: Schwarz, G. (1978). "Estimating the Dimension of a Model".
   *The Annals of Statistics*. Explains why we prefer BIC over χ² for
   deciding whether to add a layer.
-- **LangGraph**: the [LangGraph docs](https://langchain-ai.github.io/langgraph/)
-  for the state-machine framework AuRE is built on.
 - **Agent Skills pattern**: the
   [`src/aure/skills/`](../src/aure/skills/) directory is the canonical
   reference for how skills are structured.

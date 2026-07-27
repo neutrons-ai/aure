@@ -8,8 +8,7 @@ The state tracks all information needed throughout the analysis:
 - Conversation with user
 """
 
-from typing import TypedDict, List, Optional, Annotated, Dict
-import operator
+from typing import TypedDict, List, Optional, Dict
 
 
 class LayerInfo(TypedDict):
@@ -338,8 +337,10 @@ class ReflectivityState(TypedDict):
     """
     Complete state for the reflectivity analysis workflow.
 
-    This state is passed between nodes in the LangGraph workflow
-    and accumulates information as the analysis progresses.
+    This state is passed between nodes of the analysis workflow (runner.py) and
+    accumulates information as the analysis progresses. The list fields that
+    accumulate across nodes (model_history, fit_results, messages, llm_calls)
+    are combined by ``runner._merge_state_updates``; they are plain lists here.
     """
 
     # ========== Input Data ==========
@@ -361,7 +362,7 @@ class ReflectivityState(TypedDict):
 
     # ========== Model State ==========
     current_model: Optional[dict]  # ModelDefinition JSON (or legacy script str)
-    model_history: Annotated[List[dict], operator.add]  # Accumulates models
+    model_history: List[dict]  # Accumulates models (merged by _merge_state_updates)
     # Clean snapshot of the very first model built at intake (before any
     # refinement). Used as the "rewind" starting point when the refiner
     # realizes a *reinterpretation* hypothesis (e.g. "the solvent is actually
@@ -371,7 +372,7 @@ class ReflectivityState(TypedDict):
     baseline_model: Optional[dict]
 
     # ========== Fit Results ==========
-    fit_results: Annotated[List[FitResult], operator.add]  # Accumulates fits
+    fit_results: List[FitResult]  # Accumulates fits (merged by _merge_state_updates)
     current_chi2: Optional[float]
     best_chi2: Optional[float]
     best_model: Optional[dict]  # ModelDefinition that produced the best χ²
@@ -392,10 +393,10 @@ class ReflectivityState(TypedDict):
     final_fit: Optional[dict]
 
     # ========== Conversation ==========
-    messages: Annotated[List[Message], operator.add]
+    messages: List[Message]
 
     # ========== LLM Call Tracking ==========
-    llm_calls: Annotated[List[LLMCallRecord], operator.add]
+    llm_calls: List[LLMCallRecord]
 
     # ========== Interactive Session ==========
     interactive: bool

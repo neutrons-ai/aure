@@ -2,10 +2,10 @@
 Agentic Reflectivity Modeling Workflow.
 
 This module provides an intelligent assistant for analyzing neutron reflectivity data
-using LangGraph for workflow management and refl1d for optimization.
+using a hand-written workflow state machine and refl1d for optimization.
 
 Main components:
-- workflow: LangGraph state machine for the analysis pipeline
+- workflow: the analysis pipeline state machine (runner.py)
 - state: State definitions for the workflow
 - tools: LangChain tools for data loading, feature extraction, and model building
 - database: Material SLD database
@@ -32,11 +32,10 @@ warnings.filterwarnings(
 )
 
 from .state import ReflectivityState, create_initial_state
-from .workflow import create_workflow, run_analysis
+from .workflow import run_analysis
 
 __all__ = [
     "ReflectivityState",
     "create_initial_state",
-    "create_workflow",
     "run_analysis",
 ]

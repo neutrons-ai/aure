@@ -23,8 +23,8 @@ load_env()
 from fastmcp import FastMCP
 
 # Import workflow components
-from .workflow import create_workflow, run_analysis
-from .state import create_initial_state, ReflectivityState
+from .workflow import run_analysis, run_prepare
+from .state import ReflectivityState
 from .database.materials import get_sld, lookup_material
 from .tools.feature_tools import (
     estimate_total_thickness,
@@ -223,16 +223,14 @@ def start_analysis_session(
     if not os.path.exists(data_file):
         return {"error": f"Data file not found: {data_file}"}
 
-    # Create initial state and run workflow (without fitting)
+    # Run intake → analysis → modeling only (no fitting). run_prepare drives the
+    # same manual runner used everywhere else, stopping after modeling.
     try:
-        state = create_initial_state(
+        final_state = run_prepare(
             data_file=data_file,
             sample_description=sample_description,
             hypothesis=hypothesis,
         )
-
-        workflow = create_workflow(include_fitting=False)
-        final_state = workflow.invoke(state)
 
         # Store session
         _sessions[session_id] = final_state

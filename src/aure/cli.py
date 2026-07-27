@@ -236,7 +236,7 @@ def cli():
     Reflectivity Analysis Workflow CLI.
 
     An intelligent assistant for analyzing neutron reflectivity data.
-    Uses LangGraph to orchestrate data analysis, model building, and fitting.
+    Orchestrates data analysis, model building, and fitting.
     """
     pass
 
@@ -1598,11 +1598,6 @@ def _build_env_overrides(merged: dict) -> dict[str, str]:
     help="Output directory for new checkpoints (defaults to original)",
 )
 @click.option(
-    "--fit/--no-fit",
-    default=True,
-    help="Include fitting in resumed workflow",
-)
-@click.option(
     "--json",
     "output_json",
     is_flag=True,
@@ -1617,7 +1612,6 @@ def _build_env_overrides(merged: dict) -> dict[str, str]:
 def resume(
     checkpoint_path: str,
     output_dir: Optional[str],
-    fit: bool,
     output_json: bool,
     verbose: bool,
 ):
@@ -1694,7 +1688,6 @@ def resume(
         result = run_from_checkpoint(
             checkpoint_path=checkpoint_path,
             output_dir=output_dir,
-            include_fitting=fit,
             checkpoint_callback=checkpoint_callback if not output_json else None,
         )
     except Exception as e:

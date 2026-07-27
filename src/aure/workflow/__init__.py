@@ -1,12 +1,14 @@
 """
 Workflow package for the reflectivity analysis agent.
 
-This package provides the LangGraph-based workflow for analyzing
-neutron reflectivity data through an iterative refinement process.
+This package provides the workflow that analyzes neutron reflectivity data
+through an iterative refinement process. Execution is a hand-written state
+machine in ``runner.py`` (``run_workflow_with_checkpoints``); there is no
+external graph framework.
 
 Key functions:
-- create_workflow: Create the LangGraph workflow definition
 - run_analysis: Main entry point for running a full analysis
+- run_prepare: Intake → analysis → modeling only (no fitting)
 - run_workflow_with_checkpoints: Run with checkpoint saving
 - run_from_checkpoint: Resume from a saved checkpoint
 
@@ -21,7 +23,6 @@ Example usage:
     )
 """
 
-from .graph import create_workflow, create_workflow_app
 from .runner import (
     run_analysis,
     run_prepare,
@@ -45,11 +46,9 @@ from .tracing import (
 
 
 __all__ = [
-    # Graph creation
-    "create_workflow",
-    "create_workflow_app",
     # Workflow execution
     "run_analysis",
+    "run_prepare",
     "run_workflow_with_checkpoints",
     "run_from_checkpoint",
     "NODE_ORDER",

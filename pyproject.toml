@@ -21,8 +21,7 @@ dependencies = [
   "click>=8.0",
   "pyyaml>=6.0",
   "python-dotenv>=1.0",
-  # LLM agent orchestration
-  "langgraph>=1.0",
+  # LLM calls (orchestration is a hand-written state machine, not a framework)
   "langchain>=1.0",
   "langchain-openai>=1.0",
   "langchain-google-genai>=2.0.0",

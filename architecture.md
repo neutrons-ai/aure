@@ -8,8 +8,9 @@ and for exporting the results as AI-ready records.
 
 Given reduced reflectivity data + a natural-language sample description (and optional
 hypothesis), AuRE runs an agentic pipeline — **intake → analysis → modeling → fitting →
-evaluation → refinement** (LangGraph nodes in `src/aure/nodes/`, orchestrated by
-`workflow/runner.py`) — to produce a fitted refl1d model with uncertainties. It is driven
+evaluation → refinement** (nodes in `src/aure/nodes/`, orchestrated by the hand-written
+state machine in `workflow/runner.py`) — to produce a fitted refl1d model with
+uncertainties. It is driven
 three ways: a **web UI** (Flask, `web/`), a **CLI** (`analyze` / `batch`, `cli.py`), and an
 **MCP server** (`mcp_server.py`).
 
@@ -143,12 +144,11 @@ nr-isaac-format `architecture.md` for the store/representation contract.
 
 - `nodes/` — pipeline nodes (intake, analysis, modeling, fitting, evaluation, refinement).
   The terminal `finalize` (select the reported model) and optional `final_fit`
-  (MCMC uncertainty polish) run in the runner's terminal block, not the graph —
+  (MCMC uncertainty polish) run in the runner's terminal block —
   see **[docs/finalization.md](docs/finalization.md)**.
-- `workflow/` — `runner.py` (orchestration + terminal finalize/final_fit/save),
-  `checkpoints.py` (run dir + `run_info.json` + `final_state.json`/`problem.json`),
-  `graph.py` (the compiled LangGraph — a spec + the no-fitting MCP path, **not** the
-  production fitting path).
+- `workflow/` — `runner.py` (the state-machine orchestrator + terminal
+  finalize/final_fit/save; the single execution engine for CLI, web UI, and MCP),
+  `checkpoints.py` (run dir + `run_info.json` + `final_state.json`/`problem.json`).
 - `config.py` / `setup.py` / `state.py` — states, ties, and setup-YAML (de)serialization.
 - `refl1d_import.py` / `nodes/model_builder.py` — build the refl1d problem; cross-state tying.
 - `web/` — Flask routes (`routes.py`), `static/setup.js`, templates.

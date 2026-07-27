@@ -1,16 +1,22 @@
 """
-Test the LangGraph workflow end-to-end.
+Test the analysis workflow end-to-end.
 
-This test uses synthetic data to verify the workflow runs correctly
-through INTAKE → ANALYSIS → MODELING.
+This test uses synthetic data to verify the workflow runs correctly through
+INTAKE → ANALYSIS → MODELING. Execution goes through the manual runner
+(`run_prepare` / `run_analysis`), the single engine the CLI and web UI use.
 """
 
 import tempfile
 import numpy as np
 import pytest
 
-from aure.workflow import create_workflow
-from aure.state import create_initial_state
+from aure.workflow import (
+    run_analysis,
+    run_prepare,
+    NODE_ORDER,
+    NODE_FUNCTIONS,
+    ROUTING_FUNCTIONS,
+)
 from aure.llm import llm_available
 
 
@@ -51,103 +57,55 @@ def create_test_data_file() -> str:
         return f.name
 
 
-def test_workflow_creation():
-    """Test that workflow graph can be created."""
-    print("\n" + "=" * 60)
-    print("TEST: Workflow Creation")
-    print("=" * 60)
+def test_runner_registry_is_consistent():
+    """The runner's node registry is complete and internally consistent.
 
-    workflow = create_workflow()
-    print(f"  Created workflow: {type(workflow)}")
-    print("  ✓ Workflow created successfully")
+    Replaces the old `create_workflow()` smoke test: the runner (not a compiled
+    graph) is the workflow definition, so the invariant to pin is that every
+    ordered node has a function and every node except the terminal `finalize`
+    has a router.
+    """
+    for node in NODE_ORDER:
+        assert node in NODE_FUNCTIONS, f"{node} missing from NODE_FUNCTIONS"
+
+    # finalize is terminal by design → it alone has no router.
+    for node in NODE_ORDER:
+        if node == "finalize":
+            assert node not in ROUTING_FUNCTIONS
+        else:
+            assert node in ROUTING_FUNCTIONS, f"{node} missing a router"
+
+    # final_fit is a non-routable terminal node: registered, but not ordered.
+    assert "final_fit" in NODE_FUNCTIONS
+    assert "final_fit" not in NODE_ORDER
+    assert "final_fit" not in ROUTING_FUNCTIONS
 
 
 @pytest.mark.skipif(not llm_available(), reason="No LLM configured")
 def test_intake_and_analysis():
-    """Test intake and analysis nodes."""
-    print("\n" + "=" * 60)
-    print("TEST: Intake and Analysis Nodes")
-    print("=" * 60)
-
-    # Create test data
+    """Smoke: intake → analysis → modeling produces a model (via run_prepare)."""
     data_file = create_test_data_file()
-    print(f"  Created test data: {data_file}")
 
-    # Create initial state
-    state = create_initial_state(
+    final_state = run_prepare(
         data_file=data_file,
         sample_description="100 nm polystyrene film on silicon, measured in air",
         hypothesis="Film thickness is approximately 100 nm",
     )
 
-    print("  Initial state created")
-    print(f"    - data_file: {state['data_file']}")
-    print(f"    - sample_description: {state['sample_description'][:50]}...")
-
-    # Run workflow
-    workflow = create_workflow()
-    final_state = workflow.invoke(state)
-
-    # Check results
     print("\n  Final state:")
     print(f"    - Q points loaded: {len(final_state.get('Q', []))}")
-    print(f"    - R points loaded: {len(final_state.get('R', []))}")
     print(f"    - Parsed sample: {final_state.get('parsed_sample') is not None}")
-    print(
-        f"    - Extracted features: {final_state.get('extracted_features') is not None}"
-    )
     print(f"    - Current model: {final_state.get('current_model') is not None}")
     print(f"    - Error: {final_state.get('error')}")
 
-    # Print messages
-    if final_state.get("messages"):
-        print(f"\n  Messages ({len(final_state['messages'])}):")
-        for msg in final_state["messages"][:3]:  # First 3 messages
-            role = msg.get("role", "unknown")
-            content = msg.get("content", "")[:100]
-            print(f"    [{role}]: {content}...")
-
-    # Print extracted features
-    features = final_state.get("extracted_features")
-    if features:
-        print("\n  Extracted Features:")
-        print(f"    - Estimated layers: {features.get('estimated_n_layers')}")
-        print(
-            f"    - Estimated thickness: {features.get('estimated_total_thickness'):.1f} Å"
-        )
-        print(f"    - Estimated roughness: {features.get('estimated_roughness'):.1f} Å")
-
-    # Print model
-    model = final_state.get("current_model")
-    if model:
-        print("\n  Generated Model (first 500 chars):")
-        print("  " + "-" * 40)
-        if isinstance(model, str):
-            for line in model.split("\n")[:15]:
-                print(f"    {line}")
-        else:
-            import json
-
-            for line in json.dumps(model, indent=2).split("\n")[:15]:
-                print(f"    {line}")
-        print("  " + "-" * 40)
-
-    # Cleanup
     import os
 
     os.unlink(data_file)
-
-    print("\n  ✓ Workflow completed successfully")
-    return True
 
 
 @pytest.mark.skipif(not llm_available(), reason="No LLM configured")
 def test_sample_description_parsing():
     """Test the sample description parser with LLM."""
-    print("\n" + "=" * 60)
-    print("TEST: Sample Description Parsing")
-    print("=" * 60)
-
     from aure.nodes.intake import parse_sample_with_llm
     from aure.llm import get_llm_info
 
@@ -163,131 +121,64 @@ def test_sample_description_parsing():
         print(f"\n  Input: '{desc}'")
         try:
             result = parse_sample_with_llm(desc)
-
             print(
-                f"    Substrate: {result['substrate']['name']} (SLD={result['substrate']['sld']:.2f})"
-            )
-            print(
-                f"    Ambient: {result['ambient']['name']} (SLD={result['ambient']['sld']:.2f})"
+                f"    Substrate: {result['substrate']['name']} "
+                f"(SLD={result['substrate']['sld']:.2f})"
             )
             print(f"    Layers: {len(result['layers'])}")
-            for i, layer in enumerate(result["layers"]):
-                print(
-                    f"      {i + 1}. {layer['name']}: {layer['thickness']:.0f} Å, SLD={layer['sld']:.2f}"
-                )
         except Exception as e:
             print(f"    ✗ Error: {e}")
-
-    print("\n  ✓ Parsing test completed")
 
 
 @pytest.mark.skipif(not llm_available(), reason="No LLM configured")
 def test_full_fitting_pipeline():
-    """Test the complete workflow including fitting/evaluation nodes."""
-    print("\n" + "=" * 60)
-    print("TEST: Full Fitting Pipeline")
-    print("=" * 60)
-
-    # Create test data
+    """Smoke: the complete workflow including fitting/evaluation (via run_analysis)."""
     data_file = create_test_data_file()
-    print(f"  Created test data: {data_file}")
-
-    # Create initial state
-    state = create_initial_state(
-        data_file=data_file,
-        sample_description="100 nm polystyrene film on silicon, measured in air",
-        hypothesis="Film thickness is approximately 100 nm",
-    )
-
-    # Run full workflow WITH fitting
-    print("\n  Running workflow with fitting enabled...")
-    workflow = create_workflow(include_fitting=True)
 
     try:
-        final_state = workflow.invoke(state)
-
-        # Check fit results
-        print("\n  Final state:")
-        print(
-            f"    - Current model exists: {final_state.get('current_model') is not None}"
+        final_state = run_analysis(
+            data_file=data_file,
+            sample_description="100 nm polystyrene film on silicon, measured in air",
+            hypothesis="Film thickness is approximately 100 nm",
+            max_iterations=1,
         )
-        print(f"    - Fit result: {final_state.get('fit_result') is not None}")
-        print(f"    - Evaluation: {final_state.get('evaluation') is not None}")
+        print("\n  Final state:")
+        print(f"    - Current model: {final_state.get('current_model') is not None}")
+        print(f"    - Fit results: {len(final_state.get('fit_results', []))}")
         print(f"    - Iteration: {final_state.get('iteration', 0)}")
-
-        fit_result = final_state.get("fit_result")
-        if fit_result:
-            print("\n  Fit Result:")
-            print(f"    - Chi-squared: {fit_result.get('chi_squared', 'N/A')}")
-            print(f"    - Method: {fit_result.get('method', 'N/A')}")
-            print(f"    - Success: {fit_result.get('success', False)}")
-
-        evaluation = final_state.get("evaluation")
-        if evaluation:
-            print("\n  Evaluation:")
-            print(f"    - Acceptable: {evaluation.get('acceptable', False)}")
-            print(f"    - Issues: {evaluation.get('issues', [])}")
-            print(f"    - Suggestions: {evaluation.get('suggestions', [])}")
-
     except Exception as e:
         print(f"\n  Fitting workflow error (expected if refl1d not installed): {e}")
-        print("  This is OK - the workflow structure is correct")
 
-    # Cleanup
     import os
 
     os.unlink(data_file)
-
-    print("\n  ✓ Fitting pipeline test completed")
 
 
 @pytest.mark.skipif(not llm_available(), reason="No LLM configured")
 def test_workflow_without_fitting():
-    """Test workflow can run without fitting for faster iteration."""
-    print("\n" + "=" * 60)
-    print("TEST: Workflow Without Fitting")
-    print("=" * 60)
-
-    # Create test data
+    """run_prepare yields a model but never fits (the MCP model-build path)."""
     data_file = create_test_data_file()
 
-    # Create workflow without fitting
-    workflow = create_workflow(include_fitting=False)
-
-    state = create_initial_state(
+    final_state = run_prepare(
         data_file=data_file,
         sample_description="50 nm gold on silicon",
     )
 
-    final_state = workflow.invoke(state)
-
-    # Should have model but no fit result
+    # Should have a model but no fit results.
     assert final_state.get("current_model") is not None, "Should have a model"
-    assert final_state.get("fit_result") is None, "Should not have fit result"
+    assert not final_state.get("fit_results"), "Should not have fit results"
 
-    print("  ✓ Model generated without fitting")
-    model = final_state["current_model"]
-    if isinstance(model, str):
-        print(f"  Model preview: {model[:200]}...")
-    else:
-        import json
-
-        print(f"  Model preview: {json.dumps(model)[:200]}...")
-
-    # Cleanup
     import os
 
     os.unlink(data_file)
 
-    print("\n  ✓ Workflow without fitting completed")
-
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("LANGGRAPH WORKFLOW TESTS")
+    print("WORKFLOW TESTS")
     print("=" * 60)
 
-    test_workflow_creation()
+    test_runner_registry_is_consistent()
     test_sample_description_parsing()
     test_intake_and_analysis()
     test_workflow_without_fitting()

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-AuRE (Automated Reflectivity Evaluator) is an LLM-driven agent that fits neutron / X-ray reflectivity data with [Refl1D](https://refl1d.readthedocs.io). It accepts a raw data file plus a plain-English sample description and produces a fitted layer model. The orchestration layer is [LangGraph](https://github.com/langchain-ai/langgraph); the science (probe loading, model building, optimization, χ²/BIC) is delegated to refl1d/bumps.
+AuRE (Automated Reflectivity Evaluator) is an LLM-driven agent that fits neutron / X-ray reflectivity data with [Refl1D](https://refl1d.readthedocs.io). It accepts a raw data file plus a plain-English sample description and produces a fitted layer model. The orchestration layer is a hand-written state machine ([src/aure/workflow/runner.py](src/aure/workflow/runner.py)) — no external graph framework; LangChain is used only for the LLM calls. The science (probe loading, model building, optimization, χ²/BIC) is delegated to refl1d/bumps.
 
 The longest-form design rationale lives in [docs/approach.md](docs/approach.md) — read it before making architectural changes to the workflow.
 
@@ -27,9 +27,9 @@ The longest-form design rationale lives in [docs/approach.md](docs/approach.md) 
 
 ## Architecture
 
-### Workflow state machine ([src/aure/workflow/graph.py](src/aure/workflow/graph.py))
+### Workflow state machine ([src/aure/workflow/runner.py](src/aure/workflow/runner.py))
 
-LangGraph `StateGraph` over `ReflectivityState` (a `TypedDict` in [src/aure/state.py](src/aure/state.py)):
+A hand-written state machine over `ReflectivityState` (a `TypedDict` in [src/aure/state.py](src/aure/state.py)). `run_workflow_with_checkpoints` iterates `NODE_ORDER` and follows the `ROUTING_FUNCTIONS` to pick the next node:
 
 ```
 START → intake → analysis → modeling → fitting → evaluation ─┐
@@ -49,7 +49,7 @@ Each node lives in [src/aure/nodes/](src/aure/nodes/) and returns a state-delta 
 - `evaluation` — LLM judges fit quality (χ², BIC, residual structure, parameter sanity) and chooses next route. Has **deterministic regression guardrails**: if χ² or BIC got worse after a refinement, the previous model is restored and the attempted hypothesis is marked rejected. A deterministic **SLD-profile artifact check** (`tools.feature_tools.detect_profile_artifacts`) flags non-physical erf-tail excursions (profile leaving the range its bounding media can produce — a χ²-invisible defect) as an issue with a two-branch remedy suggestion (tie the roughness, or re-label as a profile parametrization); the σ/thickness ratio is surfaced as an informational concern only. When the fit isn't acceptable **and** there's a signal worth it (residual fringes, χ² stalled ≥2 iters, or no `pending` hypotheses left), it runs a **gated revision step**: re-selects skills from the observed artifacts (`select_skills(..., extra_context=…)`), proposes new `origin="evaluation"` hypotheses, and re-ranks the list.
 - `routing.*` — pure functions returning the edge name; no state mutation.
 
-Conditional edges are wired in `create_workflow()`. `include_fitting=False` truncates the graph after `modeling` (used by the `prepare` command and the `aure batch` `prepare` mode, which writes a `problem.json` consumable directly by refl1d).
+Routing lives in `nodes/routing.py` (`route_after_*`, pure functions). After the loop breaks, a terminal block in the runner runs `finalize` (select the reported model) and the optional `final_fit` (uncertainty polish) — see [docs/finalization.md](docs/finalization.md). `run_prepare` (and the `prepare` command / `aure batch` `prepare` mode) stops after `modeling`, writing a `problem.json` consumable directly by refl1d.
 
 ### Models are JSON, not scripts
 
@@ -114,7 +114,7 @@ The ISAAC AI-Ready Data exporter ([src/aure/exporters/isaac.py](src/aure/exporte
 ## Conventions worth knowing
 
 - All LLM calls go through `invoke_with_timeout(get_llm(), …)` — don't bypass the timeout wrapper, and don't call `langchain_*` clients directly from nodes.
-- Workflow nodes mutate state **only** by returning a dict; never call `state.update(...)` in-place. `Message` history uses an `Annotated[..., operator.add]` reducer so returning `{"messages": [...]}` appends.
-- `route_*` functions in `nodes/routing.py` must be pure — they're called by LangGraph to pick edges and must not have side effects.
+- Workflow nodes mutate state **only** by returning a dict; never call `state.update(...)` in-place. The list fields that accumulate (`messages`, `fit_results`, `model_history`, `llm_calls`) are appended by `runner._merge_state_updates`, so returning `{"messages": [...]}` appends; every other key is overwritten.
+- `route_*` functions in `nodes/routing.py` must be pure — the runner calls them to pick the next node and they must not have side effects.
 - Pre-commit hooks are authoritative for formatting (ruff + taplo + yamllint). Don't hand-format files differently.
 - Docker image (`ghcr.io/neutrons-ai/aure`) installs `[export]` and uses `aure` as ENTRYPOINT — changes to the CLI surface area are user-visible there.

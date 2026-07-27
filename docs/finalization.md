@@ -6,33 +6,32 @@ how (optionally) it attaches uncertainties, and how `final_state.json` /
 `problem.json` are produced. If you touch the runner, the finalize node, the
 final-fit node, or the checkpoint writer, read this first.
 
-> TL;DR — There is **no LangGraph edge** for the end of a run. The real flow is a
-> terminal block in `run_workflow_with_checkpoints`:
+> TL;DR — The end of a run is a terminal block in `run_workflow_with_checkpoints`,
+> reached after the node loop stops:
 > **finalize (select the winner) → final_fit (optional dream polish) → save_final_state (write artifacts)**.
-> The compiled graph is not the production fitting path.
 
 ---
 
-## 1. Two execution paths — and which one is real
+## 1. One execution engine
 
-AuRE defines the workflow twice, and this trips people up:
+AuRE runs the workflow as a single hand-written state machine —
+`run_workflow_with_checkpoints` in [`workflow/runner.py`](../src/aure/workflow/runner.py).
+There is no graph framework. Everything drives this one engine:
 
-| Path | Entry | Used for | Reaches finalize? |
-|------|-------|----------|-------------------|
-| **Manual runner** (real) | `workflow/runner.py: run_workflow_with_checkpoints` | Every fitting run — **CLI `aure analyze` and the Flask web UI** | Yes, in the terminal block |
-| **Compiled LangGraph** | `workflow/graph.py: create_workflow()` | MCP `initialize` (`include_fitting=False`, model only) + tests | Only as a spec; not for real fits |
+| Caller | Entry | What it runs |
+|--------|-------|--------------|
+| CLI `aure analyze` | `run_analysis` | full loop + terminal block |
+| Web UI (Flask, background thread) | `run_workflow_with_checkpoints` | full loop + terminal block |
+| CLI `aure resume` | `run_from_checkpoint` | resume + terminal block |
+| MCP `start_analysis_session` | `run_prepare` | intake→analysis→modeling only (`stop_after="modeling"`, no terminal block) |
 
-Both the CLI ([`cli.py`](../src/aure/cli.py) → `run_analysis`) and the web UI
-([`web/routes.py`](../src/aure/web/routes.py), `_run_in_background` /
-`_run_restart_in_background`) drive fitting through the **manual runner**, in a
-background thread. The compiled graph's `finalize → END` edge exists so the
-graph is a faithful diagram, but a real fitting run never travels it. The
-manual loop is used because a bare `.invoke()` can't provide per-node
-checkpointing, interactive pause/resume, restart-from-checkpoint, tracing, or
-the terminal packaging described here.
+The runner is a plain Python loop over `NODE_ORDER` that follows the
+`ROUTING_FUNCTIONS` to pick the next node, with its own state accumulation
+(`_merge_state_updates`), per-node checkpointing, interactive pause/resume,
+restart-from-checkpoint, and tracing.
 
-**Consequence:** anything that must happen at the end of a real run belongs in
-the runner's terminal block, not in `graph.py`.
+**Consequence:** anything that must happen at the end of a run belongs in the
+runner's terminal block.
 
 ---
 
@@ -42,8 +41,8 @@ The refinement loop (`intake → analysis → modeling → fitting → evaluatio
 has ~6 different exits — the `complete`/`error` routes, the interactive
 `__STOP__`, the `stop_after` break, the `max_total_iterations` cap, and the
 missing-router break — and `workflow_complete` can break out *before* routing
-even runs. So finalization is not wired as an edge (an edge would miss most
-exits). Instead the runner runs it **after** the loop, where every exit
+even runs. So finalization is not handled at each exit (that would miss most of
+them). Instead the runner runs it **after** the loop, where every exit
 converges:
 
 ```
@@ -183,9 +182,9 @@ for them, matching how a plain `FIT_METHOD=dream` run already reports them.
 
 ## 7. Invariants not to break
 
-1. **Real fitting runs finalize in the runner terminal block**, not via a graph
-   edge. If you make the compiled graph load-bearing for fitting, wire
-   `finalize → final_fit → END` into it too, or the polish is silently skipped.
+1. **Finalization lives in the runner terminal block**, after the node loop —
+   the single place every loop exit converges. Keep it there; don't scatter
+   end-of-run logic across the per-node routes.
 2. **`finalize` selects; it never fits.** `final_fit` fits; it never re-selects
    the structure.
 3. **`best_model` / `best_chi2` are the loop's regression baseline** — never

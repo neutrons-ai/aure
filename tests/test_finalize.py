@@ -550,20 +550,6 @@ def test_route_after_evaluation_refines_below_max_iterations():
     assert route_after_evaluation(state) == "modeling"
 
 
-def test_graph_routes_every_fitting_exit_through_finalize():
-    from aure.workflow.graph import create_workflow
-
-    graph = create_workflow(include_fitting=True)
-    nodes = graph.get_graph().nodes
-    assert "finalize" in nodes
-
-    edges = {(e.source, e.target) for e in graph.get_graph().edges}
-    assert ("evaluation", "finalize") in edges
-    assert ("fitting", "finalize") in edges
-    assert ("modeling", "finalize") in edges
-    assert ("evaluation", "__end__") not in edges
-
-
 def test_finalize_is_registered_with_the_runner_but_is_terminal():
     from aure.workflow.runner import (
         NODE_FUNCTIONS,

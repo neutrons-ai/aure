@@ -7,8 +7,8 @@
 <h1 align="center">Automated Reflectivity Evaluator</h1>
 
 AuRE is an intelligent agent for analyzing neutron and X-ray reflectivity data.
-It uses an LLM-driven workflow (powered by [LangGraph](https://github.com/langchain-ai/langgraph))
-to go from a raw data file and a plain-English sample description to a fitted
+It uses an LLM-driven workflow to go from a raw data file and a plain-English
+sample description to a fitted
 [Refl1D](https://refl1d.readthedocs.io) model — automatically.
 
 ## What's new
