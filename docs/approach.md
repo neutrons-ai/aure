@@ -307,7 +307,7 @@ numbering is topical, not chronological — `evaluation_node` runs 1 → 2 → 4
    interactive run also still gets its review pause on a *clamped* accept (keyed
    off `state["chi2_clamp_accepted"]`) — the one verdict where code overrode an
    objecting evaluator is the one a human should see; feedback typed there is not
-   yet acted on ([issues.md](../issues.md) #15).
+   yet acted on ([issues.md](../issues.md) #14).
 
    The clamp is **one-directional — a floor on stopping, not a ceiling.** It only
    raises a verdict (`False → True`); it never lowers one. *Above* `chi2_max` the

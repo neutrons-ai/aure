@@ -12,7 +12,7 @@
 #
 # The web UI's Setup tab has Load / Save buttons that read and write this
 # format, but the form is not a full editor for it — Save silently drops the keys
-# it has no field for, chi2_max / chi2_min among them (see issues.md #16). Edit a
+# it has no field for, chi2_max / chi2_min among them (see issues.md #15). Edit a
 # curated setup here, not through the web form.
 #
 # Every field below is optional unless noted. Paths are resolved relative
@@ -147,16 +147,15 @@ states:
 #
 # Optional final uncertainty fit. Explore fast with `fit_method` (e.g. amoeba),
 # then run ONE MCMC fit on the finalize-selected model to get proper 1σ error
-# bars. Off unless FIT_METHOD_FINAL is set and differs from `fit_method`.
+# bars. Off unless `fit_method_final` is set and differs from `fit_method`.
 # Give it a much larger budget than exploration — a small step count yields
 # plausible-looking but meaningless uncertainties. Skipped when the selected χ²
-# is above the gate (FINAL_FIT_CHI2_MAX, default = CHI2_MAX): no point
+# is above the gate (`final_fit_chi2_max`, default = `chi2_max`): no point
 # characterizing a poor fit. See docs/finalization.md.
-# NOTE: these four are ENVIRONMENT VARIABLES only — the setup loader rejects the
-# YAML keys `fit_method_final` / `fit_steps_final` / `fit_burn_final` /
-# `final_fit_chi2_max` as unknown, so a setup using them fails to load
-# (issues.md #12). Export FIT_METHOD_FINAL=dream, FIT_STEPS_FINAL=10000,
-# FIT_BURN_FINAL=10000, FINAL_FIT_CHI2_MAX=1.5 instead.
+# fit_method_final: dream     # lm | de | dream  (final polish only)
+# fit_steps_final: 10000      # default 10000
+# fit_burn_final: 10000       # default = fit_steps_final
+# final_fit_chi2_max: 1.5     # default = the chi2_max acceptance threshold
 
 # --------------------------------------------------------------------------
 # Evaluation criteria  (extra rules the LLM applies when judging the fit)

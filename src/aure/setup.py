@@ -77,6 +77,10 @@ class SetupConfig(TypedDict, total=False):
     fit_method: str  # "lm" | "de" | "dream"
     fit_steps: int
     fit_burn: int
+    fit_method_final: str  # optional final uncertainty fit; unset → off
+    fit_steps_final: int
+    fit_burn_final: int
+    final_fit_chi2_max: float  # skip the final fit above this χ²
 
     # Job-runner switches (batch only — ignored by analyze)
     verbose: bool
@@ -122,6 +126,10 @@ _KNOWN_TOP_LEVEL = {
     "fit_method",
     "fit_steps",
     "fit_burn",
+    "fit_method_final",
+    "fit_steps_final",
+    "fit_burn_final",
+    "final_fit_chi2_max",
     "verbose",
     "json",
     "llm_provider",
@@ -136,7 +144,11 @@ _KNOWN_TOP_LEVEL = {
 }
 
 # Float-valued keys, coerced and range-checked together below.
-_FLOAT_KEYS = ("chi2_max", "chi2_min", "llm_temperature")
+_FLOAT_KEYS = ("chi2_max", "chi2_min", "final_fit_chi2_max", "llm_temperature")
+
+# χ² gates: a threshold ≤ 0 or non-finite can never be met, so it would
+# silently disable the thing it gates rather than loosening it.
+_POSITIVE_CHI2_KEYS = frozenset({"chi2_max", "final_fit_chi2_max"})
 
 # Keys that the legacy schema used at the top level (or in a job entry)
 # but which are no longer supported. Loaders raise a migration error
@@ -253,11 +265,25 @@ def _setup_from_dict(
     if desc:
         out["sample_description"] = str(desc)
 
-    for opt_str in ("hypothesis", "model_name", "command", "output_root", "fit_method"):
+    for opt_str in (
+        "hypothesis",
+        "model_name",
+        "command",
+        "output_root",
+        "fit_method",
+        "fit_method_final",
+    ):
         if raw.get(opt_str):
             out[opt_str] = str(raw[opt_str])  # type: ignore[literal-required]
 
-    for opt_int in ("max_refinements", "fit_steps", "fit_burn", "llm_timeout"):
+    for opt_int in (
+        "max_refinements",
+        "fit_steps",
+        "fit_burn",
+        "fit_steps_final",
+        "fit_burn_final",
+        "llm_timeout",
+    ):
         if opt_int in raw and raw[opt_int] is not None:
             try:
                 out[opt_int] = int(raw[opt_int])  # type: ignore[literal-required]
@@ -276,11 +302,11 @@ def _setup_from_dict(
                 value = float(raw[opt_float])
             except (TypeError, ValueError) as exc:
                 raise ConfigError(f"{source}: `{opt_float}` must be a number") from exc
-            # A ceiling ≤ 0 (or non-finite) can never be met, which would
-            # silently disable the deterministic acceptance stop altogether.
-            if opt_float == "chi2_max" and not (math.isfinite(value) and value > 0):
+            if opt_float in _POSITIVE_CHI2_KEYS and not (
+                math.isfinite(value) and value > 0
+            ):
                 raise ConfigError(
-                    f"{source}: `chi2_max` must be a finite positive number, "
+                    f"{source}: `{opt_float}` must be a finite positive number, "
                     f"got {raw[opt_float]!r}"
                 )
             # The floor is the point below which χ² stops being evidence about
@@ -393,6 +419,10 @@ _DUMP_ORDER: tuple[str, ...] = (
     "fit_method",
     "fit_steps",
     "fit_burn",
+    "fit_method_final",
+    "fit_steps_final",
+    "fit_burn_final",
+    "final_fit_chi2_max",
     "shared_parameters",
     "unshared_parameters",
     "distinct_sample",

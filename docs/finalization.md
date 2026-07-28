@@ -242,12 +242,8 @@ for them, matching how a plain `FIT_METHOD=dream` run already reports them.
 | `FINAL_FIT_CHI2_MAX` | — | = `CHI2_MAX` | Skip the polish when the selected χ² exceeds this |
 | `FINAL_SELECTION_TOL` | — | `0.02` | χ² band for the parsimony tie-break and the adopt-vs-keep decision |
 
-`chi2_max` / `chi2_min` are real setup-YAML keys, applied for one run as env
-overrides by `analyze`, `prepare` and `batch`. The four final-fit names are
-**env-var only**: `cli._build_env_overrides` maps them, but `setup._KNOWN_TOP_LEVEL`
-rejects them, so a setup or manifest using `fit_method_final` /
-`fit_steps_final` / `fit_burn_final` / `final_fit_chi2_max` fails to load —
-[issues.md](../issues.md) #12.
+`chi2_max` / `chi2_min` and the four final-fit names are all setup-YAML keys,
+applied for one run as env overrides by `analyze`, `prepare` and `batch`.
 
 ---
 

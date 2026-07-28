@@ -210,27 +210,9 @@ co-refinements at all.
 
 ---
 
-## Configuration, and one unrelated pair
+## Unrelated to this change
 
-### 12. Four documented final-fit setup keys are rejected by the setup loader
-
-**Predates this change.** `fit_method_final`, `fit_steps_final`,
-`fit_burn_final` and `final_fit_chi2_max` are mapped to env vars by
-`cli._build_env_overrides` ([`src/aure/cli.py:1681-1684`](src/aure/cli.py)) and
-documented as YAML keys in `docs/finalization.md` and
-`aure_config.example.yaml` — all three at baseline — but are **absent from
-`setup._KNOWN_TOP_LEVEL`** ([`src/aure/setup.py:103`](src/aure/setup.py)).
-
-A setup or batch job using any of them is rejected with `unknown top-level
-key(s)`, so the optional final uncertainty fit is unreachable from a setup YAML.
-Verified: the shipped `aure_config.example.yaml` **does** load — the four keys
-are commented out there — but uncommenting them (i.e. following the file's own
-documentation) fails with
-`ConfigError: unknown top-level key(s): ['final_fit_chi2_max', 'fit_burn_final',
-'fit_method_final', 'fit_steps_final']`. Adding the four names to
-`_KNOWN_TOP_LEVEL` (and `_DUMP_ORDER`) is the whole fix.
-
-### 13. Two MCP tools are dead
+### 12. Two MCP tools are dead
 
 **Predates this change; wholly unrelated to it.**
 
@@ -244,7 +226,7 @@ documentation) fails with
   ([`src/aure/nodes/fitting.py:334`](src/aure/nodes/fitting.py)) — three of the
   four keywords do not exist, so it is a `TypeError` on call.
 
-### 14. `ruff format` is not clean at baseline
+### 13. `ruff format` is not clean at baseline
 
 **Predates this change.** With the pinned hook version (ruff 0.15.5), `ruff
 format --check` on a clean `dc1dfca` checkout reports **7** files needing
@@ -263,7 +245,7 @@ rather than absorbing the churn into a feature branch.
 Not pre-existing — these are things the shipped subset lacks because the rest of
 the work was dropped.
 
-### 15. Interactive review feedback at a clamped accept is collected and thrown away
+### 14. Interactive review feedback at a clamped accept is collected and thrown away
 
 [`runner.py:321`](src/aure/workflow/runner.py) deliberately keeps the review
 pause alive when `chi2_clamp_accepted` is set (the one verdict where code
@@ -274,7 +256,7 @@ never acted on. Only the `restart_checkpoint` path clears `workflow_complete`.
 The four-line fix (clear `workflow_complete` and `chi2_clamp_accepted` when
 feedback arrives at a clamped accept) is in the preserved patch.
 
-### 16. The web Setup form cannot set the χ² acceptance window
+### 15. The web Setup form cannot set the χ² acceptance window
 
 `chi2_max` / `chi2_min` are `SetupConfig` keys and are in `setup._DUMP_ORDER`,
 but `grep -rn 'chi2_m' src/aure/web/` is empty — the form has no field for

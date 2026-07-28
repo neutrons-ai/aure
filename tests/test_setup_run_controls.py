@@ -515,3 +515,57 @@ def test_batch_stays_quiet_with_an_empty_backlog(
     assert result.exit_code == 0, result.output
     assert "Done – χ² = 1.400" in result.output
     assert "Possible further improvements" not in result.output
+
+
+def test_final_fit_keys_load_and_round_trip(tmp_path, data_file):
+    """The four final-fit keys are documented; the loader must accept them.
+
+    ``aure_config.example.yaml`` and ``docs/finalization.md`` document these and
+    ``cli._build_env_overrides`` maps them, but they were missing from
+    ``_KNOWN_TOP_LEVEL`` — so following the example file's own documentation was
+    rejected as unknown keys and the optional final uncertainty fit was
+    unreachable from a setup YAML.
+    """
+    from aure.setup import dump_setup, load_setup
+
+    p = _write_yaml(
+        tmp_path,
+        "final.yaml",
+        _setup_doc(
+            data_file,
+            fit_method_final="dream",
+            fit_steps_final=10000,
+            fit_burn_final=5000,
+            final_fit_chi2_max=1.5,
+        ),
+    )
+    setup = load_setup(p)
+
+    assert setup["fit_method_final"] == "dream"
+    assert setup["fit_steps_final"] == 10000
+    assert setup["fit_burn_final"] == 5000
+    assert setup["final_fit_chi2_max"] == 1.5
+    assert isinstance(setup["final_fit_chi2_max"], float)
+
+    # Round-trip: the web UI's Save Setup dumps what Load Setup parsed.
+    dumped = yaml.safe_load(dump_setup(setup))
+    for key in (
+        "fit_method_final",
+        "fit_steps_final",
+        "fit_burn_final",
+        "final_fit_chi2_max",
+    ):
+        assert dumped[key] == setup[key], key
+
+
+@pytest.mark.parametrize("bad", [0, -1, ".inf", ".nan"])
+def test_final_fit_chi2_max_must_be_a_usable_gate(tmp_path, data_file, bad):
+    """A gate ≤ 0 or non-finite can never be met, so it silently disables the
+    final fit rather than loosening it — the same rule ``chi2_max`` carries."""
+    from aure.config import ConfigError
+    from aure.setup import load_setup
+
+    p = _write_raw(tmp_path, data_file, "final_fit_chi2_max", str(bad))
+
+    with pytest.raises(ConfigError, match="finite positive number"):
+        load_setup(p)
