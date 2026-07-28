@@ -37,23 +37,6 @@ the shipped subset added.
 
 ## The profile the detector actually reads
 
-### 4. Per-state SLD profiles are written but never read back
-
-**Predates this change.** `fitting._write_state_profile`
-([`src/aure/nodes/fitting.py:1042`](src/aure/nodes/fitting.py), called at 1011)
-writes `export_dir/state_<name>/profile.dat` for every state of a
-co-refinement. Nothing reads them — `_read_profile_dat` is the only consumer and
-it reads the single top-level `*-1-profile.dat`, which is `states[0]`'s alone.
-
-This is the direct cause of the shipped limitation:
-`evaluation._detect_profile_artifacts_into` refuses to mark a multi-state fit
-verified ([`src/aure/nodes/evaluation.py:1476`](src/aure/nodes/evaluation.py)),
-and the clamp stands down on anything unverified — **so the deterministic χ²
-stop is inert for every co-refinement**, and those runs still finish on the
-evaluator's verdict. That is the safe direction (`states[0]`'s profile is still
-checked, so a *veto* still fires) but it means `chi2_max` does nothing on a
-`states:` run. Wiring the per-state files into the detector is the fix.
-
 ### 5. `_find_profile_dat` can be shadowed by a stale export
 
 **Predates this change.** `fitting._find_profile_dat`

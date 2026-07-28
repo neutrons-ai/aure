@@ -1005,10 +1005,19 @@ def _extract_states_bumps_results(
                 f"{state_chi2_sum / state_npts:.3f}"
             )
 
-        # Write per-state profile.dat under export_dir/state_<name>/.
+        # Write per-state profile.dat under export_dir/state_<name>/, then read it
+        # straight back onto this state's entries. refl1d exports one profile per
+        # model, so the FitResult's top-level pair is states[0]'s alone — without
+        # this the evaluator can only ever check one state of a co-refinement.
         if export_dir and experiments:
             try:
                 _write_state_profile(experiments[0], export_dir, state_name)
+                z, rho = _read_state_profile(export_dir, state_name)
+                if z and rho:
+                    for pf in per_file:
+                        if pf.get("state") == state_name:
+                            pf["sld_z"] = z
+                            pf["sld_rho"] = rho
             except Exception as exc:
                 logger.warning(
                     f"[FITTING] Could not write profile for state {state_name}: {exc}"
@@ -1137,6 +1146,26 @@ def _read_profile_dat(
     profile_file = _find_profile_dat(export_dir)
     if profile_file is None:
         return None, None
+    return _parse_profile_dat(profile_file)
+
+
+def _read_state_profile(export_dir: Optional[str], state_name: str) -> tuple:
+    """Read one state's profile from ``export_dir/state_<name>/profile.dat``.
+
+    Returns (z_list, rho_list) or (None, None) if unavailable. The evaluator marks
+    a co-refinement verified only when *every* state reports one, so a miss here
+    leaves the whole fit unverified rather than judged on the states that did.
+    """
+    if not export_dir:
+        return None, None
+    profile_file = Path(export_dir) / f"state_{state_name}" / "profile.dat"
+    if not profile_file.is_file():
+        return None, None
+    return _parse_profile_dat(profile_file)
+
+
+def _parse_profile_dat(profile_file) -> tuple:
+    """Parse a 2-column ``z rho`` profile file, downsampling a dense one."""
     try:
         z_vals = []
         rho_vals = []

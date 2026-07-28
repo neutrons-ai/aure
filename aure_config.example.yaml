@@ -118,9 +118,9 @@ states:
 # shell / .env for this run only, and is restored afterwards. χ² does NOT force
 # acceptance when the SLD-profile artifact check found a non-physical excursion
 # (back to refinement), when that check could not verify the profile — none was
-# exported, the detector declined it, or the fit is MULTI-STATE, since only
-# states[0]'s profile is read back, which makes this key inert on a `states:` run
-# (see issues.md #4) — or when a per-file/per-state χ² is over the threshold on
+# exported, the detector declined it, or one state of a co-refinement reported no
+# profile (every state is checked against its own media; partial coverage leaves
+# the whole fit unverified) — or when a per-file/per-state χ² is over the threshold on
 # its own. In each of those the LLM's verdict decides, as before. `aure evaluate`
 # applies no stop at all: its `acceptable` is advice, not the stop decision.
 # The value is pinned into every checkpoint the run writes, so `aure resume` keeps

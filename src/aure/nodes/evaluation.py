@@ -1374,10 +1374,17 @@ def _format_evaluation(
     return "\n".join(lines)
 
 
-def _ordered_slds_for_artifacts(model: dict, parameters: dict) -> list:
+def _ordered_slds_for_artifacts(
+    model: dict, parameters: dict, state_name: Optional[str] = None
+) -> list:
     """Ordered SLD sequence [ambient, layers..., substrate] for artifact
     detection, preferring fitted values from ``parameters`` (refl1d names each
     material's SLD parameter ``"<name> rho"``) and falling back to model seeds.
+
+    *state_name* is tried as a prefix first. ``build_states_problem`` renames
+    untied parameters ``"<state> <material> rho"`` — the ambient SLD is untied by
+    default in a contrast series — so without it a co-refinement silently falls
+    back to the template seed and the profile gets judged against the wrong media.
     """
     if not isinstance(model, dict):
         return []
@@ -1387,8 +1394,13 @@ def _ordered_slds_for_artifacts(model: dict, parameters: dict) -> list:
         if not isinstance(info, dict):
             return None
         name = info.get("name")
-        if name and f"{name} rho" in params:
-            return float(params[f"{name} rho"])
+        if name:
+            for key in (
+                f"{state_name} {name} rho" if state_name else None,
+                f"{name} rho",
+            ):
+                if key and key in params:
+                    return float(params[key])
         val = info.get("sld")
         return None if val is None else float(val)
 
@@ -1406,6 +1418,82 @@ def _ordered_slds_for_artifacts(model: dict, parameters: dict) -> list:
     return seq
 
 
+def _has_points(seq) -> bool:
+    """True for a non-empty sequence. Length, not truthiness — a numpy array
+    raises on ``bool()`` and these values arrive from JSON as lists but from
+    in-memory callers as arrays."""
+    try:
+        return seq is not None and len(seq) > 0
+    except TypeError:
+        return False
+
+
+def _profile_contexts(fit_result: FitResult, model) -> Optional[list]:
+    """One ``(state_name, effective_model, z, rho)`` per state to be checked.
+
+    Returns ``None`` when the model's shape cannot be resolved — every error path
+    fails *closed*, because this function's whole job is to answer "what could this
+    profile not cover", and answering "one state" on a resolution failure would
+    hand the clamp a clean bill of health it has not earned.
+
+    Single-state runs get one context built from the fit's own top-level profile,
+    which is what refl1d exports; each state of a co-refinement gets the profile
+    ``fitting`` read back from ``export_dir/state_<name>/`` and its own effective
+    definition, since per-state ``ambient``/``layers`` overrides mean the
+    model-level template describes no state in particular.
+    """
+    if not isinstance(model, dict):
+        return None
+
+    try:
+        from ..state import iter_states
+        from .model_builder import _state_overrides
+    except Exception as e:  # pragma: no cover - import guard
+        logger.debug(f"[EVALUATION] State resolution unavailable: {e}")
+        return None
+
+    declared = model.get("states")
+    if not declared:
+        return [(None, model, fit_result.get("sld_z"), fit_result.get("sld_rho"))]
+    if not (isinstance(declared, list) and all(isinstance(s, dict) for s in declared)):
+        logger.info(
+            "[EVALUATION] `states` is not a list of mappings, so per-state profiles "
+            "cannot be resolved — treating the profile as unverified"
+        )
+        return None
+
+    try:
+        states = iter_states(model)
+    except Exception as e:
+        logger.debug(f"[EVALUATION] iter_states failed: {e}")
+        return None
+
+    per_file = fit_result.get("per_file_results") or []
+    contexts = []
+    for i, st in enumerate(states):
+        name = st.get("name") or f"state{i}"
+        try:
+            eff = _state_overrides(model, st)
+        except Exception as e:
+            logger.debug(f"[EVALUATION] _state_overrides failed for {name}: {e}")
+            return None
+        z = rho = None
+        for pf in per_file:
+            if (
+                isinstance(pf, dict)
+                and pf.get("state") == name
+                and _has_points(pf.get("sld_z"))
+            ):
+                z, rho = pf.get("sld_z"), pf.get("sld_rho")
+                break
+        # states[0] is the model refl1d exported at the top level, so fall back to
+        # it — that keeps a one-entry `states:` block behaving like a plain run.
+        if not _has_points(z) and i == 0:
+            z, rho = fit_result.get("sld_z"), fit_result.get("sld_rho")
+        contexts.append((name, eff, z, rho))
+    return contexts
+
+
 def _detect_profile_artifacts_into(
     analysis: dict, fit_result: FitResult, model
 ) -> None:
@@ -1417,45 +1505,26 @@ def _detect_profile_artifacts_into(
     transition as a profile parametrization. The extremum-count note and the
     σ/thickness ratios are added to ``physical_concerns`` only.
 
+    Every state of a co-refinement is checked, each against its *own* effective
+    media — per-state ``ambient``/``layers`` overrides mean the model-level
+    template describes no state in particular, so judging one state's profile
+    against it yields both false positives and false negatives.
+
     Two markers are left for the χ² accept clamp:
 
-    * ``_profile_artifact`` — an excursion was found. A veto.
+    * ``_profile_artifact`` — an excursion was found, in any state. A veto, and the
+      issue names the state.
     * ``_profile_checked`` — a *positive* statement that this fit's profile was
-      evaluated and the answer can be relied on. Left unset on every path that
+      evaluated and the answer can be relied on. Set only when **every** state
+      reported a profile the detector could evaluate. Left unset on every path that
       could not reach one: no exported profile (``sld_z``/``sld_rho`` are written
       only when the run has an output directory, so library and MCP runs have
       none), fewer than two resolvable media, a detector that returned
-      ``checked=False``, **or a multi-state co-refinement** (see below). Absent
-      means "no evidence either way", which the clamp treats as unsafe — it stands
-      down and the evaluator's verdict decides, as it did before the clamp existed.
-
-    **Co-refinement limitation.** Only the fit's single top-level profile reaches
-    this function, and refl1d writes one profile per model, so on a multi-state fit
-    that profile is ``states[0]``'s alone. The other states are never examined, so
-    such a fit is never marked checked and the deterministic χ² stop is inert for
-    co-refinement — those runs still finish on the evaluator's verdict. states[0]'s
-    profile is still checked for excursions, because a veto on the evidence
-    available is sound even when a clean bill of health is not.
+      ``checked=False``, an unresolvable model shape, or a co-refinement where any
+      one state's profile is missing. Absent means "no evidence either way", which
+      the clamp treats as unsafe — it stands down and the evaluator's verdict
+      decides, as it did before the clamp existed.
     """
-    z = fit_result.get("sld_z")
-    rho = fit_result.get("sld_rho")
-    if not z or not rho:
-        logger.info(
-            "[EVALUATION] The fit carries no exported SLD profile (refl1d writes "
-            "one only when the run has an output directory) — treating the "
-            "profile as unverified"
-        )
-        return
-    layer_rhos = _ordered_slds_for_artifacts(model, fit_result.get("parameters"))
-    if len(layer_rhos) < 2:
-        logger.info(
-            "[EVALUATION] Fewer than two media resolvable from the model (%d), so "
-            "there is no SLD range to test the profile against — treating the "
-            "profile as unverified",
-            len(layer_rhos),
-        )
-        return
-
     try:
         from ..tools.feature_tools import (
             detect_profile_artifacts,
@@ -1465,44 +1534,77 @@ def _detect_profile_artifacts_into(
         logger.debug(f"[EVALUATION] Artifact detector import failed: {e}")
         return
 
-    result = detect_profile_artifacts(z, rho, layer_rhos)
-
     analysis.setdefault("physical_concerns", [])
     analysis.setdefault("issues", [])
     analysis.setdefault("suggestions", [])
 
-    states = model.get("states") if isinstance(model, dict) else None
-    n_states = len(states) if isinstance(states, list) else 1
-
-    if not result.get("checked"):
+    contexts = _profile_contexts(fit_result, model)
+    if contexts is None:
         logger.info(
-            "[EVALUATION] SLD-profile artifact detector declined to check the "
-            "profile (too few points, mismatched z/rho lengths, a non-finite "
-            "sample, or a zero SLD span across the media) — treating the profile "
-            "as unverified"
+            "[EVALUATION] Could not resolve the model's states, so the SLD profile "
+            "cannot be attributed to one — treating the profile as unverified"
         )
-    elif n_states > 1:
-        logger.warning(
-            "[EVALUATION] Multi-state fit (%d states): only the top-level SLD "
-            "profile is available here and it belongs to states[0] alone, so the "
-            "other states' profiles are NOT checked. This fit is therefore left "
-            "UNVERIFIED and the deterministic χ² stop cannot fire — a "
-            "co-refinement always finishes on the evaluator's verdict. Known "
-            "limitation.",
-            n_states,
-        )
-    else:
+        return
+
+    multi = len(contexts) > 1
+    params = fit_result.get("parameters")
+    all_checked = True
+    excursion = None  # (state_name, where, note) for the first one found
+    eff_models = []
+
+    for name, eff_model, z, rho in contexts:
+        tag = f"[{name}] " if multi else ""
+        eff_models.append((name, eff_model))
+        if not (_has_points(z) and _has_points(rho)):
+            all_checked = False
+            logger.info(
+                "[EVALUATION] %sThe fit carries no exported SLD profile (refl1d "
+                "writes one only when the run has an output directory) — treating "
+                "the profile as unverified",
+                tag,
+            )
+            continue
+        media = _ordered_slds_for_artifacts(eff_model, params, state_name=name)
+        if len(media) < 2:
+            all_checked = False
+            logger.info(
+                "[EVALUATION] %sFewer than two media resolvable (%d), so there is "
+                "no SLD range to test the profile against — treating the profile "
+                "as unverified",
+                tag,
+                len(media),
+            )
+            continue
+
+        result = detect_profile_artifacts(z, rho, media)
+        if not result.get("checked"):
+            all_checked = False
+            logger.info(
+                "[EVALUATION] %sArtifact detector declined to check the profile "
+                "(too few points, mismatched z/rho lengths, a non-finite sample, "
+                "or a zero SLD span across the media) — treating the profile as "
+                "unverified",
+                tag,
+            )
+        for note in result.get("notes", []):
+            analysis["physical_concerns"].append(f"{tag}{note}")
+        if result.get("has_artifact") and excursion is None:
+            exc = result["excursions"][0]
+            where = ", ".join(
+                f"{e['kind']} SLD {e['sld']:.2f} at z={e['z']:.0f} Å"
+                for e in result["excursions"][:3]
+            )
+            excursion = (name if multi else None, where, exc["note"])
+
+    if all_checked and excursion is None:
         analysis["_profile_checked"] = True
 
-    if result.get("has_artifact"):
-        exc = result["excursions"][0]
-        where = ", ".join(
-            f"{e['kind']} SLD {e['sld']:.2f} at z={e['z']:.0f} Å"
-            for e in result["excursions"][:3]
-        )
+    if excursion is not None:
+        state_name, where, note = excursion
+        scope = f" in state '{state_name}'" if state_name else ""
         analysis["issues"].append(
-            f"Non-physical SLD-profile excursion ({where}): "
-            f"{exc['note']}. The reflectivity χ² does not see this."
+            f"Non-physical SLD-profile excursion{scope} ({where}): "
+            f"{note}. The reflectivity χ² does not see this."
         )
         # Veto acceptance: a physically impossible profile must not be accepted
         # on the strength of χ² alone. Forcing acceptable=False routes the loop
@@ -1521,17 +1623,23 @@ def _detect_profile_artifacts_into(
             "the roughness free and treat those slabs as a profile "
             "parametrization (do not report them as distinct layers)."
         )
-        logger.warning(f"[EVALUATION] SLD-profile artifact: {where}")
+        logger.warning(f"[EVALUATION] SLD-profile artifact{scope}: {where}")
 
-    for note in result.get("notes", []):
-        analysis["physical_concerns"].append(note)
-
-    for r in check_roughness_thickness_ratios(model if isinstance(model, dict) else {}):
-        analysis["physical_concerns"].append(
-            f"roughness of '{r['layer']}' is {r['ratio']:.2f}× its thickness "
-            f"(σ={r['roughness']:.1f} Å, t={r['thickness']:.1f} Å) — verify this "
-            f"is an intended profile parametrization, not a spurious interface"
-        )
+    # σ/thickness reads each state's own layers, since a state may override them.
+    # Identical notes across states collapse to one unscoped line.
+    seen = set()
+    for name, eff_model in eff_models:
+        tag = f"[{name}] " if multi else ""
+        for r in check_roughness_thickness_ratios(eff_model):
+            note = (
+                f"roughness of '{r['layer']}' is {r['ratio']:.2f}× its thickness "
+                f"(σ={r['roughness']:.1f} Å, t={r['thickness']:.1f} Å) — verify this "
+                f"is an intended profile parametrization, not a spurious interface"
+            )
+            if note in seen:
+                continue
+            seen.add(note)
+            analysis["physical_concerns"].append(f"{tag}{note}")
 
 
 def _check_boundary_hits(

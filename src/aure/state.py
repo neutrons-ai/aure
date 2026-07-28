@@ -177,6 +177,12 @@ class PerFileFitResult(TypedDict, total=False):
     residuals: List[float]
     residual_ratio: List[float]
 
+    # This state's rendered SLD profile. refl1d exports one profile per model, so
+    # the FitResult's top-level sld_z/sld_rho are states[0]'s alone; the artifact
+    # detector needs every state's to judge a co-refinement.
+    sld_z: List[float]
+    sld_rho: List[float]
+
 
 class StateDefinition(TypedDict, total=False):
     """One physical state of the sample in a multi-state co-refinement.

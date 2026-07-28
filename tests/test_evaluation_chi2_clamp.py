@@ -964,3 +964,91 @@ def test_the_fallback_path_cannot_complete_on_chi2_alone(
 
     assert out["llm_calls"][0]["used_fallback"] is True
     assert "workflow_complete" not in out
+
+
+# ======================================================================
+# Co-refinement: every state's profile is checked, not just states[0]'s
+# ======================================================================
+
+_CONTRAST_MODEL = {
+    "layers": [{"name": "Cu", "thickness": 500.0, "sld": 6.42, "roughness": 8.0}],
+    "substrate": {"name": "Si", "sld": 2.07, "roughness": 5.0},
+    "ambient": {"name": "solvent", "sld": 6.4},
+    # A solvent-contrast series: the ambient SLD is a per-state override, so the
+    # model-level template describes neither state.
+    "states": [
+        {"name": "D2O", "ambient": {"rho": 6.4}},
+        {"name": "H2O", "ambient": {"rho": -0.56}},
+    ],
+}
+
+
+def _contrast_fit(h2o_profile, *, drop_h2o=False):
+    z, rho = _profile_from_slabs([(None, 6.4, None), (200, 6.42, 8), (700, 2.07, 5)])
+    d2o = (list(z), list(rho))
+    per_file = [
+        {"state": "D2O", "chi_squared": 1.1, "sld_z": d2o[0], "sld_rho": d2o[1]},
+        {
+            "state": "H2O",
+            "chi_squared": 1.3,
+            **(
+                {} if drop_h2o else {"sld_z": h2o_profile[0], "sld_rho": h2o_profile[1]}
+            ),
+        },
+    ]
+    return {
+        # refl1d exports one profile per model, so the top-level pair is states[0]'s.
+        "sld_z": d2o[0],
+        "sld_rho": d2o[1],
+        "parameters": {},
+        "per_file_results": per_file,
+    }
+
+
+def _clean_h2o():
+    z, rho = _profile_from_slabs([(None, -0.56, None), (200, 6.42, 8), (700, 2.07, 5)])
+    return list(z), list(rho)
+
+
+def test_a_co_refinement_with_every_state_clean_is_verified():
+    """The payoff: the deterministic χ² stop was inert on every `states:` run,
+    because only states[0]'s profile was ever read back. Note the clean H2O profile
+    reaches -0.56, which would be flagged as an excursion if judged against the
+    model-level ambient of 6.4 — hence the per-state media."""
+    analysis = _analysis(acceptable=False)
+    evaluation._detect_profile_artifacts_into(
+        analysis, _contrast_fit(_clean_h2o()), _CONTRAST_MODEL
+    )
+
+    assert analysis.get("_profile_checked") is True
+    assert not analysis.get("_profile_artifact")
+    assert analysis["issues"] == []
+
+
+def test_an_excursion_in_the_second_state_vetoes_and_names_it():
+    """states[0] is clean, so checking only the top-level profile would miss this."""
+    z, rho = _profile_from_slabs(
+        [(None, -0.56, None), (200, 6.42, 60), (250, -3.0, 60), (700, 2.07, 5)]
+    )
+    bad_h2o = (list(z), list(rho))
+    analysis = _analysis(acceptable=False)
+    evaluation._detect_profile_artifacts_into(
+        analysis, _contrast_fit(bad_h2o), _CONTRAST_MODEL
+    )
+
+    assert analysis["_profile_artifact"] is True
+    assert analysis["acceptable"] is False
+    assert not analysis.get("_profile_checked")
+    assert "in state 'H2O'" in analysis["issues"][0]
+
+
+def test_one_unreadable_state_leaves_the_whole_fit_unverified():
+    """Fails closed: judging a co-refinement on the states that happened to export
+    a profile is the "not checked read as clean" bug in another costume."""
+    analysis = _analysis(acceptable=False)
+    evaluation._detect_profile_artifacts_into(
+        analysis, _contrast_fit(_clean_h2o(), drop_h2o=True), _CONTRAST_MODEL
+    )
+
+    assert not analysis.get("_profile_checked")
+    assert not analysis.get("_profile_artifact")

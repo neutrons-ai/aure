@@ -270,10 +270,10 @@ numbering is topical, not chronological — `evaluation_node` runs 1 → 2 → 4
    than discrete layers. The σ/thickness ratio itself is reported only as an
    informational concern, never an error, because a large roughness is
    legitimate under the parametrization reading (§6.8).
-   On a co-refinement only `states[0]`'s profile is available to this check — the
-   per-state `profile.dat` files are written but never read back
-   ([issues.md](../issues.md) #4) — so a *veto* can still fire but a clean bill of
-   health cannot be given, which is what makes step 6's stop inert there.
+   On a co-refinement every state is checked against its own effective media
+   (per-state `ambient`/`layers` overrides mean the model-level template describes
+   no state in particular); an excursion in any one vetoes and names it, and a
+   state whose profile is missing leaves the whole fit unverified.
 4. **Call the LLM for a judgement.** The LLM sees the fit result, the
    features, the residual analysis, the **χ² and BIC trajectory across
    all previous iterations**, and the **hypothesis list with statuses**.
@@ -328,11 +328,10 @@ numbering is topical, not chronological — `evaluation_node` runs 1 → 2 → 4
      `co_refine_states` without `output_dir`, or `quick_analyze`, which has no
      such parameter), the detector declined the profile it has (too few points,
      mismatched `z`/`rho` lengths, a non-finite sample, or a zero SLD span across
-     the media), **or the fit is multi-state** — only `states[0]`'s profile is
-     read back, so a co-refinement is never verified and **the χ² stop is inert
-     there** ([issues.md](../issues.md) #4). "Not checked" is treated as unsafe,
-     not as clean, so the LLM's verdict decides, exactly as it did before the
-     threshold became binding;
+     the media), **or any one state of a co-refinement reported no profile** —
+     partial coverage leaves the whole fit unverified. "Not checked" is treated as
+     unsafe, not as clean, so the LLM's verdict decides, exactly as it did before
+     the threshold became binding;
    - a **per-file / per-state χ²** is above the threshold, or carries the `+inf`
      "fit failed" sentinel: the reported χ² is `problem.chisq()` averaged over
      every model of a co-refinement, so one completely unfitted contrast can hide
@@ -782,9 +781,10 @@ For multi-state co-refinement runs (`states:` block in the user config),
 each fit iteration also produces a per-state `profile.dat` under
 `output/refl1d_output/fit_iter{i}_{method}/state_<name>/`, and the
 aggregated `FitResult` carries one `PerFileFitResult` entry per dataset
-tagged with its `state` name. Those per-state profile files are never read
-back, though — only the single top-level one, which belongs to `states[0]`
-([issues.md](../issues.md) #4). See the `multi-state-corefinement` skill
+tagged with its `state` name. `fitting` reads each of those profiles back onto
+that state's entries, so the artifact detector can check every state rather than
+only the single top-level one, which belongs to `states[0]`. See the
+`multi-state-corefinement` skill
 for the experimental patterns this addresses and for guidance on choosing
 `shared_parameters` vs `unshared_parameters`.
 

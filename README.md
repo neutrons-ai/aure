@@ -298,13 +298,8 @@ is over the ceiling or carries the `+inf` "fit failed" sentinel (the reported χ
 averaged over every model in the problem, so one unfitted contrast can hide under
 a passing aggregate); and when χ² is below `chi2_min`.
 
-Two limitations, stated plainly:
+One limitation, stated plainly:
 
-- **The stop is inert for multi-state co-refinement.** refl1d writes one SLD
-  profile per model and only the top-level one — `states[0]`'s — is read back, so
-  a co-refined fit is never marked verified and the stop always stands down.
-  Those runs still finish on the evaluator's verdict: `chi2_max` does nothing on
-  a `states:` run ([issues.md](issues.md) #4).
 - **The stop is one-directional.** It turns "keep refining" into "stop", never the
   reverse. Above `chi2_max` the LLM's `acceptable` is taken as-is and *none* of
   the conditions above are consulted, so an LLM that accepts a χ² of 4200 on a

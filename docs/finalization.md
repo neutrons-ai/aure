@@ -262,13 +262,14 @@ applied for one run as env overrides by `analyze`, `prepare` and `batch`.
 
 ## 9. Sharp edges of the deterministic stop
 
-**The stop is inert for multi-state co-refinement.** refl1d writes one SLD
-profile per model and only the top-level one — `states[0]`'s — is read back, so
-`evaluation` never marks a co-refined fit as *verified*, and the clamp stands
-down on anything it has not verified. Those runs still finish on the evaluator
-LLM's verdict, i.e. `chi2_max` does nothing on a `states:` run. A *veto* still
-fires from `states[0]`'s profile, which is the safe failure direction.
-[issues.md](../issues.md) #4.
+**A co-refinement is verified only when every state is.** `fitting` reads each
+state's `profile.dat` back onto that state's `per_file_results`, and the detector
+checks all of them, each against its *own* effective media — per-state
+`ambient`/`layers` overrides mean the model-level template describes no state in
+particular. An excursion in any state vetoes and names it; a state whose profile
+could not be read leaves the *whole* fit unverified, so a partially-exported
+co-refinement stands the clamp down rather than being judged on the states that
+happened to report.
 
 **The stop is one-directional.** It turns "keep refining" into "stop", never the
 reverse. Above `chi2_max` the LLM's `acceptable` stands as-is and *none* of the
