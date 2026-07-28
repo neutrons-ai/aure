@@ -332,10 +332,13 @@ numbering is topical, not chronological — `evaluation_node` runs 1 → 2 → 4
      partial coverage leaves the whole fit unverified. "Not checked" is treated as
      unsafe, not as clean, so the LLM's verdict decides, exactly as it did before
      the threshold became binding;
-   - a **per-file / per-state χ²** is above the threshold, or carries the `+inf`
-     "fit failed" sentinel: the reported χ² is `problem.chisq()` averaged over
-     every model of a co-refinement, so one completely unfitted contrast can hide
-     under a passing aggregate;
+   - a **per-file / per-state χ²** is above the threshold, carries the `+inf`
+     "fit failed" sentinel, or is below `chi2_min`: the reported χ² is
+     `problem.chisq()` averaged over every model of a co-refinement, so a single
+     contrast can hide under a passing aggregate — either unfitted, or (below the
+     floor) contributing essentially no constraint because its quoted
+     uncertainties are overestimated, which leaves the rest of the co-refinement
+     carrying the fit;
    - χ² is **below `chi2_min`** (`CHI2_MIN` / the setup's `chi2_min:`, default
      `0.5`, `0` disables it, validated finite and required strictly below
      `chi2_max`). A reduced χ² that far under 1 is not a better answer: it says

@@ -37,18 +37,6 @@ the shipped subset added.
 
 ## Acceptance thresholds
 
-### 10. Per-state χ² is checked against the ceiling but not the floor
-
-**Introduced by this change** — the shipped clamp's own gap.
-`evaluation._per_file_over_threshold`
-([`src/aure/nodes/evaluation.py:155`](src/aure/nodes/evaluation.py)) blocks the
-clamp when any per-file/per-state χ² exceeds `chi2_max` (and on the `+inf`
-fit-failed sentinel), but there is no matching sub-floor test. Reproduced: with
-`per_file_results` of `d2o` at χ² = 0.004 and `h2o` at 2.0, an aggregate of 1.0
-is force-accepted — a contrast with overestimated `dR` hiding under a passing
-total. Mostly latent today only because of #5: the clamp never fires on
-co-refinements at all.
-
 ### 11. `finalize._select` does not consult the acceptance floor
 
 **Predates the floor; the mirror of the veto gap just fixed for #1's sibling.**

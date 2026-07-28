@@ -1119,3 +1119,46 @@ def test_the_bic_baseline_is_ranked_by_bic_but_floored_on_chi2(monkeypatch):
         _wins_baseline(1.90, 1.20, {}, candidate_score=-950.0, incumbent_score=-900.0)
         is True
     )
+
+
+def test_a_sub_floor_state_blocks_the_clamp_and_is_reported(monkeypatch, stub_llm):
+    """A contrast whose residuals are far below its quoted uncertainties constrains
+    nothing, so the aggregate is carrying the co-refinement alone — the mirror of the
+    over-ceiling guard, and the aggregate can look perfectly healthy. Live rather
+    than theoretical now that the clamp fires on co-refinements at all."""
+    from aure.nodes.evaluation import _per_file_under_floor
+
+    monkeypatch.setenv("CHI2_MIN", "0.5")
+    monkeypatch.setenv("CHI2_MAX", "2.5")
+
+    per_file = [
+        {"state": "d2o", "chi_squared": 0.004},
+        {"state": "h2o", "chi_squared": 2.0},
+    ]
+    assert _per_file_under_floor(per_file, 0.5) == [("d2o", 0.004)]
+    # Unknowns stay unknown, and ±inf cannot be below a finite floor.
+    assert _per_file_under_floor([{"state": "a"}], 0.5) == []
+    assert (
+        _per_file_under_floor([{"state": "x", "chi_squared": float("inf")}], 0.5) == []
+    )
+    assert _per_file_under_floor(per_file, 0) == []  # floor disabled
+
+    stub_llm(_analysis(acceptable=False))
+    state = _state(1.0)
+    state["fit_results"][-1]["per_file_results"] = per_file
+    out = evaluation.evaluation_node(state)
+
+    assert "workflow_complete" not in out
+    assert out["chi2_clamp_accepted"] is False
+    issues = state["fit_results"][-1]["issues"]
+    assert any("d2o" in i and "no constraint" in i for i in issues)
+
+    # Control: the same aggregate with both contrasts constraining the fit clamps,
+    # so it is the sub-floor state doing the blocking and not something else.
+    stub_llm(_analysis(acceptable=False))
+    ok = _state(1.0)
+    ok["fit_results"][-1]["per_file_results"] = [
+        {"state": "d2o", "chi_squared": 1.1},
+        {"state": "h2o", "chi_squared": 0.9},
+    ]
+    assert evaluation.evaluation_node(ok)["workflow_complete"] is True

@@ -177,6 +177,40 @@ def _per_file_over_threshold(per_file_results: Optional[list], chi2_max: float) 
     return over
 
 
+def _per_file_under_floor(per_file_results: Optional[list], chi2_min: float) -> list:
+    """Return ``(label, χ²)`` for every per-file result *below* *chi2_min*.
+
+    The mirror of :func:`_per_file_over_threshold`, and for a sharper reason than
+    symmetry: a contrast whose residuals are far smaller than its quoted
+    uncertainties is contributing essentially **no constraint** to the
+    co-refinement. The aggregate can look healthy while one state's `dR` column is
+    overestimated to the point that the fit is effectively ignoring it — you believe
+    you co-refined against three contrasts and in fact fitted two, which is the
+    failure a contrast series exists to prevent. Counting statistics genuinely
+    differ between contrasts, so this is a realistic outcome rather than an exotic
+    one.
+
+    Unknown values (missing/``None``/``NaN``) are ignored for the same reason as in
+    the ceiling guard. ``±inf`` cannot be below a finite floor, so the fit-failed
+    sentinel is naturally excluded here and handled there. Returns ``[]`` when the
+    floor is disabled.
+    """
+    if chi2_min <= 0:
+        return []
+    under = []
+    for pf in per_file_results or []:
+        if not isinstance(pf, dict):
+            continue
+        c = pf.get("chi_squared")
+        if isinstance(c, bool) or not isinstance(c, (int, float)):
+            continue
+        if np.isnan(c) or c >= chi2_min:
+            continue
+        label = pf.get("state") or pf.get("label") or pf.get("file") or "?"
+        under.append((str(label), float(c)))
+    return under
+
+
 def _format_per_file_failures(over: list) -> str:
     """Render ``_per_file_over_threshold`` output for the stand-down log line.
 
@@ -223,6 +257,9 @@ def _clamp_acceptance_to_chi2(
       sentinel — ``chi2`` is averaged over every model, so an entirely unfitted
       dataset can hide under a passing aggregate;
     * ``chi2`` below *chi2_min* — see ``_CHI2_MIN_DEFAULT``. ``0`` disables it.
+    * a per-file χ² *below* ``chi2_min`` — that dataset's residuals are far smaller
+      than its quoted uncertainties, so it is contributing essentially no
+      constraint and the aggregate is carrying the co-refinement alone.
 
     Each is a *stand-down*, not a veto: the clamp declines to force acceptance and
     the evaluator's verdict decides, which is the pre-clamp behaviour. Vetoing
@@ -271,6 +308,18 @@ def _clamp_acceptance_to_chi2(
             chi2,
             _format_per_file_failures(over),
             chi2_max,
+        )
+        return False
+    under = _per_file_under_floor(per_file_results, chi2_min)
+    if under:
+        logger.info(
+            "[EVALUATION] Not accepting on aggregate χ²=%.3f: %s below the "
+            "acceptance floor χ² ≥ %.3f, so that data is contributing essentially "
+            "no constraint — its uncertainties look overestimated. The LLM's "
+            "verdict decides instead",
+            chi2,
+            _format_per_file_failures(under),
+            chi2_min,
         )
         return False
 
@@ -560,6 +609,20 @@ def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
             f"enough free parameters to absorb the noise — evidence about the "
             f"error bars rather than confirmation of the structure. Check the "
             f"uncertainties and the parameter count before trusting this fit."
+        )
+
+    # The same finding for a single dataset of a co-refinement, where the aggregate
+    # can look healthy while one contrast constrains nothing.
+    sub_floor_states = _per_file_under_floor(
+        latest_fit.get("per_file_results"), chi2_min
+    )
+    if sub_floor_states:
+        analysis["issues"].append(
+            f"{_format_per_file_failures(sub_floor_states)} — below the acceptance "
+            f"floor χ² ≥ {chi2_min:.2f} while the aggregate is χ² = {chi2:.4g}. "
+            f"That data's residuals are far smaller than its quoted uncertainties, "
+            f"so it is contributing essentially no constraint and the rest of the "
+            f"co-refinement is carrying the fit. Check its dR column."
         )
 
     # ========== Boundary-Hit Issues ==========

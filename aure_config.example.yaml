@@ -120,8 +120,9 @@ states:
 # (back to refinement), when that check could not verify the profile — none was
 # exported, the detector declined it, or one state of a co-refinement reported no
 # profile (every state is checked against its own media; partial coverage leaves
-# the whole fit unverified) — or when a per-file/per-state χ² is over the threshold on
-# its own. In each of those the LLM's verdict decides, as before. `aure evaluate`
+# the whole fit unverified) — or when a per-file/per-state χ² fails on its own,
+# either over the threshold or under the floor. In each of those the LLM's verdict
+# decides, as before. `aure evaluate`
 # applies no stop at all: its `acceptable` is advice, not the stop decision.
 # The value is pinned into every checkpoint the run writes, so `aure resume` keeps
 # it and ignores the CHI2_MAX of the resuming shell.

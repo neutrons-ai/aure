@@ -294,9 +294,10 @@ can produce; back to refinement however low χ² is); when the profile could not
 directory, so an ad-hoc `run_analysis(...)` or an MCP run has nothing to check) or
 the detector declined the one it has (too few points, mismatched `z`/`rho`, a
 non-finite sample, every medium at the same SLD); when a per-file / per-state χ²
-is over the ceiling or carries the `+inf` "fit failed" sentinel (the reported χ² is
-averaged over every model in the problem, so one unfitted contrast can hide under
-a passing aggregate); and when χ² is below `chi2_min`.
+is over the ceiling, carries the `+inf` "fit failed" sentinel, or is *under* the
+floor (the reported χ² is averaged over every model in the problem, so one unfitted
+contrast — or one contributing no constraint because its `dR` is overestimated —
+can hide under a passing aggregate); and when χ² is below `chi2_min`.
 
 One limitation, stated plainly:
 
