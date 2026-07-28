@@ -754,6 +754,30 @@ def analyze(
         _print_analysis_results(result, output_dir)
 
 
+def _run_pinned_state(refl1d_path: Path) -> tuple:
+    """``(state, source)`` for the run that produced a refl1d export directory.
+
+    The export lives at ``<run>/refl1d_output/fit_iterN_method``, so the run's
+    ``final_state.json`` is two levels up. It carries the ``chi2_max`` / ``chi2_min``
+    the run was launched with, which is what its fits should be judged against.
+
+    Best-effort by design: a directory inspected out of context, a truncated file, or
+    one predating the pinned window all fall back to the ambient environment rather
+    than failing the command.
+    """
+    candidate = refl1d_path.parent.parent / "final_state.json"
+    try:
+        if not candidate.is_file():
+            return None, None
+        payload = json.loads(candidate.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None, None
+    state = payload.get("state", payload)
+    if not isinstance(state, dict) or state.get("chi2_max") is None:
+        return None, None
+    return state, str(candidate)
+
+
 def _selected_fit(result: dict) -> tuple:
     """``(fit_results, final_selection, selected_fit)`` for a finished run.
 
@@ -2400,6 +2424,12 @@ def evaluate(
     (χ², parameters, theory curves, SLD profile, residuals), and asks the
     LLM to assess the fit quality — without re-running the full workflow.
 
+    The reported `acceptable` is ADVISORY: this command runs neither the
+    SLD-profile check nor the deterministic χ² stop, so its verdict can differ
+    from what `aure analyze` decided for the same fit. Judged against the
+    `chi2_max` the run was launched with when its `final_state.json` can be
+    found, otherwise against the ambient `CHI2_MAX`.
+
     Use --context / -c to provide a natural-language description of the
     sample so the LLM can judge physical plausibility.
 
@@ -2517,7 +2547,14 @@ def evaluate(
         _get_chi2_max,
     )
 
-    chi2_max = _get_chi2_max()
+    # Judge against the threshold the evaluated run was launched with, not whatever
+    # CHI2_MAX this shell happens to carry — otherwise the verdict is measured
+    # against a bar the run never used.
+    run_state, state_source = _run_pinned_state(refl1d_path)
+    chi2_max = _get_chi2_max(run_state)
+    if not output_json:
+        origin = f"pinned by the run ({state_source})" if run_state else "ambient"
+        click.echo(f"  Acceptance threshold: χ² ≤ {chi2_max:g}  [{origin}]")
     boundary_hits = _check_boundary_hits(fit_result)
 
     try:
@@ -2549,6 +2586,13 @@ def evaluate(
             "parameters": fit_result.get("parameters", {}),
             "uncertainties": fit_result.get("uncertainties"),
             "acceptable": analysis.get("acceptable", False),
+            # `acceptable` is the evaluator's opinion on this one exported fit. No
+            # SLD-profile check and no deterministic χ² stop run here, so it can
+            # disagree with what `aure analyze` decided; gate on the run's own
+            # final_state.json / --json `selection` block instead.
+            "acceptable_is_advisory": True,
+            "chi2_max": chi2_max,
+            "chi2_max_source": state_source or "environment",
             "quality_assessment": analysis.get("quality_assessment", "unknown"),
             "issues": analysis.get("issues", []),
             "suggestions": analysis.get("suggestions", []),
@@ -2612,6 +2656,18 @@ def evaluate(
             else click.style("  ✗ Fit NOT acceptable", fg="red", bold=True)
         )
         click.echo(verdict)
+        # This command inspects one exported fit; it does not run the SLD-profile
+        # check or the deterministic χ² stop, so its verdict is the evaluator's
+        # opinion and can differ from what `aure analyze` would have decided on the
+        # same fit. Applying the clamp here would force acceptance on χ² alone with
+        # no profile check, which is the failure mode the clamp's guards exist for.
+        click.echo(
+            click.style(
+                "  (advisory — the evaluator's judgement, not `aure analyze`'s "
+                "acceptance decision: no SLD-profile check, no χ² stop)",
+                fg="bright_black",
+            )
+        )
         click.echo()
 
 

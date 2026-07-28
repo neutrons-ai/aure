@@ -37,18 +37,6 @@ the shipped subset added.
 
 ## Acceptance thresholds
 
-### 8. `aure evaluate` judges against the ambient threshold and applies no clamp
-
-**Predates this change.** [`src/aure/cli.py:2434`](src/aure/cli.py) calls
-`_get_chi2_max()` with no state — it works off a refl1d directory's
-`problem.json` and never reads the run's `final_state.json`, so it uses the
-ambient `CHI2_MAX` rather than the `chi2_max` the evaluated run pinned. It also
-applies neither the acceptance clamp nor the SLD-profile check
-(`grep -n '_clamp_acceptance_to_chi2\|_detect_profile_artifacts_into'
-src/aure/cli.py` is empty), yet prints an `acceptable` field with no note that
-it is advisory. `aure analyze` can complete on a fit `aure evaluate` calls
-unacceptable, and the reverse.
-
 ### 9. The regression baseline is floor-blind
 
 **Predates this change; the floor made it visible.** `fitting`

@@ -633,3 +633,37 @@ def test_batch_flags_a_vetoed_model(tmp_path, data_file, monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert "NOT PHYSICALLY VALID" in result.output
+
+
+@pytest.mark.parametrize(
+    "payload,expect_pinned",
+    [
+        (None, False),  # no final_state.json — a directory inspected out of context
+        ("{not json", False),  # truncated / malformed
+        ({"state": {}}, False),  # a run predating the pinned window
+        ({"state": {"chi2_max": 1.2}}, True),  # the normal checkpoint shape
+        ({"chi2_max": 1.2}, True),  # bare state, no wrapper
+    ],
+    ids=["absent", "malformed", "no_chi2_max", "wrapped", "bare"],
+)
+def test_evaluate_recovers_the_runs_pinned_threshold(tmp_path, payload, expect_pinned):
+    """`aure evaluate` judged against the ambient CHI2_MAX, so a run launched with
+    `chi2_max: 1.2` was assessed against whatever the shell carried. Every degraded
+    case must fall back rather than fail the command."""
+    import json as _json
+
+    from aure.cli import _run_pinned_state
+
+    export = tmp_path / "refl1d_output" / "fit_iter0_amoeba"
+    export.mkdir(parents=True)
+    if payload is not None:
+        text = payload if isinstance(payload, str) else _json.dumps(payload)
+        (tmp_path / "final_state.json").write_text(text)
+
+    state, source = _run_pinned_state(export)
+
+    if expect_pinned:
+        assert state["chi2_max"] == 1.2
+        assert source.endswith("final_state.json")
+    else:
+        assert state is None and source is None

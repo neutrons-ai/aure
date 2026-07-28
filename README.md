@@ -727,12 +727,17 @@ aure evaluate REFL1D_DIR [OPTIONS]
 If `REFL1D_DIR` is the parent `refl1d_output/` directory, the latest
 `fit_iter*` subdirectory is selected automatically.
 
-Its `acceptable` field reports the evaluator LLM's raw judgement: this command
-applies neither the deterministic χ² stop nor the SLD-profile veto, and it judges
-against the *ambient* `CHI2_MAX` / `CHI2_MIN` rather than the window the evaluated
-run pinned. So `aure analyze` can complete on a fit `aure evaluate` calls
-unacceptable, and vice versa — re-export the run's window before calling it if you
-want them to agree ([issues.md](issues.md) #8).
+It judges against the `chi2_max` the evaluated run was launched with, recovered
+from that run's `final_state.json`; a directory inspected out of context falls back
+to the ambient `CHI2_MAX`, and the output states which was used.
+
+Its `acceptable` field is **advisory** and says so: the command applies neither the
+deterministic χ² stop nor the SLD-profile veto, so it can disagree with what
+`aure analyze` decided for the same fit. Applying the stop here would force
+acceptance on χ² alone with no profile check — the exact case the stop's guards
+exist for — so it stays an inspection tool. To gate on a run's actual outcome, read
+its `final_state.json` or `aure analyze --json`'s `selection` block. `--json`
+carries `acceptable_is_advisory`, `chi2_max` and `chi2_max_source`.
 
 **Examples:**
 
