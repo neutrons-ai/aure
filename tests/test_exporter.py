@@ -162,15 +162,23 @@ class TestIsaacExporter:
         """
         from aure.exporters.isaac import IsaacExporter
 
-        with mock.patch(
-            "aure.exporters.isaac._generate_context_description",
-            return_value="Test context.",
-        ), mock.patch.object(
-            IsaacExporter, "_run_ingest_workflow", autospec=True, return_value=ingest_ok
-        ) as ingest, mock.patch.object(
-            IsaacExporter, "_run_convert_ingest", autospec=True, return_value=True
-        ) as convert, mock.patch.object(
-            IsaacExporter, "_run_validate", autospec=True, return_value=True
+        with (
+            mock.patch(
+                "aure.exporters.isaac._generate_context_description",
+                return_value="Test context.",
+            ),
+            mock.patch.object(
+                IsaacExporter,
+                "_run_ingest_workflow",
+                autospec=True,
+                return_value=ingest_ok,
+            ) as ingest,
+            mock.patch.object(
+                IsaacExporter, "_run_convert_ingest", autospec=True, return_value=True
+            ) as convert,
+            mock.patch.object(
+                IsaacExporter, "_run_validate", autospec=True, return_value=True
+            ),
         ):
             result = exporter.export(self.output_dir, self.state, self.run_info)
         return result, ingest, convert
@@ -242,10 +250,53 @@ class TestIsaacExporter:
         result, _, _ = self._export_with_mocks(exporter)
         assert result.output_path == self.output_dir / "ai-ready-data"
 
+    # ---------------------------------------------------------------
+    # LLM context generation
+    # ---------------------------------------------------------------
 
-# ---------------------------------------------------------------
-# LLM context generation
-# ---------------------------------------------------------------
+    def test_a_vetoed_profile_is_disclosed_in_the_record(self):
+        """An exported record outlives the terminal any banner was printed in, and
+        is the artifact that gets shared onward — so a rejected profile has to
+        travel with it. Independent of the LLM: the no-provider path returns
+        `sample_description` verbatim and would otherwise disclose nothing."""
+        from aure.exporters.isaac import IsaacExporter
+
+        self.state["fit_results"] = [
+            {
+                "chi_squared": 1.2,
+                "parameters": {"Cu thickness": 495.0},
+                "profile_artifact": True,
+                "issues": [],
+            }
+        ]
+        self.state["final_selection"] = {
+            "selected": True,
+            "index": 0,
+            "selected_has_profile_artifact": True,
+            "profile_veto_reason": "min SLD -0.88 at z=890 Å",
+        }
+
+        exporter = IsaacExporter()
+        result, _, convert = self._export_with_mocks(exporter)
+
+        context = (self.output_dir / "ai-ready-data" / "context.txt").read_text()
+        assert context.startswith("WARNING: the fitted model reported here failed")
+        assert "min SLD -0.88 at z=890 Å" in context
+        assert "Test context." in context  # the summary itself is preserved
+        # Also reaches the caller, and the ISAAC record's own --context.
+        assert any("SLD-profile check" in w for w in result.warnings)
+        assert "SLD-profile check" in convert.call_args[0][3]
+
+    def test_a_clean_run_is_not_decorated(self):
+        from aure.exporters.isaac import IsaacExporter
+
+        exporter = IsaacExporter()
+        result, _, _ = self._export_with_mocks(exporter)
+
+        assert (
+            self.output_dir / "ai-ready-data" / "context.txt"
+        ).read_text() == "Test context."
+        assert result.warnings == []
 
 
 class TestContextGeneration:
@@ -292,3 +343,22 @@ class TestContextGeneration:
 
         assert "Cu" in result
         assert "Si" in result
+
+    def test_context_parameters_come_from_the_selected_fit(self):
+        """χ² is taken from the finalize-selected fit, so the parameters must be
+        too — reading `fit_results[-1]` paired the selected χ² with another
+        iteration's values whenever finalize did not pick the last one."""
+        from aure.exporters.isaac import _selected_fit
+
+        state = {
+            "final_selection": {"selected": True, "index": 0},
+            "fit_results": [
+                {"chi_squared": 1.2, "parameters": {"Cu thickness": 495.0}},
+                {"chi_squared": 4.7, "parameters": {"Cu thickness": 120.0}},
+            ],
+        }
+        assert _selected_fit(state)["parameters"] == {"Cu thickness": 495.0}
+
+        # No selection record (legacy / imported): fall back to the last fit.
+        state["final_selection"] = {}
+        assert _selected_fit(state)["parameters"] == {"Cu thickness": 120.0}

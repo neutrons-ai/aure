@@ -59,6 +59,57 @@ Parameters:
 """
 
 
+def _selected_fit(state: dict) -> Optional[dict]:
+    """The fit ``finalize`` chose as the run's answer, not the last one fitted.
+
+    Resolved the way the CLI report resolves it: ``final_selection["index"]``,
+    falling back to the last fit for a legacy or imported state that has no
+    selection record.
+    """
+    fit_results = state.get("fit_results") or []
+    if not fit_results:
+        return None
+    selection = state.get("final_selection") or {}
+    index = selection.get("index") if selection.get("selected") else None
+    if isinstance(index, int) and 0 <= index < len(fit_results):
+        return fit_results[index]
+    return fit_results[-1]
+
+
+def _profile_veto_statement(state: dict) -> Optional[str]:
+    """One sentence naming the rejected profile, or None when the fit passed.
+
+    An exported record outlives the terminal any banner was printed in and is the
+    artifact that gets shared onward, so a rejected profile has to travel with it.
+    Deliberately independent of whether an LLM is configured: the no-provider path
+    returns ``sample_description`` verbatim and would otherwise disclose nothing.
+    """
+    from ..nodes.finalize import has_profile_artifact
+
+    selection = state.get("final_selection") or {}
+    fit = _selected_fit(state)
+    if not (
+        selection.get("selected_has_profile_artifact") or has_profile_artifact(fit)
+    ):
+        return None
+
+    reason = selection.get("profile_veto_reason")
+    if not reason:
+        from ..nodes.finalize import _ARTIFACT_MARKER
+
+        for issue in (fit or {}).get("issues") or []:
+            if _ARTIFACT_MARKER in str(issue).lower():
+                reason = str(issue)
+                break
+    return (
+        "WARNING: the fitted model reported here failed AuRE's SLD-profile check — "
+        "its profile leaves the range its bounding media can produce, a defect the "
+        "reflectivity χ² does not see. Do not treat the slabs as distinct physical "
+        "layers without re-examining the interface roughness."
+        + (f" Detector note: {reason}" if reason else "")
+    )
+
+
 def _generate_context_description(state: dict) -> str:
     """Use the LLM to generate a context paragraph from the workflow state.
 
@@ -68,16 +119,16 @@ def _generate_context_description(state: dict) -> str:
     hypothesis = state.get("hypothesis") or "None provided"
     fallback = sample_description
 
-    # Collect final fit info
-    fit_results = state.get("fit_results") or []
+    # Collect final fit info. χ² comes from the finalize-selected fit, so the
+    # parameters have to come from that same fit — reading fit_results[-1] paired
+    # the selected χ² with a different iteration's values whenever finalize did not
+    # pick the last one.
     chi2 = state.get("current_chi2") or state.get("best_chi2") or "N/A"
+    selected = _selected_fit(state)
     param_summary = "N/A"
-    if fit_results:
-        latest = fit_results[-1]
-        params = latest.get("parameters", {})
-        if params:
-            lines = [f"  {k}: {v}" for k, v in list(params.items())[:15]]
-            param_summary = "\n".join(lines)
+    params = (selected or {}).get("parameters") or {}
+    if params:
+        param_summary = "\n".join(f"  {k}: {v}" for k, v in list(params.items())[:15])
 
     # Summarise messages (keep it short — last 10 non-system messages)
     messages = state.get("messages") or []
@@ -152,7 +203,9 @@ class IsaacExporter(BaseExporter):
         run_info_path = run_dir / "run_info.json"
         if not run_info_path.is_file() and run_info:
             try:
-                run_info_path.write_text(json.dumps(run_info, default=str), encoding="utf-8")
+                run_info_path.write_text(
+                    json.dumps(run_info, default=str), encoding="utf-8"
+                )
             except OSError as exc:
                 warnings.append(f"Could not write run_info.json: {exc}")
 
@@ -163,8 +216,16 @@ class IsaacExporter(BaseExporter):
         context_description = _generate_context_description(state)
         if user_context:
             context_description = user_context + "\n\n" + context_description
+        # Leads the notes rather than trailing them: this record is consumed
+        # downstream by readers who may never see anything else about the run.
+        veto = _profile_veto_statement(state)
+        if veto:
+            context_description = veto + "\n\n" + context_description
+            warnings.append(veto)
         (ai_dir / "context.txt").write_text(context_description, encoding="utf-8")
-        logger.info("[ISAAC-EXPORT] Wrote context description → %s", ai_dir / "context.txt")
+        logger.info(
+            "[ISAAC-EXPORT] Wrote context description → %s", ai_dir / "context.txt"
+        )
 
         # ------------------------------------------------------------------
         # Step C – data-assembler pulls everything from the run dir → records.
@@ -180,7 +241,9 @@ class IsaacExporter(BaseExporter):
         # context summary as the measurement notes.
         # ------------------------------------------------------------------
         out_dir = ai_dir / "output"
-        convert_ok = self._run_convert_ingest(ai_dir, out_dir, context_description, warnings)
+        convert_ok = self._run_convert_ingest(
+            ai_dir, out_dir, context_description, warnings
+        )
 
         # ------------------------------------------------------------------
         # Step E – validate the produced record(s).
@@ -199,7 +262,9 @@ class IsaacExporter(BaseExporter):
     # CLI wrappers
     # ------------------------------------------------------------------
 
-    def _run_ingest_workflow(self, run_dir: Path, ai_dir: Path, warnings: list[str]) -> bool:
+    def _run_ingest_workflow(
+        self, run_dir: Path, ai_dir: Path, warnings: list[str]
+    ) -> bool:
         """Run ``data-assembler ingest-workflow <run_dir> -o <ai_dir> --json``."""
         cmd = self._find_assembler_command()
         if cmd is None:
@@ -221,7 +286,9 @@ class IsaacExporter(BaseExporter):
                 warnings.append(f"data-assembler ingest-workflow failed: {msg}")
                 logger.warning("[ISAAC-EXPORT] ingest-workflow failed: %s", msg)
                 return False
-            logger.info("[ISAAC-EXPORT] ingest-workflow succeeded:\n%s", result.stdout.strip())
+            logger.info(
+                "[ISAAC-EXPORT] ingest-workflow succeeded:\n%s", result.stdout.strip()
+            )
             return True
         except subprocess.TimeoutExpired:
             warnings.append("data-assembler ingest-workflow timed out after 180 s")
@@ -252,7 +319,9 @@ class IsaacExporter(BaseExporter):
                 warnings.append(f"nr-isaac-format convert-ingest failed: {msg}")
                 logger.warning("[ISAAC-EXPORT] convert-ingest failed: %s", msg)
                 return False
-            logger.info("[ISAAC-EXPORT] convert-ingest succeeded:\n%s", result.stdout.strip())
+            logger.info(
+                "[ISAAC-EXPORT] convert-ingest succeeded:\n%s", result.stdout.strip()
+            )
             return True
         except subprocess.TimeoutExpired:
             warnings.append("nr-isaac-format convert-ingest timed out after 120 s")
@@ -310,7 +379,11 @@ class IsaacExporter(BaseExporter):
         try:
             from nr_isaac_format import cli as _cli  # noqa: F401
 
-            return [sys.executable, "-c", "from nr_isaac_format.cli import main; main()"]
+            return [
+                sys.executable,
+                "-c",
+                "from nr_isaac_format.cli import main; main()",
+            ]
         except ImportError:
             return None
 

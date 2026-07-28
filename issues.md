@@ -40,16 +40,6 @@ the shipped subset added.
 `evaluation` refuses to accept a fit whose SLD profile leaves the range its
 bounding media can produce. Nothing past that node knows the veto happened.
 
-### 2. The ISAAC export discloses nothing about a rejected profile
-
-**Predates this change.** `exporters/isaac._generate_context_description`
-([`src/aure/exporters/isaac.py:62`](src/aure/exporters/isaac.py)) returns
-`state["sample_description"]` verbatim when no LLM is configured, and the
-exporter's `warnings` list only ever collects operational failures (ingest
-timeouts, converter errors). An exported ISAAC record therefore carries no hint
-that the model's profile was rejected — and it outlives the terminal any banner
-was printed in.
-
 ### 3. The web Results tab and History chart never mention the veto
 
 **Predates this change.** `grep -rn 'veto\|artifact\|demot\|profile_checked'
