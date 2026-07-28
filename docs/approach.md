@@ -272,7 +272,7 @@ numbering is topical, not chronological — `evaluation_node` runs 1 → 2 → 4
    legitimate under the parametrization reading (§6.8).
    On a co-refinement only `states[0]`'s profile is available to this check — the
    per-state `profile.dat` files are written but never read back
-   ([issues.md](../issues.md) #5) — so a *veto* can still fire but a clean bill of
+   ([issues.md](../issues.md) #4) — so a *veto* can still fire but a clean bill of
    health cannot be given, which is what makes step 6's stop inert there.
 4. **Call the LLM for a judgement.** The LLM sees the fit result, the
    features, the residual analysis, the **χ² and BIC trajectory across
@@ -307,7 +307,7 @@ numbering is topical, not chronological — `evaluation_node` runs 1 → 2 → 4
    interactive run also still gets its review pause on a *clamped* accept (keyed
    off `state["chi2_clamp_accepted"]`) — the one verdict where code overrode an
    objecting evaluator is the one a human should see; feedback typed there is not
-   yet acted on ([issues.md](../issues.md) #14).
+   yet acted on ([issues.md](../issues.md) #13).
 
    The clamp is **one-directional — a floor on stopping, not a ceiling.** It only
    raises a verdict (`False → True`); it never lowers one. *Above* `chi2_max` the
@@ -330,7 +330,7 @@ numbering is topical, not chronological — `evaluation_node` runs 1 → 2 → 4
      mismatched `z`/`rho` lengths, a non-finite sample, or a zero SLD span across
      the media), **or the fit is multi-state** — only `states[0]`'s profile is
      read back, so a co-refinement is never verified and **the χ² stop is inert
-     there** ([issues.md](../issues.md) #5). "Not checked" is treated as unsafe,
+     there** ([issues.md](../issues.md) #4). "Not checked" is treated as unsafe,
      not as clean, so the LLM's verdict decides, exactly as it did before the
      threshold became binding;
    - a **per-file / per-state χ²** is above the threshold, or carries the `+inf`
@@ -689,7 +689,7 @@ The table below summarises who decides what.
 | Auto-expand stuck bounds | Code | `_expand_model_bounds` in `evaluation.py` |
 | Detect non-physical SLD-profile excursions | Code | `detect_profile_artifacts` in `feature_tools.py` |
 | **Stop when χ² meets the threshold** (LLM's `acceptable` is advisory *at or below* it only) | Code | `_clamp_acceptance_to_chi2` — runs *after* the profile veto, which outranks it; raises verdicts only, never lowers them |
-| **Choose the model the run reports** | Code | `finalize._select` — lowest χ², parsimony tie-break inside the χ² band; χ²-only, see [issues.md](../issues.md) #1 |
+| **Choose the model the run reports** | Code | `finalize._select` — profile-vetoed fits set aside, then lowest χ² with a parsimony tie-break inside the χ² band; still floor-blind, see [issues.md](../issues.md) #11 |
 | Report the untried hypotheses at the end | Code | `finalize._format_remaining_improvements` (statuses reported, never re-derived) |
 | Escape thin-layer local minima before fitting | Code | mode enumeration in `fitting.py` (gated by `MODE_ENUMERATION`) |
 | Revert on χ² regression | Code | χ² regression guardrail |
@@ -784,7 +784,7 @@ each fit iteration also produces a per-state `profile.dat` under
 aggregated `FitResult` carries one `PerFileFitResult` entry per dataset
 tagged with its `state` name. Those per-state profile files are never read
 back, though — only the single top-level one, which belongs to `states[0]`
-([issues.md](../issues.md) #5). See the `multi-state-corefinement` skill
+([issues.md](../issues.md) #4). See the `multi-state-corefinement` skill
 for the experimental patterns this addresses and for guidance on choosing
 `shared_parameters` vs `unshared_parameters`.
 

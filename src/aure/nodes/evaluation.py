@@ -587,6 +587,12 @@ def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
 
     latest_fit["issues"] = analysis["issues"]
     latest_fit["suggestions"] = analysis["suggestions"]
+    # Persist the verdict the clamp just read, so finalize and the report can tell
+    # "checked and clean" from "never checked" instead of matching issue prose.
+    # Written as a pair on every judged fit: the pair's presence is what marks the
+    # fit as judged at all.
+    latest_fit["profile_checked"] = bool(analysis.get("_profile_checked"))
+    latest_fit["profile_artifact"] = bool(analysis.get("_profile_artifact"))
     latest_fit["next_action"] = analysis.get("next_action", "parameter_tweak")
     latest_fit["proposed_hypothesis_id"] = analysis.get("proposed_hypothesis_id")
 
@@ -1400,7 +1406,9 @@ def _ordered_slds_for_artifacts(model: dict, parameters: dict) -> list:
     return seq
 
 
-def _detect_profile_artifacts_into(analysis: dict, fit_result: FitResult, model) -> None:
+def _detect_profile_artifacts_into(
+    analysis: dict, fit_result: FitResult, model
+) -> None:
     """Run the SLD-profile artifact detector and fold results into ``analysis``.
 
     A genuine non-physical excursion becomes an ``issue`` (so the workflow loops

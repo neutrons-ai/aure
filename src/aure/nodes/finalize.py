@@ -21,8 +21,13 @@ makes the choice explicit:
 
 Selection rule (deterministic — no LLM):
 
-1. Lowest χ² wins.
-2. **Parsimony tie-break.** Among iterations whose χ² is within
+1. **Profile-vetoed fits are set aside.** The SLD-profile check's excursion is
+   invisible to χ² and *buys* χ², so a vetoed fit is routinely the run's
+   lowest-scoring one; ranking on χ² alone reported exactly the model
+   ``evaluation`` had refused to accept. A vetoed fit is reported only when it is
+   the whole field, and then the message says so.
+2. Lowest χ² wins.
+3. **Parsimony tie-break.** Among iterations whose χ² is within
    ``FINAL_SELECTION_TOL`` (default 2%) of the lowest, prefer the one with the
    fewest free parameters, then the earliest iteration. This is the BIC idea —
    don't pay for complexity that buys nothing — without depending on the stored
@@ -60,6 +65,28 @@ from ..state import Message, ReflectivityState
 from .evaluation import _count_free_params
 
 logger = logging.getLogger(__name__)
+
+# Legacy fallback only. Fits judged before the verdict was persisted onto the
+# FitResult carry the veto as prose and nothing else, so a checkpoint written by
+# an older run can still be ranked correctly. The structured flag wins whenever
+# it is present, in both directions — an evaluator that merely quotes this phrase
+# back on a fit the detector cleared must not be treated as vetoed.
+_ARTIFACT_MARKER = "non-physical sld-profile excursion"
+
+
+def has_profile_artifact(fit: Any) -> bool:
+    """True when the SLD-profile check vetoed this fit.
+
+    The excursion is invisible to χ² — worse, it *buys* χ² — so a vetoed fit is
+    routinely the run's lowest-scoring one and must not win on that alone.
+    """
+    if not isinstance(fit, dict):
+        return False
+    flag = fit.get("profile_artifact")
+    if isinstance(flag, bool):
+        return flag
+    return any(_ARTIFACT_MARKER in str(i).lower() for i in fit.get("issues") or [])
+
 
 # refl1d names a slab's fitted parameters "<material> <suffix>"; the matching
 # ModelDefinition keys are spelled differently. ``rough_frac`` is the tied
@@ -374,8 +401,20 @@ def _select(
     exactly the model that will be promoted.
     """
     tol = _get_selection_tolerance()
-    best_chi2 = min(fr["chi_squared"] for _, fr in scored)
-    band = [(i, fr) for i, fr in scored if fr["chi_squared"] <= best_chi2 * (1.0 + tol)]
+
+    # Rank among fits the profile check did not veto. A vetoed fit is reported
+    # only when it is the whole field — refusing to report anything is worse than
+    # reporting a flawed model that says so.
+    clean = [(i, fr) for i, fr in scored if not has_profile_artifact(fr)]
+    pool = clean or scored
+    vetoed = [
+        {"index": i, "iteration": fr.get("iteration"), "chi_squared": fr["chi_squared"]}
+        for i, fr in scored
+        if has_profile_artifact(fr)
+    ]
+
+    best_chi2 = min(fr["chi_squared"] for _, fr in pool)
+    band = [(i, fr) for i, fr in pool if fr["chi_squared"] <= best_chi2 * (1.0 + tol)]
 
     resolved = [
         (
@@ -393,17 +432,26 @@ def _select(
     )
     index, fit, definition = ranked[0]
 
+    # "Demoted" means the veto changed the answer, not merely that it fired: a
+    # vetoed fit that would have lost on χ² anyway is not worth reporting as one.
+    lowest_overall = min(fr["chi_squared"] for _, fr in scored)
+    demoted = bool(vetoed) and best_chi2 > lowest_overall
+
     return (
         index,
         fit,
         definition,
         {
-            "criterion": "lowest chi2, parsimony tie-break",
+            "criterion": "lowest chi2 among profile-clean fits, parsimony tie-break",
             "tolerance": tol,
             "parsimony_tiebreak": fit["chi_squared"] > best_chi2,
             "lowest_chi2": best_chi2,
             "candidates_considered": len(scored),
             "candidates_in_band": len(band),
+            "candidates_profile_clean": len(clean),
+            "vetoed_iterations": vetoed,
+            "demoted_for_profile_artifact": demoted,
+            "selected_has_profile_artifact": has_profile_artifact(fit),
         },
     )
 
@@ -542,10 +590,29 @@ def _format_selection(sel: dict) -> str:
     if not sel.get("selected"):
         return f"**Final model:** not selected — {sel.get('reason', 'unknown')}."
 
-    lines = [
+    lines = []
+    if sel.get("selected_has_profile_artifact"):
+        lines.append(
+            "**The reported model is not physically valid.** Every iteration of "
+            "this run was vetoed by the SLD-profile check, so there was no "
+            "artifact-free alternative to report. Do not report these slabs as "
+            "distinct layers — constrain the offending interface roughness and "
+            "re-run, or treat the stack as a profile parametrization."
+        )
+    lines.append(
         f"**Final model:** iteration {sel['iteration']} "
         f"(χ² = {sel['chi_squared']:.4f}, {sel['n_free_params']} free parameters)."
-    ]
+    )
+    if sel.get("demoted_for_profile_artifact"):
+        vetoed = ", ".join(
+            f"iteration {v.get('iteration')} (χ² = {_fmt_chi2(v.get('chi_squared'))})"
+            for v in sel.get("vetoed_iterations") or []
+        )
+        lines.append(
+            f"**Demoted by the SLD-profile check:** {vetoed} fitted better but was "
+            f"not reported — the profile check vetoed it as non-physical, a defect "
+            f"χ² cannot see."
+        )
     if sel.get("superseded_last_iteration"):
         lines.append(
             f"This supersedes the last iteration fitted "

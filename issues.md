@@ -40,50 +40,7 @@ the shipped subset added.
 `evaluation` refuses to accept a fit whose SLD profile leaves the range its
 bounding media can produce. Nothing past that node knows the veto happened.
 
-### 1. `finalize` can report a model the SLD-profile check rejected
-
-**Predates this change. This is the headline one.**
-
-`finalize._select` ([`src/aure/nodes/finalize.py:367`](src/aure/nodes/finalize.py))
-ranks candidate fits on lowest χ² — with a parsimony tie-break inside
-`FINAL_SELECTION_TOL` — and knows nothing about the profile veto.
-
-Reproduced end to end: iteration 1 (SEI/Plated/Cu/Ti/SiOx on Si) fits to
-χ² = 0.62, but its erf tail dips to SLD −0.88 at z = 890 Å — outside the range
-its bounding media can produce — so `evaluation` vetoes acceptance and the loop
-refines; iteration 2 (Cu on Si) reaches χ² = 1.20, is clean, and is accepted.
-`finalize` then selects **iteration 1** and reports the vetoed five-layer stack.
-Re-verified against the current tree by calling `finalize_node` on exactly that
-two-iteration state: it returns `index 0`, `chi_squared 0.62`, promotes the
-five-layer definition into `current_model`, and `final_selection` carries no
-veto/demotion field at all. (The z/SLD numbers come from the original
-end-to-end reproduction and were not re-run; the selection behaviour they
-trigger is verified here.)
-
-Not an edge case. The veto exists precisely because the erf-tail excursion
-**buys** χ², so the vetoed iteration is routinely the run's lowest-χ² one — and
-the new deterministic stop makes it more likely to be where the run ends.
-
-**And the warning never reaches the reader.** `cli._print_analysis_results`'s
-Issues/Suggestions block reads `result.get("evaluation")`
-([`src/aure/cli.py:922`](src/aure/cli.py)), a state key no workflow node ever
-writes (`grep -rn '"evaluation"' src/aure/` finds only `mcp_server.py`'s own
-payload and the runner's node tables). The evaluator's `issues` live on the
-judged `FitResult`. So on an `aure analyze` run that whole block is dead code
-and the excursion text — like the new sub-floor-χ² note — is never printed. The
-vetoed model is presented with no caveat whatsoever.
-
-Root of this and of #2–#4: the verdict is never recorded structurally. Inside
-the node the two facts exist as the private `analysis["_profile_checked"]` /
-`["_profile_artifact"]` markers the χ² clamp reads, but they are not persisted
-onto the `FitResult`, so "checked and clean" is indistinguishable from "never
-checked" and downstream can only pattern-match issue prose.
-
-*Fix in the preserved patch:* exclude vetoed fits from the candidate pool unless
-nothing else qualifies, record the demotion in `final_selection`, surface it in
-the report.
-
-### 2. `final_fit` polishes and adopts a profile-vetoed model
+### 1. `final_fit` polishes and adopts a profile-vetoed model
 
 **Predates this change.** The gate at
 [`src/aure/nodes/final_fit.py:161`](src/aure/nodes/final_fit.py) is χ²-only
@@ -92,7 +49,7 @@ a *low* χ² — sails straight through, and the node spends a full MCMC budget
 characterizing it, adopts the result, and repoints `problem.json` at that
 export. The most expensive step of the run is the one least guarded.
 
-### 3. The ISAAC export discloses nothing about a rejected profile
+### 2. The ISAAC export discloses nothing about a rejected profile
 
 **Predates this change.** `exporters/isaac._generate_context_description`
 ([`src/aure/exporters/isaac.py:62`](src/aure/exporters/isaac.py)) returns
@@ -102,7 +59,7 @@ timeouts, converter errors). An exported ISAAC record therefore carries no hint
 that the model's profile was rejected — and it outlives the terminal any banner
 was printed in.
 
-### 4. The web Results tab and History chart never mention the veto
+### 3. The web Results tab and History chart never mention the veto
 
 **Predates this change.** `grep -rn 'veto\|artifact\|demot\|profile_checked'
 src/aure/web/` is empty. The History tab's χ² progression can plot a vetoed
@@ -113,7 +70,7 @@ model like any other.
 
 ## The profile the detector actually reads
 
-### 5. Per-state SLD profiles are written but never read back
+### 4. Per-state SLD profiles are written but never read back
 
 **Predates this change.** `fitting._write_state_profile`
 ([`src/aure/nodes/fitting.py:1042`](src/aure/nodes/fitting.py), called at 1011)
@@ -130,7 +87,7 @@ evaluator's verdict. That is the safe direction (`states[0]`'s profile is still
 checked, so a *veto* still fires) but it means `chi2_max` does nothing on a
 `states:` run. Wiring the per-state files into the detector is the fix.
 
-### 6. `_find_profile_dat` can be shadowed by a stale export
+### 5. `_find_profile_dat` can be shadowed by a stale export
 
 **Predates this change.** `fitting._find_profile_dat`
 ([`src/aure/nodes/fitting.py:1109`](src/aure/nodes/fitting.py)) prefers the
@@ -144,7 +101,7 @@ Nothing checks mtime or the problem name.
 
 ## Which fit is "the answer"
 
-### 7. `aure analyze --json` and `aure batch` report `fit_results[-1]`
+### 6. `aure analyze --json` and `aure batch` report `fit_results[-1]`
 
 **Predates this change.** The human report resolves `final_selection["index"]`
 correctly ([`src/aure/cli.py:864`](src/aure/cli.py)), but three other surfaces
@@ -158,7 +115,7 @@ take the last fit *performed* instead:
 `fit_results[-1]` is routinely an iteration `finalize` rejected, so the JSON and
 the terminal can disagree about which model the run is reporting.
 
-### 8. The validation harness is veto-unaware and scores a different iteration
+### 7. The validation harness is veto-unaware and scores a different iteration
 
 **Predates this change.** `validation/batch_runner.py:69` reads
 `fit_results[-1]`; `validation/comparator.py:115` and
@@ -171,7 +128,7 @@ sub-floor fit that #10 let anchor the baseline.
 
 ## Acceptance thresholds
 
-### 9. `aure evaluate` judges against the ambient threshold and applies no clamp
+### 8. `aure evaluate` judges against the ambient threshold and applies no clamp
 
 **Predates this change.** [`src/aure/cli.py:2434`](src/aure/cli.py) calls
 `_get_chi2_max()` with no state — it works off a refl1d directory's
@@ -183,7 +140,7 @@ src/aure/cli.py` is empty), yet prints an `acceptable` field with no note that
 it is advisory. `aure analyze` can complete on a fit `aure evaluate` calls
 unacceptable, and the reverse.
 
-### 10. The regression baseline is floor-blind
+### 9. The regression baseline is floor-blind
 
 **Predates this change; the floor made it visible.** `fitting`
 ([`src/aure/nodes/fitting.py:123-127`](src/aure/nodes/fitting.py)) records
@@ -196,7 +153,7 @@ regression and gets reverted. The BIC branch is the harsher one: `BIC` is
 monotone in χ², it has no 5% slack, and it also marks the tried hypothesis
 `rejected`.
 
-### 11. Per-state χ² is checked against the ceiling but not the floor
+### 10. Per-state χ² is checked against the ceiling but not the floor
 
 **Introduced by this change** — the shipped clamp's own gap.
 `evaluation._per_file_over_threshold`
@@ -207,6 +164,19 @@ fit-failed sentinel), but there is no matching sub-floor test. Reproduced: with
 is force-accepted — a contrast with overestimated `dR` hiding under a passing
 total. Mostly latent today only because of #5: the clamp never fires on
 co-refinements at all.
+
+### 11. `finalize._select` does not consult the acceptance floor
+
+**Predates the floor; the mirror of the veto gap just fixed for #1's sibling.**
+`_select` ([`src/aure/nodes/finalize.py`](src/aure/nodes/finalize.py)) now sets
+profile-vetoed fits aside, but it still ranks purely on χ² otherwise — so a fit
+*below* `chi2_min`, which the clamp explicitly refused to accept as a pass, can
+still win outright and be reported. The floor exists because a reduced χ² far
+under 1 is evidence about the `dR` column rather than the structure, and an
+overfitted iteration is exactly the kind that scores lowest. Same shape as the
+veto: the stop condition gates acceptance but not the reported answer. The fix is
+the same too — set sub-floor fits aside unless they are the whole field, reading
+the floor from `state["chi2_min"]`.
 
 ---
 

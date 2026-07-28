@@ -74,18 +74,25 @@ block: a prepare run has no fit to finalize.
 refinement loop is a search, and the last iteration is not necessarily the best.
 Finalize makes the choice explicit and auditable:
 
-- **Selection rule:** lowest χ², with a **parsimony tie-break** — among fits
-  within `FINAL_SELECTION_TOL` (default 2%) of the lowest χ², prefer the fewest
-  free parameters, then the earliest iteration. (BIC's idea without depending on
-  the stored `bic`.)
+- **Selection rule:** profile-vetoed fits are set aside; then lowest χ², with a
+  **parsimony tie-break** — among fits within `FINAL_SELECTION_TOL` (default 2%)
+  of the lowest χ², prefer the fewest free parameters, then the earliest
+  iteration. (BIC's idea without depending on the stored `bic`.)
 
-  Selection is **χ²-only.** It does not consult the SLD-profile veto that
-  `evaluation` applies, so the reported model can be one `evaluation` refused to
-  accept — and because the excursion is often *what buys* the low χ², the vetoed
-  iteration is routinely the run's best-scoring one. Nor does it consult the
-  acceptance floor (§8), so a sub-floor χ² can win outright. Both are real,
-  reproduced defects, triaged in [issues.md](../issues.md) #1–#3; read those
-  before changing `_select` or adding a surface that renders a run's answer.
+  The veto exclusion exists because the excursion is often *what buys* the low
+  χ², so the vetoed iteration is routinely the run's best-scoring one — ranking
+  on χ² alone reported exactly the model `evaluation` had refused to accept. A
+  vetoed fit is reported only when it is the whole field, and then the selection
+  message says so. `final_selection` records `vetoed_iterations`,
+  `demoted_for_profile_artifact` (the veto *changed the answer*, not merely
+  fired) and `selected_has_profile_artifact`. The verdict is read from the
+  `profile_checked` / `profile_artifact` flags `evaluation` stamps on each judged
+  `FitResult`, falling back to matching the excursion prose for checkpoints
+  written before those were persisted.
+
+  Selection still does **not** consult the acceptance floor (§8), so a sub-floor
+  χ² can win outright — the same shape of gap, triaged as
+  [issues.md](../issues.md) #11. Read it before changing `_select`.
 - Resolves the *ModelDefinition* that produced the winning iteration via
   `model_history` (handles interactive rewinds and bounds-only re-fits, which
   append a `fit_results` entry with no history entry).
@@ -96,7 +103,7 @@ Finalize makes the choice explicit and auditable:
 - **Never writes `best_model` / `best_chi2`** — those are the loop's regression
   baseline that `aure resume` compares against. That baseline is the lowest χ²
   outright, with no floor test, which is its own defect —
-  [issues.md](../issues.md) #10.
+  [issues.md](../issues.md) #9.
 - Emits a **second, reporting-only message** listing the `structural_hypotheses`
   still `pending` (the run stops as soon as χ² lands in the acceptance window, so
   the ranked backlog is normally not exhausted) plus a one-line tally of what was
@@ -138,7 +145,7 @@ unless *all* hold:
 The gate is **χ² only**: `final_fit` reads neither the SLD-profile veto nor
 `chi2_min`, so it will spend a full MCMC budget polishing a vetoed selection —
 and because the excursion buys χ², such a selection sails through the gate. See
-[issues.md](../issues.md) #2.
+[issues.md](../issues.md) #1.
 
 **Budget.** `FIT_STEPS_FINAL` (default **10000**) and `FIT_BURN_FINAL` (default
 = steps). This is deliberately ~10× the exploration budget: a small step count
@@ -255,7 +262,7 @@ profile per model and only the top-level one — `states[0]`'s — is read back,
 down on anything it has not verified. Those runs still finish on the evaluator
 LLM's verdict, i.e. `chi2_max` does nothing on a `states:` run. A *veto* still
 fires from `states[0]`'s profile, which is the safe failure direction.
-[issues.md](../issues.md) #5.
+[issues.md](../issues.md) #4.
 
 **The stop is one-directional.** It turns "keep refining" into "stop", never the
 reverse. Above `chi2_max` the LLM's `acceptable` stands as-is and *none* of the
@@ -275,5 +282,8 @@ sub-floor χ² is recorded as an issue on the `FitResult` (so it reaches
 `final_state.json`), and the success message repeats it under the headline
 number. Set `chi2_min: 0` to accept any χ² at or below `chi2_max`.
 
-**Which fit is *reported* is a separate, χ²-only decision** (§3) — neither the
-profile veto nor the floor reaches it. [issues.md](../issues.md) #1–#3.
+**Which fit is *reported* is a separate decision** (§3). The profile veto now
+reaches it — vetoed fits are set aside — but the floor does not, so a sub-floor
+χ² the clamp refused to accept can still be the reported answer
+([issues.md](../issues.md) #11), and the veto still reaches nothing downstream of
+the report ([issues.md](../issues.md) #1–#3).

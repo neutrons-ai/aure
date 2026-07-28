@@ -691,3 +691,46 @@ def test_prepare_state_for_restart_clears_the_selection():
 
     restarted = prepare_state_for_restart(final, "try a thicker oxide")
     assert restarted["finalized"] is False
+
+
+def test_a_vetoed_lowest_chi2_fit_loses_to_a_clean_one():
+    """The erf-tail excursion the profile check vetoes *buys* χ², so the vetoed
+    fit is routinely the run's best-scoring one. Ranking on χ² alone reported
+    exactly the model `evaluation` had refused to accept."""
+    vetoed = _fit(1, 0.62)
+    vetoed["profile_artifact"] = True
+    clean = _fit(2, 1.20)
+    clean["profile_artifact"] = False
+
+    state = _state(
+        [vetoed, clean],
+        model_history=[
+            {"iteration": 1, "definition": _model(extra_layers=("SEI", "Plated"))},
+            {"iteration": 2, "definition": _model()},
+        ],
+    )
+    out = finalize_node(state)
+    sel = out["final_selection"]
+
+    assert sel["iteration"] == 2
+    assert sel["chi_squared"] == 1.20
+    assert sel["demoted_for_profile_artifact"] is True
+    assert sel["selected_has_profile_artifact"] is False
+    assert [v["iteration"] for v in sel["vetoed_iterations"]] == [1]
+    assert "Demoted by the SLD-profile check" in out["messages"][0]["content"]
+
+
+def test_every_fit_vetoed_still_reports_one_and_says_so():
+    """Refusing to report anything is worse than reporting a flawed model that
+    announces itself."""
+    a, b = _fit(1, 0.62), _fit(2, 1.20)
+    a["profile_artifact"] = b["profile_artifact"] = True
+
+    out = finalize_node(_state([a, b]))
+    sel = out["final_selection"]
+
+    assert sel["selected"] is True
+    assert sel["iteration"] == 1
+    assert sel["selected_has_profile_artifact"] is True
+    assert sel["demoted_for_profile_artifact"] is False  # the veto changed nothing
+    assert "not physically valid" in out["messages"][0]["content"]

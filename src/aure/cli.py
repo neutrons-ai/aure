@@ -521,7 +521,10 @@ def analyze(
     # ── Merge positional overrides into the setup ─────────────────
     # Rule: positional args win over setup values, but warn if both supplied.
     if sample_description:
-        if setup.get("sample_description") and setup["sample_description"] != sample_description:
+        if (
+            setup.get("sample_description")
+            and setup["sample_description"] != sample_description
+        ):
             click.echo(
                 click.style(
                     "  Note: positional SAMPLE_DESCRIPTION overrides the setup file.",
@@ -918,23 +921,62 @@ def _print_analysis_results(result: dict, output_dir: Optional[str] = None):
             click.echo(f"    Best χ²: {best_chi2:.4f}")
         click.echo()
 
-    # Evaluation
+    # The SLD-profile veto, which χ² cannot show. Loudest thing in the report when
+    # the model being reported is the one the check rejected.
+    from .nodes.finalize import has_profile_artifact
+
+    if selection.get("selected_has_profile_artifact") or has_profile_artifact(fit):
+        click.echo(
+            click.style(
+                "  ⚠  THE REPORTED MODEL IS NOT PHYSICALLY VALID", fg="red", bold=True
+            )
+        )
+        click.echo(
+            click.style(
+                "     Its SLD profile leaves the range its bounding media can "
+                "produce.\n     Do not report these slabs as distinct layers.",
+                fg="red",
+            )
+        )
+        click.echo()
+    elif selection.get("demoted_for_profile_artifact"):
+        for v in selection.get("vetoed_iterations") or []:
+            from .nodes.finalize import _fmt_chi2 as _fc
+
+            click.echo(
+                click.style(
+                    f"    ↳ iteration {v.get('iteration')} fitted better "
+                    f"(χ² = {_fc(v.get('chi_squared'))}) but was vetoed by the "
+                    f"SLD-profile check",
+                    fg="yellow",
+                )
+            )
+        click.echo()
+
+    # Evaluation. `result["evaluation"]` is only ever set by the MCP server; a
+    # workflow run records the evaluator's findings on the judged FitResult, so
+    # reading only the former made this whole block dead code for `aure analyze`
+    # and the excursion text above never reached the reader.
     evaluation = result.get("evaluation")
     if evaluation:
         quality = evaluation.get("chi_squared_quality", "unknown")
         acceptable = evaluation.get("acceptable", False)
         color = "green" if acceptable else "yellow"
         click.echo(click.style(f"  Fit Quality: {quality}", fg=color, bold=True))
+    else:
+        evaluation = fit or {}
+        if evaluation.get("issues") or evaluation.get("suggestions"):
+            click.echo(click.style("  Fit Quality Notes", fg="cyan", bold=True))
 
-        if evaluation.get("issues"):
-            click.echo("    Issues:")
-            for issue in evaluation["issues"]:
-                click.echo(f"      - {issue}")
+    if evaluation.get("issues"):
+        click.echo("    Issues:")
+        for issue in evaluation["issues"]:
+            click.echo(f"      - {issue}")
 
-        if evaluation.get("suggestions"):
-            click.echo("    Suggestions:")
-            for sug in evaluation["suggestions"]:
-                click.echo(f"      - {sug}")
+    if evaluation.get("suggestions"):
+        click.echo("    Suggestions:")
+        for sug in evaluation["suggestions"]:
+            click.echo(f"      - {sug}")
 
     # Untried structural hypotheses. A run that clears the χ² threshold stops
     # with candidates still on the backlog, and this report is where a reader
@@ -1363,9 +1405,7 @@ def batch(manifest: str, job: tuple, dry_run: bool, data_dir: Optional[str]):
 
     if job and len(jobs) == 1 and not loaded["defaults"]:
         # A flat setup has nothing to filter; refuse politely.
-        raise click.BadParameter(
-            "--job filter is only valid for multi-job manifests."
-        )
+        raise click.BadParameter("--job filter is only valid for multi-job manifests.")
 
     # Filter by --job if specified
     if job:
@@ -1403,9 +1443,7 @@ def batch(manifest: str, job: tuple, dry_run: bool, data_dir: Optional[str]):
     for j in jobs:
         name = j["name"]
         command = j["command"]
-        output_root = _resolve_path(
-            j.get("output_root", "./output"), manifest_dir
-        )
+        output_root = _resolve_path(j.get("output_root", "./output"), manifest_dir)
         output_dir = str(Path(output_root) / name)
         states = j.get("states", [])
         click.echo(f"  • {name}")
@@ -1454,9 +1492,7 @@ def batch(manifest: str, job: tuple, dry_run: bool, data_dir: Optional[str]):
     for idx, j in enumerate(jobs, 1):
         name = j["name"]
         command = j["command"]
-        output_root = _resolve_path(
-            j.get("output_root", "./output"), manifest_dir
-        )
+        output_root = _resolve_path(j.get("output_root", "./output"), manifest_dir)
         output_dir = str(Path(output_root) / name)
 
         states = j.get("states") or []
@@ -2705,8 +2741,7 @@ def import_refl1d_cmd(
 
     click.echo(click.style("  Imported successfully", fg="green", bold=True))
     click.echo(
-        f"    states     : {len(summary['states'])} "
-        f"({', '.join(summary['states'])})"
+        f"    states     : {len(summary['states'])} ({', '.join(summary['states'])})"
     )
     click.echo(f"    files      : {summary['n_files']}")
     click.echo(f"    χ²         : {summary['chi_squared']:.4f}")
@@ -2718,9 +2753,7 @@ def import_refl1d_cmd(
         tied = summary.get("tied_parameters") or []
         untied = summary.get("untied_parameters") or []
         click.echo(f"    tied       : {', '.join(tied) if tied else '(none)'}")
-        click.echo(
-            f"    untied     : {', '.join(untied) if untied else '(none)'}"
-        )
+        click.echo(f"    untied     : {', '.join(untied) if untied else '(none)'}")
 
     # Warnings (constraint-expression ties, etc.)
     for w in summary.get("warnings") or []:

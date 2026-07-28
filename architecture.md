@@ -141,11 +141,13 @@ nr-isaac-format `architecture.md` for the store/representation contract.
    `final_state.json` + `problem.json`. `best_model`/`best_chi2` stay the loop's
    regression baseline. See [docs/finalization.md](docs/finalization.md).
 
-   Selection is **χ²-only** — it does not consult the SLD-profile veto, so the
-   reported model can be one `evaluation` rejected, and no surface says so. That
-   is a known, triaged defect, not a design decision: see
-   [issues.md](issues.md) #1–#3 before changing selection or adding a surface
-   that renders a run's answer.
+   Selection **sets profile-vetoed fits aside** before ranking on χ², because the
+   excursion is often what buys the low χ² — so ranking on χ² alone reported the
+   model `evaluation` had rejected. It reads the `profile_artifact` flag
+   `evaluation` stamps on each judged `FitResult`. It does *not* yet consult the
+   acceptance floor, and the veto still reaches no surface downstream of the
+   report: see [issues.md](issues.md) #1–#3 and #11 before changing selection or
+   adding a surface that renders a run's answer.
 6. **In `evaluation`, the SLD-profile artifact check runs BEFORE the χ² acceptance
    clamp.** A finite χ² inside the acceptance window `CHI2_MIN ≤ χ² ≤ CHI2_MAX`
    deterministically forces `acceptable=True` (`_clamp_acceptance_to_chi2`) so

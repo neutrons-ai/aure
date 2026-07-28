@@ -220,7 +220,24 @@ class StateDefinition(TypedDict, total=False):
     substrate: SubstrateInfo
 
 
-class FitResult(TypedDict):
+class _FitResultVerdict(TypedDict, total=False):
+    """The SLD-profile verdict, split out only to keep these two keys optional.
+
+    Three outcomes, and they are not interchangeable: verified clean
+    (``profile_checked`` True, ``profile_artifact`` False), vetoed
+    (``profile_artifact`` True), and never judged (both absent — a fit the
+    evaluator has not seen, or a run that exported no profile to check).
+    Downstream has to tell the third from the first, so absent is not False.
+
+    ``FitResult`` itself is total, and the fitting node builds it by keyword, so
+    declaring these inline would make them required at every construction site.
+    """
+
+    profile_checked: bool
+    profile_artifact: bool
+
+
+class FitResult(_FitResultVerdict):
     """Results from a refl1d fit."""
 
     iteration: int

@@ -304,7 +304,7 @@ Two limitations, stated plainly:
   profile per model and only the top-level one — `states[0]`'s — is read back, so
   a co-refined fit is never marked verified and the stop always stands down.
   Those runs still finish on the evaluator's verdict: `chi2_max` does nothing on
-  a `states:` run ([issues.md](issues.md) #5).
+  a `states:` run ([issues.md](issues.md) #4).
 - **The stop is one-directional.** It turns "keep refining" into "stop", never the
   reverse. Above `chi2_max` the LLM's `acceptable` is taken as-is and *none* of
   the conditions above are consulted, so an LLM that accepts a χ² of 4200 on a
@@ -339,7 +339,7 @@ and `--json` always carry the backlog.
 
 **Interactive runs still pause on a clamped accept** — where the stop overrode an
 objecting evaluator, which is the one verdict a human should see. Feedback typed
-at that pause is not yet acted on ([issues.md](issues.md) #14).
+at that pause is not yet acted on ([issues.md](issues.md) #13).
 
 #### Locating data files
 
@@ -405,7 +405,7 @@ In the Setup tab:
 - **Load Setup** uploads a YAML and prefills every field the form has (sample
   description, states, ties, refinement settings). It has no field for the χ²
   acceptance window, so `chi2_max` / `chi2_min` are among the keys **Save Setup**
-  silently drops — see [issues.md](issues.md) #15.
+  silently drops — see [issues.md](issues.md) #14.
 - **Save Setup** downloads the current form state as a YAML you can
   rerun via `aure analyze -c` / `aure batch` or share with collaborators.
 - Click **Load Data** to add files manually, tick the fit checkbox on
@@ -439,7 +439,7 @@ hand-editing YAML:
   that also works with `aure analyze -c` and `aure batch` — handy for
   saving experimental configurations or sharing with collaborators. The form is
   not a complete editor for the setup schema, and Save drops the keys it has no
-  field for ([issues.md](issues.md) #15), so keep curated setups in the YAML.
+  field for ([issues.md](issues.md) #14), so keep curated setups in the YAML.
 
 ### Python API
 
@@ -612,7 +612,7 @@ are applied as environment overrides for that job only and restored afterwards,
 so jobs do not leak settings into each other. An `analyze` job's terminal output
 reports its χ² and the titles of the structural hypotheses left untried when it
 stopped. That χ² is `fit_results[-1]`'s — the last iteration *fitted*, which is
-not necessarily the one `finalize` reported ([issues.md](issues.md) #7), so do
+not necessarily the one `finalize` reported ([issues.md](issues.md) #6), so do
 not gate CI on it without reading `final_state.json`.
 
 **Examples:**
@@ -735,7 +735,7 @@ applies neither the deterministic χ² stop nor the SLD-profile veto, and it jud
 against the *ambient* `CHI2_MAX` / `CHI2_MIN` rather than the window the evaluated
 run pinned. So `aure analyze` can complete on a fit `aure evaluate` calls
 unacceptable, and vice versa — re-export the run's window before calling it if you
-want them to agree ([issues.md](issues.md) #9).
+want them to agree ([issues.md](issues.md) #8).
 
 **Examples:**
 
