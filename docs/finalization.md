@@ -139,13 +139,19 @@ unless *all* hold:
 1. `FIT_METHOD_FINAL` is set and differs from `FIT_METHOD` (nothing to gain if
    exploration already used it);
 2. there is a dict `current_model` to polish;
-3. the selected χ² is finite and ≤ the gate (`FINAL_FIT_CHI2_MAX`, default
+3. the SLD-profile check did not veto the selected fit — precise uncertainties on
+   a physically impossible model only lend it authority. Checked *before* the χ²
+   gate, because the excursion is what buys the low χ² so a vetoed selection
+   passes that gate by construction. The verdict comes from
+   `final_selection["selected_has_profile_artifact"]`, falling back to the
+   selected `FitResult`'s own flag so an imported workspace or a checkpoint
+   written before that field existed is not silently exempt. Recorded as
+   `final_fit["profile_veto"]`;
+4. the selected χ² is finite and ≤ the gate (`FINAL_FIT_CHI2_MAX`, default
    `CHI2_MAX`) — don't spend a long MCMC characterizing a poor fit.
 
-The gate is **χ² only**: `final_fit` reads neither the SLD-profile veto nor
-`chi2_min`, so it will spend a full MCMC budget polishing a vetoed selection —
-and because the excursion buys χ², such a selection sails through the gate. See
-[issues.md](../issues.md) #1.
+`final_fit` still does not read `chi2_min`, so a sub-floor selection is polished
+and adopted — the same gap `_select` has ([issues.md](../issues.md) #11).
 
 **Budget.** `FIT_STEPS_FINAL` (default **10000**) and `FIT_BURN_FINAL` (default
 = steps). This is deliberately ~10× the exploration budget: a small step count
@@ -286,4 +292,4 @@ number. Set `chi2_min: 0` to accept any χ² at or below `chi2_max`.
 reaches it — vetoed fits are set aside — but the floor does not, so a sub-floor
 χ² the clamp refused to accept can still be the reported answer
 ([issues.md](../issues.md) #11), and the veto still reaches nothing downstream of
-the report ([issues.md](../issues.md) #1–#3).
+the report ([issues.md](../issues.md) #2–#3).

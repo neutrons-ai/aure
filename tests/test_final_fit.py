@@ -104,9 +104,7 @@ def test_no_dict_model_skips(explore_amoeba_final_dream):
     assert "current_model" not in out
 
 
-def test_chi2_above_gate_skips_without_fitting(
-    explore_amoeba_final_dream, monkeypatch
-):
+def test_chi2_above_gate_skips_without_fitting(explore_amoeba_final_dream, monkeypatch):
     called = {"n": 0}
 
     def _boom(**_kwargs):
@@ -360,3 +358,57 @@ def test_runner_no_final_fit_when_disabled(monkeypatch):
     assert "finalize" in seen
     assert "final_fit" not in seen  # inert: no extra checkpoint / callback
     assert final_state.get("final_fit") in (None, {})
+
+
+@pytest.mark.parametrize(
+    "fit_results,selection_extra,expected_in_reason",
+    [
+        # The verdict finalize records for a run it selected itself.
+        (
+            [{"chi_squared": 0.62, "profile_artifact": True, "issues": []}],
+            {
+                "selected_has_profile_artifact": True,
+                "profile_veto_reason": "min SLD -0.88",
+            },
+            "min SLD -0.88",
+        ),
+        # A legacy / imported state: `final_selection` predates the veto
+        # bookkeeping, so the verdict is only on the fit itself. Trusting the
+        # selection alone would exempt exactly these runs.
+        (
+            [
+                {
+                    "chi_squared": 0.62,
+                    "issues": ["Non-physical SLD-profile excursion (min SLD -0.88): x"],
+                }
+            ],
+            {},
+            "Non-physical SLD-profile excursion",
+        ),
+    ],
+    ids=["recorded_in_selection", "legacy_state_verdict_on_the_fit"],
+)
+def test_a_profile_vetoed_selection_is_not_polished(
+    explore_amoeba_final_dream,
+    monkeypatch,
+    fit_results,
+    selection_extra,
+    expected_in_reason,
+):
+    """χ² cannot catch this: the excursion is what buys the low χ², so a vetoed
+    selection passes the quality gate by construction. Spending a full MCMC budget
+    on it — and then repointing problem.json at the export — attaches precise
+    uncertainties to a physically impossible model."""
+    ran = []
+    monkeypatch.setattr(ff, "run_fit_for_model", lambda *a, **k: ran.append(1))
+
+    selection = {"selected": True, "index": 0, "iteration": 2, "chi_squared": 0.62}
+    selection.update(selection_extra)
+    out = ff.final_fit_node(
+        _state(current_chi2=0.62, final_selection=selection, fit_results=fit_results)
+    )
+
+    assert ran == []  # no MCMC budget spent
+    assert out["final_fit"]["ran"] is False
+    assert out["final_fit"]["adopted"] is False
+    assert expected_in_reason in out["final_fit"]["profile_veto"]

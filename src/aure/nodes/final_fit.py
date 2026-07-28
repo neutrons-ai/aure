@@ -25,6 +25,10 @@ Returns an empty update — zero state churn, no checkpoint — unless ALL hold:
 * ``FIT_METHOD_FINAL`` is set and differs from ``FIT_METHOD`` (nothing to gain
   if exploration already used the final method);
 * there is a dict ``current_model`` to polish (``finalize`` produced one);
+* the SLD-profile check did not veto the selected fit — precise uncertainties on
+  a physically impossible model only lend it authority, and χ² cannot catch this
+  one because the excursion is *what buys* the low χ², so a vetoed selection
+  passes the quality gate below by construction;
 * the selected χ² is finite and at or below the quality gate
   (``FINAL_FIT_CHI2_MAX``, default ``CHI2_MAX``) — there is no point spending a
   long MCMC characterising a fit that is already known to be poor.
@@ -57,7 +61,12 @@ from typing import Any, Dict, Optional
 
 from ..state import Message, ReflectivityState
 from .evaluation import _get_chi2_max
-from .finalize import _apply_fitted_values, _get_selection_tolerance
+from .finalize import (
+    _apply_fitted_values,
+    _ARTIFACT_MARKER,
+    _get_selection_tolerance,
+    has_profile_artifact,
+)
 from .fitting import _resolve_model_name, run_fit_for_model
 
 logger = logging.getLogger(__name__)
@@ -128,6 +137,43 @@ def _is_finite_number(value: Any) -> bool:
     )
 
 
+def _profile_veto_reason(state: ReflectivityState) -> Optional[str]:
+    """Why the selected fit failed the SLD-profile check, or None if it passed.
+
+    Two sources, because ``final_selection`` only carries the verdict for runs
+    finalized after it started recording one: an ``aure import-refl1d`` workspace
+    or a checkpoint written earlier has no such field, and those must not be
+    silently exempt. Falls back to the selected ``FitResult`` itself, resolved the
+    way the report resolves it — ``final_selection["index"]``, else the last fit.
+    """
+    selection = state.get("final_selection") or {}
+    fit_results = state.get("fit_results") or []
+
+    index = selection.get("index") if selection.get("selected") else None
+    if isinstance(index, int) and 0 <= index < len(fit_results):
+        fit = fit_results[index]
+    else:
+        fit = fit_results[-1] if fit_results else None
+
+    if selection.get("selected_has_profile_artifact") or has_profile_artifact(fit):
+        return (
+            selection.get("profile_veto_reason")
+            or _artifact_issue(fit)
+            or "non-physical SLD-profile excursion"
+        )
+    return None
+
+
+def _artifact_issue(fit: Any) -> Optional[str]:
+    """The evaluator's own sentence about the excursion, when it recorded one."""
+    if not isinstance(fit, dict):
+        return None
+    for issue in fit.get("issues") or []:
+        if _ARTIFACT_MARKER in str(issue).lower():
+            return str(issue)
+    return None
+
+
 def final_fit_node(state: ReflectivityState) -> Dict[str, Any]:
     """Optionally run an MCMC polish of the finalize-selected model.
 
@@ -146,7 +192,9 @@ def final_fit_node(state: ReflectivityState) -> Dict[str, Any]:
     # Gate 2: need a concrete model to polish.
     model = state.get("current_model")
     if not isinstance(model, dict) or not model:
-        logger.info("[FINAL_FIT] No dict model selected; skipping %s polish", final_method)
+        logger.info(
+            "[FINAL_FIT] No dict model selected; skipping %s polish", final_method
+        )
         updates["final_fit"] = {
             "ran": False,
             "adopted": False,
@@ -155,7 +203,27 @@ def final_fit_node(state: ReflectivityState) -> Dict[str, Any]:
         }
         return updates
 
-    # Gate 3: only characterise a fit that is already acceptable.
+    # Gate 3: never characterise a model the SLD-profile check rejected. Checked
+    # ahead of the χ² gate because a vetoed selection has a low χ² by construction
+    # and would otherwise be skipped — if at all — for the less useful reason.
+    veto = _profile_veto_reason(state)
+    if veto:
+        logger.warning(
+            "[FINAL_FIT] Selected model was vetoed by the SLD-profile check — "
+            "skipping %s polish: %s",
+            final_method,
+            veto,
+        )
+        updates["final_fit"] = {
+            "ran": False,
+            "adopted": False,
+            "method": final_method,
+            "reason": "selected model failed the SLD-profile check",
+            "profile_veto": veto,
+        }
+        return updates
+
+    # Gate 4: only characterise a fit that is already acceptable.
     chi2_before = state.get("current_chi2")
     gate = _quality_gate()
     if not _is_finite_number(chi2_before) or chi2_before > gate:

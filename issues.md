@@ -40,15 +40,6 @@ the shipped subset added.
 `evaluation` refuses to accept a fit whose SLD profile leaves the range its
 bounding media can produce. Nothing past that node knows the veto happened.
 
-### 1. `final_fit` polishes and adopts a profile-vetoed model
-
-**Predates this change.** The gate at
-[`src/aure/nodes/final_fit.py:161`](src/aure/nodes/final_fit.py) is χ²-only
-(`chi2_before > gate` → skip). So a vetoed selection — which by construction has
-a *low* χ² — sails straight through, and the node spends a full MCMC budget
-characterizing it, adopts the result, and repoints `problem.json` at that
-export. The most expensive step of the run is the one least guarded.
-
 ### 2. The ISAAC export discloses nothing about a rejected profile
 
 **Predates this change.** `exporters/isaac._generate_context_description`
