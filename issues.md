@@ -35,23 +35,6 @@ the shipped subset added.
 
 ---
 
-## Acceptance thresholds
-
-### 11. `finalize._select` does not consult the acceptance floor
-
-**Predates the floor; the mirror of the veto gap just fixed for #1's sibling.**
-`_select` ([`src/aure/nodes/finalize.py`](src/aure/nodes/finalize.py)) now sets
-profile-vetoed fits aside, but it still ranks purely on χ² otherwise — so a fit
-*below* `chi2_min`, which the clamp explicitly refused to accept as a pass, can
-still win outright and be reported. The floor exists because a reduced χ² far
-under 1 is evidence about the `dR` column rather than the structure, and an
-overfitted iteration is exactly the kind that scores lowest. Same shape as the
-veto: the stop condition gates acceptance but not the reported answer. The fix is
-the same too — set sub-floor fits aside unless they are the whole field, reading
-the floor from `state["chi2_min"]`.
-
----
-
 ## Unrelated to this change
 
 ### 12. Two MCP tools are dead

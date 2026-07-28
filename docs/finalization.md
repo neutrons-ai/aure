@@ -90,9 +90,12 @@ Finalize makes the choice explicit and auditable:
   `FitResult`, falling back to matching the excursion prose for checkpoints
   written before those were persisted.
 
-  Selection still does **not** consult the acceptance floor (§8), so a sub-floor
-  χ² can win outright — the same shape of gap, triaged as
-  [issues.md](../issues.md) #11. Read it before changing `_select`.
+  Sub-floor fits (§8) are set aside the same way, one tier *above* vetoed ones:
+  such a fit is physically plausible but its χ² describes the `dR` column rather
+  than the structure, whereas a vetoed one is impossible. The ladder is therefore
+  clean-and-in-window → clean-but-sub-floor → vetoed, each tier used only when the
+  one above it is empty. `final_selection` records `sub_floor_iterations`,
+  `demoted_for_sub_floor_chi2` and `selected_is_sub_floor` alongside the veto keys.
 - Resolves the *ModelDefinition* that produced the winning iteration via
   `model_history` (handles interactive rewinds and bounds-only re-fits, which
   append a `fit_results` entry with no history entry).
@@ -152,8 +155,10 @@ unless *all* hold:
 4. the selected χ² is finite and ≤ the gate (`FINAL_FIT_CHI2_MAX`, default
    `CHI2_MAX`) — don't spend a long MCMC characterizing a poor fit.
 
-`final_fit` still does not read `chi2_min`, so a sub-floor selection is polished
-and adopted — the same gap `_select` has ([issues.md](../issues.md) #11).
+A sub-floor selection is skipped too (gate 4): `finalize` reports one only when no
+iteration landed inside the window, and tighter error bars on a fit whose χ²
+describes its uncertainties rather than its structure are precision about the wrong
+thing.
 
 **Budget.** `FIT_STEPS_FINAL` (default **10000**) and `FIT_BURN_FINAL` (default
 = steps). This is deliberately ~10× the exploration budget: a small step count
@@ -294,6 +299,6 @@ number. Set `chi2_min: 0` to accept any χ² at or below `chi2_max`.
 **Which fit is *reported* is a separate decision** (§3). The profile veto now
 reaches it — vetoed fits are set aside — but the floor does not, so a sub-floor
 χ² the clamp refused to accept can still be the reported answer
-([issues.md](../issues.md) #11), and the veto still reaches nothing downstream of
+and the veto reaches nothing downstream of
 the report — it now travels to the CLI report, `--json`, both web tabs,
 `final_fit`'s gate and the ISAAC export.

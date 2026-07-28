@@ -62,7 +62,7 @@ import os
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..state import Message, ReflectivityState
-from .evaluation import _count_free_params
+from .evaluation import _count_free_params, _get_chi2_min
 
 logger = logging.getLogger(__name__)
 
@@ -401,16 +401,36 @@ def _select(
     exactly the model that will be promoted.
     """
     tol = _get_selection_tolerance()
+    floor = _get_chi2_min(state)
 
-    # Rank among fits the profile check did not veto. A vetoed fit is reported
-    # only when it is the whole field — refusing to report anything is worse than
-    # reporting a flawed model that says so.
-    clean = [(i, fr) for i, fr in scored if not has_profile_artifact(fr)]
-    pool = clean or scored
+    # Rank within the best available tier. Reporting nothing is worse than
+    # reporting a flawed model that says so, so each tier falls back to the next:
+    #
+    #   1. profile-clean and inside the acceptance window — the real answer;
+    #   2. profile-clean but below the floor — physically plausible, but its χ² is
+    #      evidence about the `dR` column rather than the structure, and an
+    #      overfitted iteration is exactly the kind that scores lowest, so it must
+    #      not beat an honest fit on χ² alone;
+    #   3. profile-vetoed — physically impossible, so genuinely last.
+    def _tier(fr: dict) -> int:
+        if has_profile_artifact(fr):
+            return 2
+        if floor > 0 and fr["chi_squared"] < floor:
+            return 1
+        return 0
+
+    tiers = {i: _tier(fr) for i, fr in scored}
+    pool = [(i, fr) for i, fr in scored if tiers[i] == min(tiers.values())]
+
     vetoed = [
         {"index": i, "iteration": fr.get("iteration"), "chi_squared": fr["chi_squared"]}
         for i, fr in scored
-        if has_profile_artifact(fr)
+        if tiers[i] == 2
+    ]
+    sub_floor = [
+        {"index": i, "iteration": fr.get("iteration"), "chi_squared": fr["chi_squared"]}
+        for i, fr in scored
+        if tiers[i] == 1
     ]
 
     best_chi2 = min(fr["chi_squared"] for _, fr in pool)
@@ -432,26 +452,34 @@ def _select(
     )
     index, fit, definition = ranked[0]
 
-    # "Demoted" means the veto changed the answer, not merely that it fired: a
-    # vetoed fit that would have lost on χ² anyway is not worth reporting as one.
+    # "Demoted" means a filter changed the answer, not merely that it matched: a
+    # set-aside fit that would have lost on χ² anyway is not worth reporting as one.
     lowest_overall = min(fr["chi_squared"] for _, fr in scored)
-    demoted = bool(vetoed) and best_chi2 > lowest_overall
+    changed_answer = best_chi2 > lowest_overall
+    selected_tier = tiers[index]
 
     return (
         index,
         fit,
         definition,
         {
-            "criterion": "lowest chi2 among profile-clean fits, parsimony tie-break",
+            "criterion": (
+                "lowest chi2 among profile-clean fits inside the acceptance "
+                "window, parsimony tie-break"
+            ),
             "tolerance": tol,
             "parsimony_tiebreak": fit["chi_squared"] > best_chi2,
             "lowest_chi2": best_chi2,
             "candidates_considered": len(scored),
             "candidates_in_band": len(band),
-            "candidates_profile_clean": len(clean),
+            "candidates_profile_clean": sum(1 for t in tiers.values() if t != 2),
             "vetoed_iterations": vetoed,
-            "demoted_for_profile_artifact": demoted,
-            "selected_has_profile_artifact": has_profile_artifact(fit),
+            "demoted_for_profile_artifact": bool(vetoed) and changed_answer,
+            "selected_has_profile_artifact": selected_tier == 2,
+            "sub_floor_iterations": sub_floor,
+            "demoted_for_sub_floor_chi2": bool(sub_floor) and changed_answer,
+            "selected_is_sub_floor": selected_tier == 1,
+            "chi2_min": floor,
         },
     )
 
@@ -591,6 +619,15 @@ def _format_selection(sel: dict) -> str:
         return f"**Final model:** not selected — {sel.get('reason', 'unknown')}."
 
     lines = []
+    if sel.get("selected_is_sub_floor"):
+        lines.append(
+            f"**The reported χ² is below the acceptance floor** "
+            f"(χ² ≥ {sel.get('chi2_min', 0):.2f}), and no iteration landed inside "
+            f"the window. Residuals that far under the quoted uncertainties are "
+            f"evidence the `dR` column is overestimated, or that the model has "
+            f"enough free parameters to absorb the noise — not that the structure "
+            f"is right. Check the uncertainties and the parameter count."
+        )
     if sel.get("selected_has_profile_artifact"):
         lines.append(
             "**The reported model is not physically valid.** Every iteration of "
@@ -612,6 +649,16 @@ def _format_selection(sel: dict) -> str:
             f"**Demoted by the SLD-profile check:** {vetoed} fitted better but was "
             f"not reported — the profile check vetoed it as non-physical, a defect "
             f"χ² cannot see."
+        )
+    if sel.get("demoted_for_sub_floor_chi2"):
+        under = ", ".join(
+            f"iteration {v.get('iteration')} (χ² = {_fmt_chi2(v.get('chi_squared'))})"
+            for v in sel.get("sub_floor_iterations") or []
+        )
+        lines.append(
+            f"**Set aside as below the acceptance floor:** {under} scored lower but "
+            f"was not reported — under χ² ≥ {sel.get('chi2_min', 0):.2f} the number "
+            f"describes the error bars rather than the structure."
         )
     if sel.get("superseded_last_iteration"):
         lines.append(

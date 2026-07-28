@@ -734,3 +734,61 @@ def test_every_fit_vetoed_still_reports_one_and_says_so():
     assert sel["selected_has_profile_artifact"] is True
     assert sel["demoted_for_profile_artifact"] is False  # the veto changed nothing
     assert "not physically valid" in out["messages"][0]["content"]
+
+
+def test_a_sub_floor_fit_loses_to_one_inside_the_window(monkeypatch):
+    """The clamp refuses to accept a sub-floor χ² as a pass, so finalize must not
+    report one either — and an overfitted iteration is exactly the kind that scores
+    lowest, so on χ² alone it wins by default."""
+    monkeypatch.setenv("CHI2_MIN", "0.5")
+    monkeypatch.setenv("CHI2_MAX", "2.5")
+
+    state = _state(
+        [_fit(1, 0.004), _fit(2, 1.20)],
+        model_history=[
+            {"iteration": 1, "definition": _model()},
+            {"iteration": 2, "definition": _model()},
+        ],
+    )
+    out = finalize_node(state)
+    sel = out["final_selection"]
+
+    assert sel["iteration"] == 2
+    assert sel["selected_is_sub_floor"] is False
+    assert sel["demoted_for_sub_floor_chi2"] is True
+    assert [v["iteration"] for v in sel["sub_floor_iterations"]] == [1]
+    assert "below the acceptance floor" in out["messages"][0]["content"]
+
+
+def test_the_fallback_ladder_prefers_overfitted_over_impossible(monkeypatch):
+    """When nothing ideal exists: a sub-floor fit is physically plausible but its χ²
+    describes the error bars, while a vetoed fit is physically impossible. So the
+    vetoed one is the true last resort."""
+    monkeypatch.setenv("CHI2_MIN", "0.5")
+    monkeypatch.setenv("CHI2_MAX", "2.5")
+
+    vetoed = _fit(2, 1.20)
+    vetoed["profile_artifact"] = True
+    out = finalize_node(_state([_fit(1, 0.004), vetoed]))
+    sel = out["final_selection"]
+
+    assert sel["iteration"] == 1  # the sub-floor but physically possible fit
+    assert sel["selected_is_sub_floor"] is True
+    assert sel["selected_has_profile_artifact"] is False
+
+    # And with every fit sub-floor, one is still reported and flagged.
+    out = finalize_node(_state([_fit(1, 0.004), _fit(2, 0.010)]))
+    assert out["final_selection"]["selected_is_sub_floor"] is True
+    assert "below the acceptance floor" in out["messages"][0]["content"]
+
+
+def test_a_disabled_floor_leaves_selection_untouched(monkeypatch):
+    monkeypatch.setenv("CHI2_MIN", "0")
+    monkeypatch.setenv("CHI2_MAX", "2.5")
+
+    out = finalize_node(_state([_fit(1, 0.004), _fit(2, 1.20)]))
+    sel = out["final_selection"]
+
+    assert sel["iteration"] == 1  # plain lowest-χ² wins again
+    assert sel["selected_is_sub_floor"] is False
+    assert sel["demoted_for_sub_floor_chi2"] is False

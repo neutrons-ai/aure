@@ -29,6 +29,10 @@ Returns an empty update — zero state churn, no checkpoint — unless ALL hold:
   a physically impossible model only lend it authority, and χ² cannot catch this
   one because the excursion is *what buys* the low χ², so a vetoed selection
   passes the quality gate below by construction;
+* the selection is not below the acceptance floor — ``finalize`` reports such a fit
+  only when no iteration landed inside the window, and tighter error bars on a fit
+  whose χ² describes its ``dR`` column rather than its structure are precision about
+  the wrong thing;
 * the selected χ² is finite and at or below the quality gate
   (``FINAL_FIT_CHI2_MAX``, default ``CHI2_MAX``) — there is no point spending a
   long MCMC characterising a fit that is already known to be poor.
@@ -223,7 +227,26 @@ def final_fit_node(state: ReflectivityState) -> Dict[str, Any]:
         }
         return updates
 
-    # Gate 4: only characterise a fit that is already acceptable.
+    # Gate 4: a selection below the acceptance floor is not worth characterising
+    # either. `finalize` only reports one when no iteration landed inside the
+    # window, and precise uncertainties on a fit whose χ² describes its `dR` column
+    # rather than its structure are precision about the wrong thing.
+    if (state.get("final_selection") or {}).get("selected_is_sub_floor"):
+        logger.warning(
+            "[FINAL_FIT] Selected χ² is below the acceptance floor — skipping %s "
+            "polish: the fit's residuals are far under its quoted uncertainties, so "
+            "tighter error bars on it would not mean more confidence in the model",
+            final_method,
+        )
+        updates["final_fit"] = {
+            "ran": False,
+            "adopted": False,
+            "method": final_method,
+            "reason": "selected χ² is below the acceptance floor",
+        }
+        return updates
+
+    # Gate 5: only characterise a fit that is already acceptable.
     chi2_before = state.get("current_chi2")
     gate = _quality_gate()
     if not _is_finite_number(chi2_before) or chi2_before > gate:

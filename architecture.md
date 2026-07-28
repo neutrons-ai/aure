@@ -141,15 +141,16 @@ nr-isaac-format `architecture.md` for the store/representation contract.
    `final_state.json` + `problem.json`. `best_model`/`best_chi2` stay the loop's
    regression baseline. See [docs/finalization.md](docs/finalization.md).
 
-   Selection **sets profile-vetoed fits aside** before ranking on χ², because the
-   excursion is often what buys the low χ² — so ranking on χ² alone reported the
-   model `evaluation` had rejected. It reads the `profile_artifact` flag
-   `evaluation` stamps on each judged `FitResult`. It does *not* yet consult the
-   acceptance floor, and the veto still reaches no surface downstream of the
-   report: it does not yet consult the acceptance floor
-   ([issues.md](issues.md) #11). The veto now travels to every surface that
-   renders the answer — report, `--json`, the web tabs, `final_fit`'s gate and the
-   ISAAC export — so keep it that way when adding another.
+   Selection **sets aside the fits `evaluation` would not have accepted** before
+   ranking on χ², in tiers: profile-vetoed fits last (physically impossible), and
+   sub-floor ones above them (plausible, but the χ² describes the `dR` column
+   rather than the structure). Ranking on χ² alone reported exactly the model
+   `evaluation` had rejected — the excursion is often what *buys* the low χ², and
+   an overfitted iteration is likewise the kind that scores lowest. It reads the
+   `profile_artifact` flag `evaluation` stamps on each judged `FitResult` and the
+   floor from `state["chi2_min"]`. Both verdicts travel to every surface that
+   renders the answer — report, `--json`, `aure batch`, the web tabs, `final_fit`'s
+   gates and the ISAAC export — so keep it that way when adding another.
 6. **In `evaluation`, the SLD-profile artifact check runs BEFORE the χ² acceptance
    clamp.** A finite χ² inside the acceptance window `CHI2_MIN ≤ χ² ≤ CHI2_MAX`
    deterministically forces `acceptable=True` (`_clamp_acceptance_to_chi2`) so

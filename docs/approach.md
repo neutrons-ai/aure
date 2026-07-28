@@ -691,7 +691,7 @@ The table below summarises who decides what.
 | Auto-expand stuck bounds | Code | `_expand_model_bounds` in `evaluation.py` |
 | Detect non-physical SLD-profile excursions | Code | `detect_profile_artifacts` in `feature_tools.py` |
 | **Stop when χ² meets the threshold** (LLM's `acceptable` is advisory *at or below* it only) | Code | `_clamp_acceptance_to_chi2` — runs *after* the profile veto, which outranks it; raises verdicts only, never lowers them |
-| **Choose the model the run reports** | Code | `finalize._select` — profile-vetoed fits set aside, then lowest χ² with a parsimony tie-break inside the χ² band; still floor-blind, see [issues.md](../issues.md) #11 |
+| **Choose the model the run reports** | Code | `finalize._select` — vetoed and sub-floor fits set aside (ladder: clean-and-in-window → clean-but-sub-floor → vetoed), then lowest χ² with a parsimony tie-break inside the χ² band |
 | Report the untried hypotheses at the end | Code | `finalize._format_remaining_improvements` (statuses reported, never re-derived) |
 | Escape thin-layer local minima before fitting | Code | mode enumeration in `fitting.py` (gated by `MODE_ENUMERATION`) |
 | Revert on χ² regression | Code | χ² regression guardrail |
