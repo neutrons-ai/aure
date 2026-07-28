@@ -162,9 +162,9 @@ nr-isaac-format `architecture.md` for the store/representation contract.
    (`_profile_artifact`, `_profile_checked`) and **stands down** — declining to
    force acceptance, so the LLM decides, as before the clamp — on a vetoed fit,
    on an unverified one (no exported SLD profile, the detector declining with
-   `checked=False`, or *any* multi-state fit, whose other states' profiles are
-   never read back, so the stop is inert for co-refinement —
-   [issues.md](issues.md) #5), on one whose per-file/per-state χ² fails on its
+   `checked=False`, or a co-refinement where any one state reported no profile —
+   every state is checked against its own effective media, and partial coverage
+   leaves the whole fit unverified), on one whose per-file/per-state χ² fails on its
    own, and below `CHI2_MIN` (setup key `chi2_min`, default `0.5`, `0` disables),
    where a reduced χ² far under 1 is evidence about the error model — an
    overestimated `dR` column, or free parameters absorbing the noise — rather

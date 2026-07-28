@@ -59,3 +59,30 @@ def test_read_profile_dat_tolerates_no_export_dir():
 
 def test_read_profile_dat_tolerates_a_missing_profile(tmp_path):
     assert _read_profile_dat(str(tmp_path)) == (None, None)
+
+
+def test_this_fits_own_export_beats_a_stale_one(tmp_path):
+    """A stale export must not shadow the file the current fit just wrote. The old
+    order was the fixed default then `sorted(glob)[0]`, so `problem-1-profile.dat`
+    from an earlier unnamed run always won — and the artifact detector, which is the
+    clamp's only safety valve, silently judged the wrong profile."""
+    _write(tmp_path, "problem-1-profile.dat")  # stale, and alphabetically first
+    _write(tmp_path, "cu_d2o-1-profile.dat")  # what this fit wrote
+
+    assert _find_profile_dat(str(tmp_path), "cu_d2o").name == "cu_d2o-1-profile.dat"
+    # Unnamed problem: the default *is* this fit's export, so it still wins.
+    assert _find_profile_dat(str(tmp_path)).name == "problem-1-profile.dat"
+
+
+def test_freshest_wins_when_no_name_identifies_a_file(tmp_path):
+    """Neither the named nor the default file is present, so mtime is the only
+    honest signal left — alphabetical order carried no information about which fit
+    produced which file."""
+    import os
+
+    old = _write(tmp_path, "aaa-1-profile.dat")
+    new = _write(tmp_path, "zzz-1-profile.dat")
+    os.utime(old, (1_000_000, 1_000_000))
+    os.utime(new, (2_000_000, 2_000_000))
+
+    assert _find_profile_dat(str(tmp_path), "absent").name == "zzz-1-profile.dat"

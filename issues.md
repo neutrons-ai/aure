@@ -35,20 +35,6 @@ the shipped subset added.
 
 ---
 
-## The profile the detector actually reads
-
-### 5. `_find_profile_dat` can be shadowed by a stale export
-
-**Predates this change.** `fitting._find_profile_dat`
-([`src/aure/nodes/fitting.py:1109`](src/aure/nodes/fitting.py)) prefers the
-literal `problem-1-profile.dat`, then falls back to
-`sorted(d.glob("*-1-profile.dat"))[0]`. An alphabetically-earlier stale export
-left in the directory beats the file the current fit just wrote, so the artifact
-detector — and hence the clamp's verification — can be fed the wrong profile.
-Nothing checks mtime or the problem name.
-
----
-
 ## Which fit is "the answer"
 
 ### 6. `aure analyze --json` and `aure batch` report `fit_results[-1]`

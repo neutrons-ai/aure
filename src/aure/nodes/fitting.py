@@ -676,7 +676,7 @@ def _extract_bumps_results(
         logger.info(f"[FITTING]   {name}: {value:.3f}{unc_str}")
 
     # Read SLD profile from refl1d export if available
-    sld_z, sld_rho = _read_profile_dat(export_dir)
+    sld_z, sld_rho = _read_profile_dat(export_dir, getattr(problem, "name", None))
 
     # Compute residuals and residual ratio for fringe analysis
     residuals = []
@@ -853,7 +853,7 @@ def _extract_multi_bumps_results(
         per_file.append(PerFileFitResult(**pf))
 
     # Read SLD profile
-    sld_z, sld_rho = _read_profile_dat(export_dir)
+    sld_z, sld_rho = _read_profile_dat(export_dir, getattr(problem, "name", None))
 
     return FitResult(
         iteration=iteration,
@@ -1023,7 +1023,7 @@ def _extract_states_bumps_results(
                     f"[FITTING] Could not write profile for state {state_name}: {exc}"
                 )
 
-    sld_z, sld_rho = _read_profile_dat(export_dir)
+    sld_z, sld_rho = _read_profile_dat(export_dir, getattr(problem, "name", None))
 
     fr = FitResult(
         iteration=iteration,
@@ -1115,7 +1115,7 @@ def _format_fit_result(result: FitResult) -> str:
     return "\n".join(lines)
 
 
-def _find_profile_dat(export_dir: str):
+def _find_profile_dat(export_dir: str, problem_name: Optional[str] = None):
     """Locate refl1d's ``*-1-profile.dat`` in an export directory.
 
     The basename is the FitProblem's name, which :func:`_name_problem` sets from
@@ -1123,27 +1123,46 @@ def _find_profile_dat(export_dir: str):
     left unnamed. Looking for that one fixed name silently found nothing on every
     named run, which left ``sld_z``/``sld_rho`` empty and thereby disabled the
     SLD-profile artifact detector in evaluation (it returns early without a
-    profile). Prefer the documented name, then fall back to whatever refl1d
-    actually wrote.
+    profile).
+
+    *problem_name* identifies **this** fit's export. Without it the choice was the
+    fixed default and then ``sorted(glob)[0]``, so a stale export left in the
+    directory — anything alphabetically earlier, and ``problem-1-profile.dat``
+    always — shadowed the file the current fit had just written, and the artifact
+    detector silently judged the wrong profile. Order: this fit's own export, then
+    the documented default when the problem was unnamed (in which case that *is*
+    this fit's export), then the freshest by mtime, with the name as a tie-break so
+    the result is deterministic.
     """
     d = Path(export_dir)
-    default = d / "problem-1-profile.dat"
-    if default.exists():
-        return default
     hits = sorted(d.glob("*-1-profile.dat"))
-    return hits[0] if hits else None
+    if not hits:
+        return None
+
+    if problem_name:
+        want = d / f"{problem_name}-1-profile.dat"
+        if want in hits:
+            return want
+    else:
+        default = d / "problem-1-profile.dat"
+        if default in hits:
+            return default
+
+    return max(hits, key=lambda p: (p.stat().st_mtime, p.name))
 
 
 def _read_profile_dat(
     export_dir: Optional[str],
+    problem_name: Optional[str] = None,
 ) -> tuple:
     """Read SLD profile from refl1d's ``*-1-profile.dat``.
 
-    Returns (z_list, rho_list) or (None, None) if unavailable.
+    *problem_name* pins the read to this fit's own export; see
+    :func:`_find_profile_dat`. Returns (z_list, rho_list) or (None, None).
     """
     if not export_dir:
         return None, None
-    profile_file = _find_profile_dat(export_dir)
+    profile_file = _find_profile_dat(export_dir, problem_name)
     if profile_file is None:
         return None, None
     return _parse_profile_dat(profile_file)
