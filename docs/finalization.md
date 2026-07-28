@@ -78,6 +78,14 @@ Finalize makes the choice explicit and auditable:
   within `FINAL_SELECTION_TOL` (default 2%) of the lowest χ², prefer the fewest
   free parameters, then the earliest iteration. (BIC's idea without depending on
   the stored `bic`.)
+
+  Selection is **χ²-only.** It does not consult the SLD-profile veto that
+  `evaluation` applies, so the reported model can be one `evaluation` refused to
+  accept — and because the excursion is often *what buys* the low χ², the vetoed
+  iteration is routinely the run's best-scoring one. Nor does it consult the
+  acceptance floor (§8), so a sub-floor χ² can win outright. Both are real,
+  reproduced defects, triaged in [issues.md](../issues.md) #1–#3; read those
+  before changing `_select` or adding a surface that renders a run's answer.
 - Resolves the *ModelDefinition* that produced the winning iteration via
   `model_history` (handles interactive rewinds and bounds-only re-fits, which
   append a `fit_results` entry with no history entry).
@@ -86,7 +94,21 @@ Finalize makes the choice explicit and auditable:
 - Sets `current_model` and `current_chi2` to the winner.
 - Records `final_selection` (index, iteration, χ², tie-break metadata) for audit.
 - **Never writes `best_model` / `best_chi2`** — those are the loop's regression
-  baseline that `aure resume` compares against.
+  baseline that `aure resume` compares against. That baseline is the lowest χ²
+  outright, with no floor test, which is its own defect —
+  [issues.md](../issues.md) #10.
+- Emits a **second, reporting-only message** listing the `structural_hypotheses`
+  still `pending` (the run stops as soon as χ² lands in the acceptance window, so
+  the ranked backlog is normally not exhausted) plus a one-line tally of what was
+  attempted. Statuses are reported exactly as they stand — never re-derived here.
+  It is appended *after* the selection message and is the only message on the
+  no-usable-fits early return, so index `updates["messages"]` by content, not by
+  `[0]` / `[-1]`. Suppressed when the identical text is already in the transcript
+  (a re-finalized / resumed run) and omitted on an empty backlog, so a resumed
+  run's `final_state.json` can lack a block the CLI report still prints — that
+  reads `structural_hypotheses` directly. `pending_hypotheses` /
+  `format_attempted_counts` / `hypothesis_label` are exported so the report and
+  `aure batch` render the same backlog from the same selector.
 - Idempotent via the `finalized` flag.
 
 After finalize, `current_model` / `current_chi2` **are** the reported answer —
@@ -112,6 +134,11 @@ unless *all* hold:
 2. there is a dict `current_model` to polish;
 3. the selected χ² is finite and ≤ the gate (`FINAL_FIT_CHI2_MAX`, default
    `CHI2_MAX`) — don't spend a long MCMC characterizing a poor fit.
+
+The gate is **χ² only**: `final_fit` reads neither the SLD-profile veto nor
+`chi2_min`, so it will spend a full MCMC budget polishing a vetoed selection —
+and because the excursion buys χ², such a selection sails through the gate. See
+[issues.md](../issues.md) #2.
 
 **Budget.** `FIT_STEPS_FINAL` (default **10000**) and `FIT_BURN_FINAL` (default
 = steps). This is deliberately ~10× the exploration budget: a small step count
@@ -203,15 +230,54 @@ for them, matching how a plain `FIT_METHOD=dream` run already reports them.
 
 ## 8. Configuration reference
 
-Env vars (also settable as setup-YAML keys via `_build_env_overrides`, mapped
-`fit_method_final → FIT_METHOD_FINAL`, etc.):
-
 | Env var | YAML key | Default | Meaning |
 |---|---|---|---|
+| `CHI2_MAX` | `chi2_max` | `5.0` | Upper end of the χ² acceptance window — the refinement loop's stop condition, enforced deterministically in `evaluation`; pinned into the run state so `aure resume` inherits it. Only ever *raises* a verdict; above it the evaluator LLM decides (§9) |
+| `CHI2_MIN` | `chi2_min` | `0.5` | Lower end of the same window. Below it the deterministic stop **stands down** — not a veto: the evaluator's verdict decides. A reduced χ² far under 1 says the residuals are much smaller than the quoted uncertainties (an overestimated `dR` column, or free parameters absorbing the noise), i.e. evidence about the error model rather than the structure, so it must not read as a pass. `0` disables the floor; must be finite and strictly below `chi2_max`. Pinned like `chi2_max` |
 | `FIT_METHOD` | `fit_method` | `dream` | Exploration / refinement-loop method |
 | `FIT_STEPS` / `FIT_BURN` | `fit_steps` / `fit_burn` | `1000` | Exploration budget |
-| `FIT_METHOD_FINAL` | `fit_method_final` | *(unset → off)* | Final polish method; must differ from `FIT_METHOD` to run |
-| `FIT_STEPS_FINAL` | `fit_steps_final` | `10000` | Final-polish sample budget |
-| `FIT_BURN_FINAL` | `fit_burn_final` | = steps | Final-polish burn-in |
-| `FINAL_FIT_CHI2_MAX` | `final_fit_chi2_max` | = `CHI2_MAX` | Skip the polish when the selected χ² exceeds this |
+| `FIT_METHOD_FINAL` | — | *(unset → off)* | Final polish method; must differ from `FIT_METHOD` to run |
+| `FIT_STEPS_FINAL` | — | `10000` | Final-polish sample budget |
+| `FIT_BURN_FINAL` | — | = steps | Final-polish burn-in |
+| `FINAL_FIT_CHI2_MAX` | — | = `CHI2_MAX` | Skip the polish when the selected χ² exceeds this |
 | `FINAL_SELECTION_TOL` | — | `0.02` | χ² band for the parsimony tie-break and the adopt-vs-keep decision |
+
+`chi2_max` / `chi2_min` are real setup-YAML keys, applied for one run as env
+overrides by `analyze`, `prepare` and `batch`. The four final-fit names are
+**env-var only**: `cli._build_env_overrides` maps them, but `setup._KNOWN_TOP_LEVEL`
+rejects them, so a setup or manifest using `fit_method_final` /
+`fit_steps_final` / `fit_burn_final` / `final_fit_chi2_max` fails to load —
+[issues.md](../issues.md) #12.
+
+---
+
+## 9. Sharp edges of the deterministic stop
+
+**The stop is inert for multi-state co-refinement.** refl1d writes one SLD
+profile per model and only the top-level one — `states[0]`'s — is read back, so
+`evaluation` never marks a co-refined fit as *verified*, and the clamp stands
+down on anything it has not verified. Those runs still finish on the evaluator
+LLM's verdict, i.e. `chi2_max` does nothing on a `states:` run. A *veto* still
+fires from `states[0]`'s profile, which is the safe failure direction.
+[issues.md](../issues.md) #5.
+
+**The stop is one-directional.** It turns "keep refining" into "stop", never the
+reverse. Above `chi2_max` the LLM's `acceptable` stands as-is and *none* of the
+clamp's stand-down guards are consulted, so an LLM that accepts a χ² of 4200 on a
+profileless fit with a failed (`+inf`) per-state χ² ends the run. Standing down
+below `chi2_min` is likewise not a veto — the evaluator may accept a sub-floor
+fit and the run completes. The SLD-profile veto remains the only deterministic
+check that can lower an accepting LLM's verdict.
+
+**Below `chi2_min` the stopping point is not reproducible.** The floor hands the
+decision back to the LLM, so whether such a run ends on iteration 1 or burns its
+whole `max_refinements` budget is the evaluator's judgement. That is deliberate:
+making the floor a veto would mean a fit whose `dR` genuinely is conservative
+could never stop — the exact failure the clamp exists to prevent. The mitigation
+is disclosure: the evaluation prompt states the floor and what it implies, the
+sub-floor χ² is recorded as an issue on the `FitResult` (so it reaches
+`final_state.json`), and the success message repeats it under the headline
+number. Set `chi2_min: 0` to accept any χ² at or below `chi2_max`.
+
+**Which fit is *reported* is a separate, χ²-only decision** (§3) — neither the
+profile veto nor the floor reaches it. [issues.md](../issues.md) #1–#3.

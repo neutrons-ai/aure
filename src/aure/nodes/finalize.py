@@ -33,6 +33,19 @@ Selection rule (deterministic — no LLM):
 the loop's own regression baseline, and a later ``aure resume`` compares
 against them.
 
+The node has a second, reporting-only responsibility: it lists the run's
+**untried improvement ideas**. A run now stops as soon as χ² meets the
+acceptance threshold, so the ranked ``structural_hypotheses`` backlog is
+normally not exhausted — the leftovers, plus the outcomes of everything that
+*was* attempted, are emitted as their own message so the reader can see what to
+try next (and what was already ruled out) without opening a checkpoint.
+Statuses are reported exactly as they stand; this node never re-derives them.
+The bucket labels and the pending selector are exported (``pending_hypotheses``,
+``hypothesis_label``, ``format_attempted_counts``) because ``cli`` renders the
+same backlog for the terminal report and for ``aure batch`` — one definition of
+the buckets is the only thing that keeps those surfaces from contradicting
+each other.
+
 Idempotent: sets ``finalized`` and no-ops when it is already set, so the runner
 can call it defensively on loop-exit paths that never route through a node.
 """
@@ -402,7 +415,7 @@ def _select(
 
 def finalize_node(state: ReflectivityState) -> Dict[str, Any]:
     """
-    Select the best fit of the run and promote it to the current model.
+    Select the best fit of the run, promote it, and report the untried ideas.
 
     Args:
         state: Current workflow state
@@ -420,6 +433,13 @@ def finalize_node(state: ReflectivityState) -> Dict[str, Any]:
         "finalized": True,
     }
 
+    improvements = _format_remaining_improvements(state.get("structural_hypotheses"))
+    if improvements and _already_in_transcript(state, improvements):
+        # `aure resume` clears `finalized`, so this node runs again on a state
+        # whose transcript already holds the previous run's report. Suppress
+        # only a byte-identical repeat — a backlog that moved since then is news.
+        improvements = ""
+
     fit_results = state.get("fit_results") or []
     scored = _scored_fits(fit_results)
     if not scored:
@@ -428,6 +448,10 @@ def finalize_node(state: ReflectivityState) -> Dict[str, Any]:
             "selected": False,
             "reason": "no fit results with a finite, positive chi-squared",
         }
+        if improvements:
+            updates["messages"] = [
+                Message(role="assistant", content=improvements, timestamp=None)
+            ]
         return updates
 
     index, fit, definition, decision = _select(state, scored)
@@ -491,13 +515,16 @@ def finalize_node(state: ReflectivityState) -> Dict[str, Any]:
             ", ".join(unapplied[:8]),
         )
 
-    updates["messages"] = [
+    messages = [
         Message(
             role="assistant",
             content=_format_selection(updates["final_selection"]),
             timestamp=None,
         )
     ]
+    if improvements:
+        messages.append(Message(role="assistant", content=improvements, timestamp=None))
+    updates["messages"] = messages
     return updates
 
 
@@ -538,3 +565,115 @@ def _format_selection(sel: dict) -> str:
             + "."
         )
     return " ".join(lines)
+
+
+# ======================================================================
+# Untried-improvements report
+# ======================================================================
+
+
+def _already_in_transcript(state: ReflectivityState, content: str) -> bool:
+    """Whether *content* was already said verbatim earlier in the run."""
+    return any(
+        str(m.get("content", "")) == content for m in state.get("messages") or []
+    )
+
+
+# Every status other than "pending" is an attempted outcome
+# (``hypotheses.ALLOWED_STATUSES``). "tried" is not a failure: it means the
+# change was realized but neither confirmed nor reverted, because the χ² verdict
+# was ambiguous — ``evaluation`` records an outcome on both the refining and the
+# accepting branch, so "tried" no longer just means "the run ended before the
+# bookkeeping ran".
+_ATTEMPTED_LABELS = (
+    ("confirmed", "confirmed"),
+    ("rejected", "rejected"),
+    ("tried", "tried, inconclusive"),
+)
+
+
+def pending_hypotheses(hypotheses: Optional[List[dict]]) -> List[dict]:
+    """The untried backlog, in rank order (rank is list position)."""
+    return [h for h in hypotheses or [] if h.get("status") == "pending"]
+
+
+def hypothesis_title(hypothesis: dict) -> str:
+    """One spelling of a backlog entry's title, for every surface that shows it."""
+    return str(hypothesis.get("title") or "untitled")
+
+
+def hypothesis_label(hypothesis: dict) -> str:
+    """``"[3] Split Cu into two slabs"`` — id + title, for terminal listings."""
+    return f"[{hypothesis.get('id', '?')}] {hypothesis_title(hypothesis)}"
+
+
+def _attempted_groups(hypotheses: Optional[List[dict]]) -> List[Tuple[str, List[dict]]]:
+    """Non-empty attempted buckets as ``(label, entries)``, in report order."""
+    groups = []
+    for status, label in _ATTEMPTED_LABELS:
+        group = [h for h in hypotheses or [] if h.get("status") == status]
+        if group:
+            groups.append((label, group))
+    return groups
+
+
+def format_attempted_counts(hypotheses: Optional[List[dict]]) -> str:
+    """One-line tally of the backlog, e.g.
+    ``"2 of 5 attempted — confirmed (1); tried, inconclusive (1)"``.
+
+    Shared with the CLI report so the two renderings of one run's backlog cannot
+    disagree. The attempted total is the sum of the buckets below it rather than
+    "everything not pending", so the arithmetic on the line always closes even
+    for an entry whose status is missing or unrecognized.
+
+    Returns "" when there is no backlog at all.
+    """
+    if not hypotheses:
+        return ""
+    groups = _attempted_groups(hypotheses)
+    attempted = sum(len(g) for _, g in groups)
+    line = f"{attempted} of {len(hypotheses)} attempted"
+    if groups:
+        line += " — " + "; ".join(f"{label} ({len(g)})" for label, g in groups)
+    return line
+
+
+def _format_remaining_improvements(hypotheses: Optional[List[dict]]) -> str:
+    """Human-readable state of the structural-hypothesis backlog at the end.
+
+    The ``pending`` entries are the ideas the refinement loop never got to, in
+    rank order (which is list position). The attempted ones are summarized in a
+    single line so a reader does not re-propose something the run already ruled
+    out. Statuses are reported as they stand — nothing is re-derived here.
+
+    Returns "" when there is nothing worth saying.
+    """
+    if not hypotheses:
+        return ""
+
+    lines: List[str] = []
+    pending = pending_hypotheses(hypotheses)
+    if pending:
+        lines.append("**Possible further improvements (not tried):**")
+        for h in pending:
+            lines.append(
+                f"{h.get('id', '?')}. **{hypothesis_title(h)}** — "
+                f"{h.get('change') or 'no concrete change recorded'}"
+            )
+            if h.get("rationale"):
+                source = h.get("skill_source") or h.get("origin") or "?"
+                lines.append(f"   _Rationale ({source}):_ {h['rationale']}")
+
+    attempted = []
+    for label, group in _attempted_groups(hypotheses):
+        # An attempted entry is named without its id, so an untitled one falls
+        # back to the id rather than to a row of indistinguishable "untitled"s.
+        titles = ", ".join(str(h.get("title") or f"#{h.get('id', '?')}") for h in group)
+        attempted.append(f"{label} ({len(group)}): {titles}")
+    if attempted:
+        # Blank line, or markdown absorbs this into the numbered list above.
+        if lines:
+            lines.append("")
+        lines.append("**Already attempted:** " + "; ".join(attempted) + ".")
+
+    return "\n".join(lines)

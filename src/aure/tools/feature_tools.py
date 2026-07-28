@@ -1013,6 +1013,17 @@ def detect_profile_artifacts(
 
     Returns:
         Dict with:
+          - checked: bool — whether the profile was actually evaluated. False on
+            every "cannot check" early return: too few points, mismatched
+            ``z``/``rho`` lengths, fewer than 2 media, a **non-finite** sample in
+            ``z``/``rho``/``layer_rhos``, or a zero SLD span because every medium
+            has the same SLD. ``has_artifact`` is False in those cases too, but it
+            means *unknown*, not *clean* — callers that gate a decision on a clean
+            profile must read ``checked`` and treat False as "no evidence either
+            way". Non-finite samples are gated because they used to sail through:
+            every comparison against NaN is False, so an all-NaN profile from a
+            diverged fit yielded no extrema and reported ``has_artifact=False`` — a
+            clean bill of health for a profile that says nothing.
           - has_artifact: bool
           - excursions: list of {z, sld, kind, note}
           - n_expected_extrema: int
@@ -1022,6 +1033,7 @@ def detect_profile_artifacts(
     z = np.asarray(z, dtype=float)
     rho = np.asarray(rho, dtype=float)
     empty = {
+        "checked": False,
         "has_artifact": False,
         "excursions": [],
         "n_expected_extrema": 0,
@@ -1030,8 +1042,12 @@ def detect_profile_artifacts(
     }
     if len(rho) < 5 or len(z) != len(rho) or layer_rhos is None or len(layer_rhos) < 2:
         return empty
+    if not (np.all(np.isfinite(z)) and np.all(np.isfinite(rho))):
+        return empty
 
     media = [float(v) for v in layer_rhos]
+    if not all(np.isfinite(media)):
+        return empty
     span = max(media) - min(media)
     if span <= 0:
         return empty
@@ -1079,6 +1095,7 @@ def detect_profile_artifacts(
         )
 
     return {
+        "checked": True,
         "has_artifact": bool(excursions),
         "excursions": excursions,
         "n_expected_extrema": n_expected,

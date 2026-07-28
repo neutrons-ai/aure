@@ -255,6 +255,29 @@ def run_workflow_with_checkpoints(
     state = dict(initial_state)
     if output_dir:
         state["output_dir"] = output_dir
+    # Pin the χ² acceptance threshold into the state on the first pass only. It
+    # deterministically terminates the refinement loop, so a resumed or
+    # restarted run must keep the threshold it was launched with rather than
+    # inherit whatever CHI2_MAX the resuming process happens to carry. The
+    # runner is the env → state bridge because ``state.py`` must not import from
+    # the nodes package.
+    if state.get("chi2_max") is None:
+        state["chi2_max"] = evaluation._get_chi2_max()
+        logger.info(
+            "[RUNNER] χ² acceptance threshold for this run: %.3f",
+            state["chi2_max"],
+        )
+    # The floor is pinned for the same reason and against the *pinned* ceiling,
+    # so the "floor below ceiling" rule is checked against this run's window
+    # rather than the resuming shell's. ``0.0`` is a legal pinned value (no
+    # floor), which is why absence is tested with ``is None``.
+    if state.get("chi2_min") is None:
+        state["chi2_min"] = evaluation._get_chi2_min(chi2_max=state.get("chi2_max"))
+        logger.info(
+            "[RUNNER] χ² acceptance floor for this run: %.3f%s",
+            state["chi2_min"],
+            " (disabled)" if not state["chi2_min"] else "",
+        )
     current_node = NODE_ORDER[start_idx] if start_idx < len(NODE_ORDER) else None
 
     max_total_iterations = 20  # Safety limit
@@ -285,11 +308,17 @@ def run_workflow_with_checkpoints(
             checkpoint_callback(state, current_node)
 
         # ---- Interactive pause after evaluation -------------------
+        # An accepting verdict normally needs no confirmation: the evaluator
+        # agreed the fit is done. A *clamped* accept is different — the
+        # deterministic χ² threshold overrode an evaluator that objected, and
+        # those objections go into the report unaddressed. That is exactly the
+        # decision an interactive run exists to put in front of the user, so it
+        # still gets its review pause even though `workflow_complete` is set.
         if (
             pause_callback
             and state.get("interactive")
             and current_node == "evaluation"
-            and not state.get("workflow_complete")
+            and (not state.get("workflow_complete") or state.get("chi2_clamp_accepted"))
             and not state.get("error")
         ):
             logger.info("[RUNNER] Interactive mode — waiting for user feedback")

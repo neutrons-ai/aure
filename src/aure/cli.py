@@ -7,6 +7,7 @@ Usage:
     python -m aure.cli mcp-server
 """
 
+import contextlib
 import json
 import logging
 import subprocess
@@ -607,83 +608,109 @@ def analyze(
     data_file = primary_data_file(setup)
     data_files = None  # multi-state path: runner reads from `states`
 
-    if not output_json:
-        click.echo(click.style("═" * 60, fg="blue"))
-        click.echo(
-            click.style("  Reflectivity Analysis Workflow", fg="blue", bold=True)
-        )
-        click.echo(click.style("═" * 60, fg="blue"))
-        click.echo()
-
-        # Check LLM status first
-        llm_ok, llm_msg = _check_llm_status(quiet=False, test_connection=True)
-        click.echo()
-
-        click.echo(f"  Data file: {data_file}")
-        n_files = sum(len(s.get("data_files", [])) for s in states)
-        if len(states) > 1:
-            for st in states:
-                names = ", ".join(ds["label"] for ds in st.get("data_files", []))
-                click.echo(f"  State {st['name']}: {names}")
-            click.echo(
-                f"  Multi-state co-refinement: {len(states)} states, "
-                f"{n_files} files"
-            )
-        elif n_files > 1:
-            for ds in states[0].get("data_files", []):
-                click.echo(f"  + {ds['file']}")
-            click.echo(f"  Co-refinement: {n_files} files (shared structure)")
-        click.echo(f"  Sample: {sample_description}")
-        if hypothesis:
-            click.echo(f"  Hypothesis: {hypothesis}")
-        click.echo()
-    else:
-        # Still check LLM in quiet mode for JSON output
-        llm_ok, llm_msg = _check_llm_status(quiet=True, test_connection=True)
-
-    # Stop if LLM is not available
-    if not llm_ok:
-        if output_json:
-            click.echo(
-                json.dumps(
-                    {"error": f"LLM not available: {llm_msg}", "llm": get_llm_info()}
-                )
-            )
-        else:
-            click.echo(click.style(f"  Cannot proceed: {llm_msg}", fg="red"))
-            click.echo("  Please configure a working LLM provider in .env")
-        sys.exit(1)
-
-    # Create checkpoint callback for progress reporting
-    def checkpoint_callback(state, node_name):
+    # The setup's run controls (chi2_max, fit budgets, LLM settings) reach the
+    # workflow as environment variables, so they must be in force before the
+    # banner reads them back and before the runner starts.
+    with _applied_env_overrides(setup):
         if not output_json:
-            status = "✓" if not state.get("error") else "✗"
+            click.echo(click.style("═" * 60, fg="blue"))
             click.echo(
-                click.style(
-                    f"  [{status}] {node_name.title()}",
-                    fg="green" if status == "✓" else "red",
-                )
+                click.style("  Reflectivity Analysis Workflow", fg="blue", bold=True)
             )
+            click.echo(click.style("═" * 60, fg="blue"))
+            click.echo()
 
-    # Run analysis
-    try:
-        result = run_analysis(
-            data_file=data_file,
-            sample_description=sample_description,
-            hypothesis=hypothesis,
-            max_iterations=max_refinements,
-            output_dir=output_dir,
-            checkpoint_callback=checkpoint_callback if not output_json else None,
-            user_config=user_config,
-            data_files=data_files,
-            states=states,
-        )
-    except Exception as e:
-        if output_json:
-            click.echo(json.dumps({"error": str(e)}))
+            # Check LLM status first
+            llm_ok, llm_msg = _check_llm_status(quiet=False, test_connection=True)
+            click.echo()
+
+            click.echo(f"  Data file: {data_file}")
+            n_files = sum(len(s.get("data_files", [])) for s in states)
+            if len(states) > 1:
+                for st in states:
+                    names = ", ".join(ds["label"] for ds in st.get("data_files", []))
+                    click.echo(f"  State {st['name']}: {names}")
+                click.echo(
+                    f"  Multi-state co-refinement: {len(states)} states, "
+                    f"{n_files} files"
+                )
+            elif n_files > 1:
+                for ds in states[0].get("data_files", []):
+                    click.echo(f"  + {ds['file']}")
+                click.echo(f"  Co-refinement: {n_files} files (shared structure)")
+            click.echo(f"  Sample: {sample_description}")
+            if hypothesis:
+                click.echo(f"  Hypothesis: {hypothesis}")
+
+            from .nodes.evaluation import _get_chi2_max, _get_chi2_min
+
+            # Echo both bounds, so the run log records the acceptance window
+            # that was actually in force. The floor is not a second bar to
+            # clear: below it the deterministic stop stands down and the
+            # evaluator decides, because a χ² that far under 1 is evidence the
+            # quoted dR is too large rather than evidence the structure is right.
+            chi2_max = _get_chi2_max()
+            chi2_min = _get_chi2_min(chi2_max=chi2_max)
+            if chi2_min > 0:
+                click.echo(
+                    f"  Accept when {chi2_min:g} ≤ χ² ≤ {chi2_max:g}"
+                    f"  (χ² < {chi2_min:g} is judged, not auto-accepted)"
+                )
+            else:
+                click.echo(f"  Accept when χ² ≤ {chi2_max:g}  (χ² floor disabled)")
+            click.echo()
         else:
-            click.echo(click.style(f"Error: {e}", fg="red"))
-        sys.exit(1)
+            # Still check LLM in quiet mode for JSON output
+            llm_ok, llm_msg = _check_llm_status(quiet=True, test_connection=True)
+
+        # Captured while the setup's overrides are still in force: the --json
+        # payload is emitted after they are restored, and must report the
+        # provider/model the run actually used, not the ambient one.
+        llm_info = get_llm_info()
+
+        # Stop if LLM is not available
+        if not llm_ok:
+            if output_json:
+                click.echo(
+                    json.dumps(
+                        {"error": f"LLM not available: {llm_msg}", "llm": llm_info}
+                    )
+                )
+            else:
+                click.echo(click.style(f"  Cannot proceed: {llm_msg}", fg="red"))
+                click.echo("  Please configure a working LLM provider in .env")
+            sys.exit(1)
+
+        # Create checkpoint callback for progress reporting
+        def checkpoint_callback(state, node_name):
+            if not output_json:
+                status = "✓" if not state.get("error") else "✗"
+                click.echo(
+                    click.style(
+                        f"  [{status}] {node_name.title()}",
+                        fg="green" if status == "✓" else "red",
+                    )
+                )
+
+        # Run analysis
+        try:
+            result = run_analysis(
+                data_file=data_file,
+                sample_description=sample_description,
+                hypothesis=hypothesis,
+                max_iterations=max_refinements,
+                output_dir=output_dir,
+                checkpoint_callback=checkpoint_callback if not output_json else None,
+                user_config=user_config,
+                data_files=data_files,
+                states=states,
+            )
+        except Exception as e:
+            if output_json:
+                click.echo(json.dumps({"error": str(e)}))
+            else:
+                click.echo(click.style(f"Error: {e}", fg="red"))
+            sys.exit(1)
 
     # Check for errors
     if result.get("error"):
@@ -699,13 +726,18 @@ def analyze(
             "success": True,
             "llm": {
                 "available": llm_ok,
-                "info": get_llm_info(),
+                "info": llm_info,
             },
             "output_dir": output_dir,
             "n_points": len(result.get("Q", [])),
             "parsed_sample": result.get("parsed_sample"),
             "extracted_features": result.get("extracted_features"),
             "model_generated": result.get("current_model") is not None,
+            # Always present, empty list included: a script deciding whether to
+            # keep refining should not have to tell "no backlog" from "old aure".
+            "pending_hypotheses": _pending_hypotheses_payload(
+                result.get("structural_hypotheses")
+            ),
         }
         if result.get("fit_results"):
             latest_fit = result["fit_results"][-1] if result["fit_results"] else {}
@@ -716,6 +748,54 @@ def analyze(
         click.echo(json.dumps(output_data, indent=2))
     else:
         _print_analysis_results(result, output_dir)
+
+
+def _pending_hypotheses_payload(hypotheses: Optional[list]) -> list:
+    """The untried backlog, reduced to the fields a machine consumer needs."""
+    from .nodes.finalize import pending_hypotheses
+
+    return [
+        {"id": h.get("id"), "title": h.get("title"), "change": h.get("change")}
+        for h in pending_hypotheses(hypotheses)
+    ]
+
+
+def _echo_pending_hypotheses(
+    hypotheses: Optional[list],
+    *,
+    indent: str,
+    details: bool = False,
+    lead_blank: bool = False,
+) -> None:
+    """Print the untried structural hypotheses, or nothing when there are none.
+
+    Shared by the human report and ``aure batch`` — via the same selector and
+    bucket labels the ``finalize`` node's own message uses — so the surfaces
+    cannot disagree about one run's backlog. ``details`` adds the concrete
+    change and the attempted tally the full report has room for; batch output
+    stays a title list. ``lead_blank`` separates the block from whatever
+    precedes it, and is suppressed along with the block itself.
+    """
+    from .nodes.finalize import (
+        format_attempted_counts,
+        hypothesis_label,
+        pending_hypotheses,
+    )
+
+    pending = pending_hypotheses(hypotheses)
+    if not pending:
+        return
+    if lead_blank:
+        click.echo()
+    click.echo(
+        click.style(f"{indent}Possible further improvements", fg="cyan", bold=True)
+    )
+    for hyp in pending:
+        click.echo(f"{indent}  {hypothesis_label(hyp)}")
+        if details and hyp.get("change"):
+            click.echo(f"{indent}      → {hyp['change']}")
+    if details:
+        click.echo(f"{indent}  ({format_attempted_counts(hypotheses)})")
 
 
 def _print_analysis_results(result: dict, output_dir: Optional[str] = None):
@@ -820,7 +900,12 @@ def _print_analysis_results(result: dict, output_dir: Optional[str] = None):
         if fit.get("parameters"):
             click.echo("    Parameters:")
             for name, value in fit["parameters"].items():
-                unc = fit.get("uncertainties", {}).get(name)
+                # `or {}` not a `{}` default: fitting.py writes an explicit
+                # `uncertainties=None` whenever the optimizer produced none
+                # (every `lm`/`amoeba` run), so the key exists and holds None.
+                # Guarding only the missing key aborted the whole report — and
+                # with it the untried-improvements block printed further down.
+                unc = (fit.get("uncertainties") or {}).get(name)
                 if unc:
                     click.echo(f"      {name}: {value:.4f} ± {unc:.4f}")
                 else:
@@ -850,6 +935,16 @@ def _print_analysis_results(result: dict, output_dir: Optional[str] = None):
             click.echo("    Suggestions:")
             for sug in evaluation["suggestions"]:
                 click.echo(f"      - {sug}")
+
+    # Untried structural hypotheses. A run that clears the χ² threshold stops
+    # with candidates still on the backlog, and this report is where a reader
+    # finds out what the run chose not to spend its budget on.
+    _echo_pending_hypotheses(
+        result.get("structural_hypotheses"),
+        indent="  ",
+        details=True,
+        lead_blank=True,
+    )
 
     # Output directory info
     if output_dir:
@@ -1045,78 +1140,84 @@ def prepare(
     resolved_model_name = setup.get("model_name") or Path(data_file).stem
     resolved_output_dir = output_dir or str(Path("output") / resolved_model_name)
 
-    if not output_json:
-        click.echo(click.style("═" * 60, fg="blue"))
-        click.echo(
-            click.style("  Reflectivity Analysis — Prepare", fg="blue", bold=True)
-        )
-        click.echo(click.style("═" * 60, fg="blue"))
-        click.echo()
-
-        llm_ok, llm_msg = _check_llm_status(quiet=False, test_connection=True)
-        click.echo()
-
-        click.echo(f"  Data file:  {data_file}")
-        n_files = sum(len(s.get("data_files", [])) for s in states)
-        if len(states) > 1:
-            for st in states:
-                names = ", ".join(ds["label"] for ds in st.get("data_files", []))
-                click.echo(f"  State {st['name']}: {names}")
-            click.echo(
-                f"  Multi-state co-refinement: {len(states)} states, "
-                f"{n_files} files"
-            )
-        elif n_files > 1:
-            for ds in states[0].get("data_files", []):
-                click.echo(f"  + {ds['file']}")
-            click.echo(f"  Co-refinement: {n_files} files (shared structure)")
-        click.echo(f"  Sample:     {sample_description}")
-        if hypothesis:
-            click.echo(f"  Hypothesis: {hypothesis}")
-        click.echo(f"  Model name: {resolved_model_name}")
-        click.echo(f"  Output dir: {resolved_output_dir}")
-        click.echo()
-    else:
-        llm_ok, llm_msg = _check_llm_status(quiet=True, test_connection=True)
-
-    if not llm_ok:
-        if output_json:
-            click.echo(
-                json.dumps(
-                    {"error": f"LLM not available: {llm_msg}", "llm": get_llm_info()}
-                )
-            )
-        else:
-            click.echo(click.style(f"  Cannot proceed: {llm_msg}", fg="red"))
-        sys.exit(1)
-
-    def checkpoint_callback(state, node_name):
+    # Same reason as `analyze`: the setup's run controls reach the workflow as
+    # environment variables, so they must be in force before the runner starts.
+    with _applied_env_overrides(setup):
         if not output_json:
-            status = "✓" if not state.get("error") else "✗"
+            click.echo(click.style("═" * 60, fg="blue"))
             click.echo(
-                click.style(
-                    f"  [{status}] {node_name.title()}",
-                    fg="green" if status == "✓" else "red",
-                )
+                click.style("  Reflectivity Analysis — Prepare", fg="blue", bold=True)
             )
+            click.echo(click.style("═" * 60, fg="blue"))
+            click.echo()
 
-    try:
-        result = run_prepare(
-            data_file=data_file,
-            sample_description=sample_description,
-            hypothesis=hypothesis,
-            output_dir=resolved_output_dir,
-            checkpoint_callback=checkpoint_callback if not output_json else None,
-            user_config=user_config,
-            data_files=data_files,
-            states=states or None,
-        )
-    except Exception as e:
-        if output_json:
-            click.echo(json.dumps({"error": str(e)}))
+            llm_ok, llm_msg = _check_llm_status(quiet=False, test_connection=True)
+            click.echo()
+
+            click.echo(f"  Data file:  {data_file}")
+            n_files = sum(len(s.get("data_files", [])) for s in states)
+            if len(states) > 1:
+                for st in states:
+                    names = ", ".join(ds["label"] for ds in st.get("data_files", []))
+                    click.echo(f"  State {st['name']}: {names}")
+                click.echo(
+                    f"  Multi-state co-refinement: {len(states)} states, "
+                    f"{n_files} files"
+                )
+            elif n_files > 1:
+                for ds in states[0].get("data_files", []):
+                    click.echo(f"  + {ds['file']}")
+                click.echo(f"  Co-refinement: {n_files} files (shared structure)")
+            click.echo(f"  Sample:     {sample_description}")
+            if hypothesis:
+                click.echo(f"  Hypothesis: {hypothesis}")
+            click.echo(f"  Model name: {resolved_model_name}")
+            click.echo(f"  Output dir: {resolved_output_dir}")
+            click.echo()
         else:
-            click.echo(click.style(f"Error: {e}", fg="red"))
-        sys.exit(1)
+            llm_ok, llm_msg = _check_llm_status(quiet=True, test_connection=True)
+
+        if not llm_ok:
+            if output_json:
+                click.echo(
+                    json.dumps(
+                        {
+                            "error": f"LLM not available: {llm_msg}",
+                            "llm": get_llm_info(),
+                        }
+                    )
+                )
+            else:
+                click.echo(click.style(f"  Cannot proceed: {llm_msg}", fg="red"))
+            sys.exit(1)
+
+        def checkpoint_callback(state, node_name):
+            if not output_json:
+                status = "✓" if not state.get("error") else "✗"
+                click.echo(
+                    click.style(
+                        f"  [{status}] {node_name.title()}",
+                        fg="green" if status == "✓" else "red",
+                    )
+                )
+
+        try:
+            result = run_prepare(
+                data_file=data_file,
+                sample_description=sample_description,
+                hypothesis=hypothesis,
+                output_dir=resolved_output_dir,
+                checkpoint_callback=checkpoint_callback if not output_json else None,
+                user_config=user_config,
+                data_files=data_files,
+                states=states or None,
+            )
+        except Exception as e:
+            if output_json:
+                click.echo(json.dumps({"error": str(e)}))
+            else:
+                click.echo(click.style(f"Error: {e}", fg="red"))
+            sys.exit(1)
 
     if result.get("error"):
         if output_json:
@@ -1502,6 +1603,12 @@ def batch(manifest: str, job: tuple, dry_run: bool, data_dir: Optional[str]):
                 else:
                     chi_str = f"χ² = {chi2:.3f}" if chi2 is not None else "no fit"
                     click.echo(click.style(f"    Done – {chi_str}", fg="green"))
+                    # Batch never calls `_print_analysis_results`, so without
+                    # this the backlog a stopped-early run left behind is
+                    # invisible outside final_state.json. Titles only.
+                    _echo_pending_hypotheses(
+                        result.get("structural_hypotheses"), indent="    "
+                    )
 
         except Exception as e:
             results_summary.append(
@@ -1558,6 +1665,13 @@ def _build_env_overrides(merged: dict) -> dict[str, str]:
     the .env / ambient environment is left alone for anything unspecified.
     """
     mapping = {
+        # χ² acceptance threshold — the refinement loop's stop condition.
+        "chi2_max": "CHI2_MAX",
+        # Acceptance floor. A reduced χ² far below 1 means the residuals are much
+        # smaller than the quoted uncertainties — an overestimated `dR` column or
+        # free parameters absorbing the noise. That is evidence about the error
+        # bars, not about the structure, so it must not read as a pass.
+        "chi2_min": "CHI2_MIN",
         "fit_method": "FIT_METHOD",
         "fit_steps": "FIT_STEPS",
         "fit_burn": "FIT_BURN",
@@ -1582,6 +1696,31 @@ def _build_env_overrides(merged: dict) -> dict[str, str]:
         if yaml_key in merged:
             overrides[env_key] = str(merged[yaml_key])
     return overrides
+
+
+@contextlib.contextmanager
+def _applied_env_overrides(setup: dict):
+    """Apply a setup's env-mapped run controls for the duration of a run.
+
+    The previous environment is restored on exit — keys that were absent are
+    unset again, not left as empty strings — so an in-process caller (tests,
+    the web UI, a follow-up command) never inherits one run's overrides.
+    """
+    import os
+
+    overrides = _build_env_overrides(setup)
+    saved = {k: os.environ.get(k) for k in overrides}
+    try:
+        # Inside the try: a mid-update failure leaves the environment partially
+        # overridden, and only the finally below can undo that.
+        os.environ.update(overrides)
+        yield overrides
+    finally:
+        for key, previous in saved.items():
+            if previous is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = previous
 
 
 # ============================================================================

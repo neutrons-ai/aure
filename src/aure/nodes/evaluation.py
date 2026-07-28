@@ -29,12 +29,260 @@ from .prompts import format_fit_evaluation_prompt, format_hypothesis_revision_pr
 logger = logging.getLogger(__name__)
 
 
-def _get_chi2_max() -> float:
-    """Return the χ² acceptance threshold from ``CHI2_MAX`` env var."""
-    try:
-        return float(os.environ.get("CHI2_MAX", "5.0"))
-    except (TypeError, ValueError):
-        return 5.0
+_CHI2_MAX_DEFAULT = 5.0
+
+# The lower end of the acceptance window. A reduced χ² this far below 1 says the
+# residuals are much smaller than the quoted uncertainties — an overestimated
+# ``dR`` column, or a model free enough to absorb the noise. That is evidence
+# about the *error bars*, not the structure, so the accept clamp must not read it
+# as a pass. 0.5 is deliberately the same number ``_simple_evaluation`` calls
+# "Possible overfitting", so the two cannot contradict each other.
+_CHI2_MIN_DEFAULT = 0.5
+
+
+def _validated_threshold(
+    raw: Any,
+    source: str,
+    *,
+    default: float,
+    relation: str,
+    allow_zero: bool = False,
+) -> Optional[float]:
+    """Coerce a χ² threshold, returning None when the value is unusable.
+
+    A non-finite threshold cannot be compared against usefully (``nan`` makes
+    every comparison False, ``inf`` makes one side vacuous) and a negative one
+    describes a χ² that cannot exist. *allow_zero* separates the two ends of the
+    window: ``0`` is meaningless as a ceiling but is the documented off switch for
+    the floor. ``setup.py`` rejects the same values for the YAML keys; the env
+    vars and old checkpoints bypass that loader, so the rule is enforced here too.
+    """
+    if raw is None:
+        return None
+    value: Optional[float]
+    if isinstance(raw, bool):
+        value = None
+    else:
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = None
+    unusable = (
+        value is None
+        or not np.isfinite(value)
+        or (value < 0 if allow_zero else value <= 0)
+    )
+    if unusable:
+        logger.warning(
+            "[EVALUATION] %s must be a finite %s number, got %r — "
+            "using χ² %s %.2f instead",
+            source,
+            "non-negative" if allow_zero else "positive",
+            raw,
+            relation,
+            default,
+        )
+        return None
+    return value
+
+
+def _validated_chi2_max(raw: Any, source: str) -> Optional[float]:
+    """Validate an acceptance *ceiling* (``chi2_max``); ``0`` is not usable."""
+    return _validated_threshold(raw, source, default=_CHI2_MAX_DEFAULT, relation="≤")
+
+
+def _validated_chi2_min(raw: Any, source: str) -> Optional[float]:
+    """Validate an acceptance *floor* (``chi2_min``); ``0`` disables it."""
+    return _validated_threshold(
+        raw, source, default=_CHI2_MIN_DEFAULT, relation="≥", allow_zero=True
+    )
+
+
+def _get_chi2_max(state: Optional[dict] = None) -> float:
+    """Return the χ² acceptance threshold for this run.
+
+    ``state["chi2_max"]`` wins when present: the threshold now terminates the
+    refinement loop deterministically, so a resumed run must keep the value it was
+    launched with rather than whatever ``CHI2_MAX`` the resuming process carries.
+    ``CHI2_MAX`` is the source for the first run (the runner pins it into the
+    state) and the fallback for checkpoints predating the state field.
+    """
+    if isinstance(state, dict):
+        from_state = _validated_chi2_max(state.get("chi2_max"), "state['chi2_max']")
+        if from_state is not None:
+            return from_state
+    from_env = _validated_chi2_max(os.environ.get("CHI2_MAX"), "CHI2_MAX")
+    return from_env if from_env is not None else _CHI2_MAX_DEFAULT
+
+
+def _get_chi2_min(
+    state: Optional[dict] = None, chi2_max: Optional[float] = None
+) -> float:
+    """Return the χ² acceptance *floor* for this run (``0`` = no floor).
+
+    Precedence mirrors :func:`_get_chi2_max` (state, then ``CHI2_MIN``, then the
+    default) and for the same reason — the floor changes where the loop stops.
+
+    *chi2_max* is the run's effective ceiling, resolved here if the caller has not
+    already. A floor at or above the ceiling leaves no acceptable χ² at all and
+    would strand every run in the refinement loop, so such a pair is refused in
+    favour of no floor — the failure mode that still lets a run finish. The setup
+    loader rejects it up front, but ``CHI2_MIN`` in the shell bypasses that.
+    """
+    if chi2_max is None:
+        chi2_max = _get_chi2_max(state)
+
+    floor: Optional[float] = None
+    if isinstance(state, dict):
+        floor = _validated_chi2_min(state.get("chi2_min"), "state['chi2_min']")
+    if floor is None:
+        floor = _validated_chi2_min(os.environ.get("CHI2_MIN"), "CHI2_MIN")
+    if floor is None:
+        floor = _CHI2_MIN_DEFAULT
+
+    if floor >= chi2_max:
+        logger.warning(
+            "[EVALUATION] χ² acceptance floor %.3f is not below the ceiling "
+            "%.3f — no χ² could ever be accepted, so the floor is disabled for "
+            "this run (set CHI2_MIN below CHI2_MAX to restore it)",
+            floor,
+            chi2_max,
+        )
+        return 0.0
+    return floor
+
+
+def _per_file_over_threshold(per_file_results: Optional[list], chi2_max: float) -> list:
+    """Return ``(label, χ²)`` for every per-file result that fails *chi2_max*.
+
+    A missing/``None``/``NaN`` χ² is *unknown* and ignored: no number is not
+    evidence of a bad fit, and treating it as one would disable the clamp for every
+    fit that reports no per-file χ² at all.
+
+    ``+inf`` is the opposite — ``fitting.py`` and ``refl1d_import.py`` write it
+    deliberately to mean "this dataset's fit is unusable", so it *blocks* the
+    clamp: a contrast whose fit blew up must not hide under a passing aggregate.
+    """
+    over = []
+    for pf in per_file_results or []:
+        if not isinstance(pf, dict):
+            continue
+        c = pf.get("chi_squared")
+        if isinstance(c, bool) or not isinstance(c, (int, float)):
+            continue
+        if np.isnan(c) or c <= chi2_max:
+            continue
+        label = pf.get("state") or pf.get("label") or pf.get("file") or "?"
+        over.append((str(label), float(c)))
+    return over
+
+
+def _format_per_file_failures(over: list) -> str:
+    """Render ``_per_file_over_threshold`` output for the stand-down log line.
+
+    ``+inf`` is a failure sentinel, not a measured value, so it is named as such
+    rather than printed as a number that reads like a real χ².
+    """
+    parts = []
+    for label, c in over:
+        if np.isinf(c):
+            parts.append(f"{label} χ²=inf (fit failed / no usable points)")
+        else:
+            parts.append(f"{label} χ²={c:.3f}")
+    return ", ".join(parts)
+
+
+def _clamp_acceptance_to_chi2(
+    analysis: dict,
+    *,
+    chi2: float,
+    chi2_max: float,
+    chi2_min: float = 0.0,
+    per_file_results: Optional[list] = None,
+) -> bool:
+    """Force acceptance when χ² already meets the run's threshold.
+
+    ``chi2_max`` is the run's contract with the user, so a fit that meets it stops
+    reproducibly rather than at the LLM's discretion — otherwise the refinement
+    loop spends fit and LLM budget re-litigating a fit that already passed. The
+    LLM's objections are not discarded: they stay in ``analysis["issues"]`` and are
+    reported as notes, and the ideas the run never tried are listed by ``finalize``.
+
+    This is a *floor* on acceptance: it only flips ``False → True``, never the
+    reverse. Above ``chi2_max`` the verdict is entirely the LLM's, so none of the
+    guards below apply there.
+
+    Four things outrank the clamp, each a defect the aggregate χ² cannot see:
+
+    * ``_profile_artifact`` — a physically impossible SLD profile must never be
+      accepted on χ² alone;
+    * ``_profile_checked`` *absent* — the profile veto is the clamp's only safety
+      net and it is inert wherever :func:`_detect_profile_artifacts_into` could not
+      reach a trustworthy answer. "Not checked" is unsafe, not clean;
+    * a per-file χ² above ``chi2_max`` or carrying the ``+inf`` "fit failed"
+      sentinel — ``chi2`` is averaged over every model, so an entirely unfitted
+      dataset can hide under a passing aggregate;
+    * ``chi2`` below *chi2_min* — see ``_CHI2_MIN_DEFAULT``. ``0`` disables it.
+
+    Each is a *stand-down*, not a veto: the clamp declines to force acceptance and
+    the evaluator's verdict decides, which is the pre-clamp behaviour. Vetoing
+    would re-introduce the endless refinement the clamp exists to stop, since a fit
+    whose ``dR`` really is conservative can legitimately be accepted at a low χ².
+
+    Returns:
+        True if the verdict was flipped to acceptable.
+    """
+    if analysis.get("acceptable"):
+        return False
+    if isinstance(chi2, bool) or not isinstance(chi2, (int, float)):
+        return False
+    if not np.isfinite(chi2) or chi2 > chi2_max:
+        return False
+    if chi2_min > 0 and chi2 < chi2_min:
+        logger.info(
+            "[EVALUATION] Not accepting on χ²=%.4g alone: it is below the "
+            "acceptance floor χ² ≥ %.3f, i.e. the residuals are smaller than the "
+            "quoted uncertainties (an overestimated dR column, or a model free "
+            "enough to absorb the noise), so the LLM's verdict on the error "
+            "model stands and refinement continues",
+            chi2,
+            chi2_min,
+        )
+        return False
+    if analysis.get("_profile_artifact"):
+        return False
+    if not analysis.get("_profile_checked"):
+        # Deliberately does not name a cause: several are possible and only
+        # `_detect_profile_artifacts_into` knows which applied, so it logs the
+        # specific reason at the point it declines to set the marker.
+        logger.info(
+            "[EVALUATION] Not accepting on χ²=%.3f alone: the SLD profile was "
+            "not verified for non-physical excursions (see the preceding "
+            "[EVALUATION] line for why), so the LLM's verdict stands and "
+            "refinement continues",
+            chi2,
+        )
+        return False
+    over = _per_file_over_threshold(per_file_results, chi2_max)
+    if over:
+        logger.info(
+            "[EVALUATION] Not accepting on aggregate χ²=%.3f: %s above the "
+            "threshold χ² ≤ %.3f",
+            chi2,
+            _format_per_file_failures(over),
+            chi2_max,
+        )
+        return False
+
+    analysis["acceptable"] = True
+    analysis["_chi2_clamped"] = True
+    logger.warning(
+        "[EVALUATION] Overriding acceptable=False: χ²=%.3f already meets the "
+        "acceptance threshold χ² ≤ %.3f",
+        chi2,
+        chi2_max,
+    )
+    return True
 
 
 def _count_free_params(model: dict) -> int:
@@ -122,11 +370,15 @@ def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
     # Check if any fitted parameters are pinned at their range boundaries.
     # If so, auto-expand those bounds and flag the issue.
     boundary_hits = _check_boundary_hits(latest_fit)
+    expanded_model = None
     if boundary_hits:
         model = state.get("current_model")
         if isinstance(model, dict):
-            model = _expand_model_bounds(model, boundary_hits)
-            updates["current_model"] = model
+            # Published to the state only on the refining path below. An
+            # accepting verdict ends the run without another fit, and bounds
+            # that nothing will ever explore would misdescribe the model the
+            # run reports.
+            expanded_model = _expand_model_bounds(model, boundary_hits)
         for bh in boundary_hits:
             logger.warning(
                 "[EVALUATION] Parameter '%s' hit %s bound (value=%.4f, bound=%.4f)",
@@ -139,7 +391,8 @@ def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
     # ========== Residual Fringe Analysis ==========
     # When the fit is not great, look for unmodeled oscillations in the
     # residual that reveal missing layer thicknesses.
-    chi2_max = _get_chi2_max()
+    chi2_max = _get_chi2_max(state)
+    chi2_min = _get_chi2_min(state, chi2_max=chi2_max)
     residual_ratio = latest_fit.get("residual_ratio", [])
     Q = state.get("Q", [])
     per_file_results = latest_fit.get("per_file_results") or []
@@ -220,6 +473,7 @@ def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
             hypothesis=state.get("hypothesis"),
             features=state.get("extracted_features"),
             chi2_max=chi2_max,
+            chi2_min=chi2_min,
             user_criteria=user_criteria,
             residual_analysis=latest_fit.get("residual_analysis"),
             boundary_hits=boundary_hits,
@@ -271,16 +525,6 @@ def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
         )
         return updates
 
-    # Update fit result with issues and suggestions
-    # Inject boundary-hit issues into the analysis
-    if boundary_hits:
-        for bh in boundary_hits:
-            analysis["issues"].append(
-                f"Parameter '{bh['name']}' is at its {bh['bound_hit']} bound "
-                f"({bh['value']:.4f} ≈ {bh['bound_value']:.4f}). "
-                f"Range has been auto-expanded."
-            )
-
     # ========== SLD-Profile Artifact Detection ==========
     # A χ²-optimal fit can still produce a physically impossible SLD profile
     # (a roughness erf-tail dipping below/above the bounding media). Detect it
@@ -288,6 +532,58 @@ def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
     # refinement pass. The σ/thickness ratio is surfaced as an informational
     # concern only — a large roughness is legitimate for a graded profile.
     _detect_profile_artifacts_into(analysis, latest_fit, current_model)
+
+    # ========== Deterministic χ² Accept Clamp ==========
+    # The threshold is enforced here, not left to the LLM's verdict. Must run
+    # after the artifact detector so the profile veto keeps precedence.
+    clamped = _clamp_acceptance_to_chi2(
+        analysis,
+        chi2=chi2,
+        chi2_max=chi2_max,
+        chi2_min=chi2_min,
+        per_file_results=latest_fit.get("per_file_results"),
+    )
+    # Surface *who* accepted, so the runner can tell a clamp-driven completion from
+    # an LLM accept: the interactive review pause is gated on the run not being
+    # complete, which the clamp made unreachable on the very iteration it ends the
+    # run. Written on every path, so a restarted run cannot inherit a stale True.
+    updates["chi2_clamp_accepted"] = bool(clamped)
+
+    # ========== Suspiciously Low χ² ==========
+    # An ``issue`` rather than a ``physical_concern`` because only ``issues`` is
+    # copied onto the FitResult below, and that is what reaches the user.
+    if chi2_min > 0 and np.isfinite(chi2) and chi2 < chi2_min:
+        analysis["issues"].append(
+            f"χ² = {chi2:.4g} is below the acceptance floor χ² ≥ {chi2_min:.2f}. "
+            f"The residuals are smaller than the quoted uncertainties, which "
+            f"usually means the dR column is overestimated or the model has "
+            f"enough free parameters to absorb the noise — evidence about the "
+            f"error bars rather than confirmation of the structure. Check the "
+            f"uncertainties and the parameter count before trusting this fit."
+        )
+
+    # ========== Boundary-Hit Issues ==========
+    # Reported after the verdict is settled because the two paths have different
+    # truths: the expanded bounds are only adopted (and re-fitted) when the run
+    # refines. On an accepting verdict the run ends here, so claiming the range was
+    # expanded would hide what the user needs told — a reported parameter is pinned.
+    if boundary_hits:
+        for bh in boundary_hits:
+            if analysis["acceptable"]:
+                analysis["issues"].append(
+                    f"Parameter '{bh['name']}' is pinned at its "
+                    f"{bh['bound_hit']} bound "
+                    f"({bh['value']:.4f} ≈ {bh['bound_value']:.4f}), so its "
+                    f"value and uncertainty are unreliable and the true optimum "
+                    f"may lie outside the range. The run stopped here, so the "
+                    f"range was not re-fitted with the bound relaxed."
+                )
+            else:
+                analysis["issues"].append(
+                    f"Parameter '{bh['name']}' is at its {bh['bound_hit']} bound "
+                    f"({bh['value']:.4f} ≈ {bh['bound_value']:.4f}). "
+                    f"Range has been auto-expanded."
+                )
 
     latest_fit["issues"] = analysis["issues"]
     latest_fit["suggestions"] = analysis["suggestions"]
@@ -303,14 +599,34 @@ def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
     if analysis["acceptable"]:
         logger.info("[EVALUATION] ✓ Fit acceptable - workflow complete")
         updates["workflow_complete"] = True
+        # The accepted fit is the outcome of whatever hypothesis was realized in the
+        # previous turn, so the bookkeeping runs on this branch too — the accepting
+        # iteration is the *normal* terminus, and leaving it out reported the idea
+        # that worked as "tried, inconclusive". Nothing was reverted here.
+        accepted_hypotheses = list(state.get("structural_hypotheses", []) or [])
+        if accepted_hypotheses:
+            updates["structural_hypotheses"] = _update_hypothesis_outcomes(
+                hypotheses=accepted_hypotheses,
+                current_iteration=iteration,
+                chi2=chi2,
+                best_chi2=state.get("best_chi2"),
+                bic_reverted=False,
+                accepted=True,
+            )
         updates["messages"] = [
             Message(
                 role="assistant",
-                content=_format_success(latest_fit, analysis),
+                content=_format_success(
+                    latest_fit, analysis, chi2_max=chi2_max, chi2_min=chi2_min
+                ),
                 timestamp=None,
             )
         ]
     else:
+        # The auto-expanded bounds are adopted here, where a re-fit follows.
+        if expanded_model is not None:
+            updates["current_model"] = expanded_model
+
         # ========== χ² Regression Guardrail ==========
         # If the current fit is worse than the best so far, revert to the
         # best model before sending it to the refinement loop. This prevents
@@ -486,6 +802,7 @@ def _update_hypothesis_outcomes(
     chi2: float,
     best_chi2: float | None,
     bic_reverted: bool,
+    accepted: bool = False,
 ) -> list:
     """Update the status of a hypothesis that was tried in the previous turn.
 
@@ -500,6 +817,14 @@ def _update_hypothesis_outcomes(
     * If χ² improved relative to the best-so-far, the hypothesis is marked
       ``confirmed``.
     * Otherwise the status is left as ``tried`` so the LLM can decide.
+
+    *accepted* (the run ends on this fit) waives the χ² comparison only when there
+    is no baseline to compare against — ``best_chi2 is None``, i.e. an accepting
+    first iteration. It must **not** waive a baseline that exists: the accepting
+    iteration need not be the run's best one, and the accept branch never reaches
+    the refine branch's χ² regression guardrail, so an unconditional bypass would
+    mark a hypothesis that made the fit *worse* as ``confirmed`` while ``finalize``
+    reports the earlier model that lacks that change.
     """
     prev_iter = current_iteration - 1
     updated = [dict(h) for h in hypotheses]
@@ -513,7 +838,9 @@ def _update_hypothesis_outcomes(
             h["notes"] = (
                 (h.get("notes", "") + " ") if h.get("notes") else ""
             ) + "BIC guardrail reverted the structural change."
-        elif best_chi2 is not None and chi2 <= best_chi2 * 1.01:
+        elif (accepted and best_chi2 is None) or (
+            best_chi2 is not None and chi2 <= best_chi2 * 1.01
+        ):
             h["status"] = "confirmed"
             h["notes"] = (
                 (h.get("notes", "") + " ") if h.get("notes") else ""
@@ -738,12 +1065,43 @@ def _revise_hypotheses(
     }
 
 
+def _as_text_list(raw: Any) -> list:
+    """Normalize one LLM-supplied list field to a list of non-empty strings.
+
+    ``issues`` / ``suggestions`` / ``physical_concerns`` are model output, not a
+    validated schema, but every consumer treats them as lists of text — the node
+    appends to ``issues`` on every sub-floor fit and every boundary hit. A bare
+    string raised ``AttributeError: 'str' object has no attribute 'append'`` there
+    and, since the runner does not wrap the node, ended the whole run.
+
+    A single string becomes a one-element list rather than being dropped: an
+    evaluator reporting one issue as a bare string is still reporting a real
+    finding. Only ``None``/absent and whitespace mean "nothing to report".
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        text = raw.strip()
+        return [text] if text else []
+    if isinstance(raw, (list, tuple)):
+        out = []
+        for item in raw:
+            if item is None:
+                continue
+            text = (item if isinstance(item, str) else str(item)).strip()
+            if text:
+                out.append(text)
+        return out
+    return [str(raw)]
+
+
 def analyze_fit_quality_with_llm(
     fit_result: FitResult,
     sample_description: Optional[str],
     hypothesis: Optional[str],
     features: Optional[Dict],
     chi2_max: float = 5.0,
+    chi2_min: Optional[float] = None,
     user_criteria: str = "",
     residual_analysis: Optional[Dict] = None,
     boundary_hits: Optional[list] = None,
@@ -759,9 +1117,17 @@ def analyze_fit_quality_with_llm(
     """
     Use LLM to analyze fit quality in context.
 
+    *chi2_min* is the acceptance floor (``0`` = none). ``None`` means "resolve it
+    from the environment", for callers outside the workflow — ``aure evaluate``
+    has no run state to pin it from, and the evaluator still has to be told what
+    a χ² below the floor implies about the error model.
+
     Returns:
         Dictionary with acceptable, issues, suggestions, etc.
     """
+    if chi2_min is None:
+        chi2_min = _get_chi2_min(chi2_max=chi2_max)
+
     llm = get_llm(temperature=0)
 
     prompt = format_fit_evaluation_prompt(
@@ -773,6 +1139,7 @@ def analyze_fit_quality_with_llm(
         parameters=fit_result.get("parameters", {}),
         features=features or {},
         chi2_max=chi2_max,
+        chi2_min=chi2_min,
         user_criteria=user_criteria,
         boundary_hits=boundary_hits,
         residual_analysis=residual_analysis,
@@ -797,9 +1164,9 @@ def analyze_fit_quality_with_llm(
             return {
                 "acceptable": result.get("acceptable", False),
                 "quality_assessment": result.get("quality_assessment", "unknown"),
-                "issues": result.get("issues", []),
-                "suggestions": result.get("suggestions", []),
-                "physical_concerns": result.get("physical_concerns", []),
+                "issues": _as_text_list(result.get("issues")),
+                "suggestions": _as_text_list(result.get("suggestions")),
+                "physical_concerns": _as_text_list(result.get("physical_concerns")),
                 "hypothesis_addressed": result.get("hypothesis_addressed", ""),
                 "needs_user_guidance": result.get("needs_user_guidance", False),
                 "next_action": result.get("next_action", "parameter_tweak"),
@@ -811,15 +1178,38 @@ def analyze_fit_quality_with_llm(
             logger.warning("[EVALUATION] Failed to parse LLM JSON response")
 
     # Fallback if LLM response can't be parsed
-    fallback = _simple_evaluation(fit_result)
+    fallback = _simple_evaluation(fit_result, chi2_max=chi2_max, chi2_min=chi2_min)
     fallback["_used_fallback"] = True
     return fallback
 
 
-def _simple_evaluation(fit_result: FitResult) -> Dict[str, Any]:
-    """Simple heuristic evaluation as fallback."""
+def _simple_evaluation(
+    fit_result: FitResult,
+    chi2_max: Optional[float] = None,
+    chi2_min: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Simple heuristic evaluation as fallback.
+
+    Used when the evaluator LLM's response carries no parseable JSON. It
+    **reports** — it does not decide acceptance.
+
+    ``acceptable`` is always False here so ``_clamp_acceptance_to_chi2`` stays the
+    single acceptance point and all its stand-down guards apply. Asserting
+    ``chi2 <= chi2_max`` here short-circuited the clamp (it early-returns on an
+    already-acceptable verdict), so a fit with no SLD profile to check, or an
+    unfitted contrast under a passing aggregate, completed on χ² alone — on a path
+    with no LLM judgement to defer to either. The clamp reaches the same decision
+    once its guards are satisfied.
+
+    *chi2_max* / *chi2_min* are the caller's effective window (state-pinned for a
+    resumed run), falling back to the environment for callers with no state.
+    """
     chi2 = fit_result.get("chi_squared", float("inf"))
-    chi2_max = _get_chi2_max()
+    chi2_max = _get_chi2_max() if chi2_max is None else chi2_max
+    # The overfitting flag below reads the *configured* floor rather than the literal
+    # 0.5 it used to carry, so this heuristic and the clamp agree on where "χ² too
+    # small to be a pass" starts.
+    chi2_min = _get_chi2_min(chi2_max=chi2_max) if chi2_min is None else chi2_min
 
     issues = []
     suggestions = []
@@ -830,11 +1220,11 @@ def _simple_evaluation(fit_result: FitResult) -> Dict[str, Any]:
     elif chi2 > chi2_max:
         issues.append(f"Marginal fit quality (χ² = {chi2:.1f}, threshold = {chi2_max})")
         suggestions.append("Try refining parameter bounds")
-    elif chi2 < 0.5:
+    elif chi2_min > 0 and chi2 < chi2_min:
         issues.append(f"Possible overfitting (χ² = {chi2:.2f})")
 
     return {
-        "acceptable": chi2 <= chi2_max,
+        "acceptable": False,
         "quality_assessment": "good" if chi2 < chi2_max else "poor",
         "issues": issues,
         "suggestions": suggestions,
@@ -845,12 +1235,48 @@ def _simple_evaluation(fit_result: FitResult) -> Dict[str, Any]:
     }
 
 
-def _format_success(fit_result: FitResult, analysis: Dict) -> str:
-    """Format success message."""
+def _format_success(
+    fit_result: FitResult,
+    analysis: Dict,
+    *,
+    chi2_max: Optional[float] = None,
+    chi2_min: Optional[float] = None,
+) -> str:
+    """Format success message.
+
+    *chi2_max* / *chi2_min* are passed in rather than re-read from the environment
+    so the reported window is the one the run actually applied (a resumed run keeps
+    its original thresholds).
+    """
+    chi2 = fit_result["chi_squared"]
     lines = ["## ✓ Fit Successful!"]
     lines.append("")
-    lines.append(f"**Final χ² = {fit_result['chi_squared']:.2f}**")
+    lines.append(f"**Final χ² = {chi2:.2f}**")
     lines.append("")
+
+    if analysis.get("_chi2_clamped"):
+        threshold = _get_chi2_max() if chi2_max is None else chi2_max
+        lines.append(
+            f"The run stopped here because χ² met the acceptance threshold "
+            f"(χ² ≤ {threshold:.2f}). The notes below were raised during "
+            f"evaluation but were not acted on."
+        )
+        lines.append("")
+
+    # A χ² this low reaches this message only because the evaluator accepted it on
+    # its own judgement — the clamp stands down below the floor. Said plainly here
+    # because the headline number invites the opposite reading.
+    floor = _get_chi2_min(chi2_max=chi2_max) if chi2_min is None else chi2_min
+    if floor > 0 and np.isfinite(chi2) and chi2 < floor:
+        lines.append(
+            f"**Note:** χ² = {chi2:.4g} is *below* the acceptance floor "
+            f"(χ² ≥ {floor:.2f}), so this is not a better fit than χ² ≈ 1 — the "
+            f"residuals are smaller than the quoted uncertainties. That usually "
+            f"means the dR column is overestimated or the model has enough free "
+            f"parameters to absorb the noise. The evaluator accepted it anyway; "
+            f"check the uncertainties and the parameter count."
+        )
+        lines.append("")
 
     if fit_result["parameters"]:
         lines.append("### Best-fit Structure:")
@@ -977,18 +1403,49 @@ def _ordered_slds_for_artifacts(model: dict, parameters: dict) -> list:
 def _detect_profile_artifacts_into(analysis: dict, fit_result: FitResult, model) -> None:
     """Run the SLD-profile artifact detector and fold results into ``analysis``.
 
-    A genuine non-physical excursion becomes an ``issue`` (so the workflow
-    loops back to refinement) plus a targeted ``suggestion`` that offers both
-    remedies — tie the roughness (keep a layer interpretation) or accept the
-    diffuse transition as a profile parametrization. The extremum-count note
-    and the σ/thickness ratios are added to ``physical_concerns`` only.
+    A genuine non-physical excursion becomes an ``issue`` (so the workflow loops
+    back to refinement) plus a targeted ``suggestion`` that offers both remedies
+    — tie the roughness (keep a layer interpretation) or accept the diffuse
+    transition as a profile parametrization. The extremum-count note and the
+    σ/thickness ratios are added to ``physical_concerns`` only.
+
+    Two markers are left for the χ² accept clamp:
+
+    * ``_profile_artifact`` — an excursion was found. A veto.
+    * ``_profile_checked`` — a *positive* statement that this fit's profile was
+      evaluated and the answer can be relied on. Left unset on every path that
+      could not reach one: no exported profile (``sld_z``/``sld_rho`` are written
+      only when the run has an output directory, so library and MCP runs have
+      none), fewer than two resolvable media, a detector that returned
+      ``checked=False``, **or a multi-state co-refinement** (see below). Absent
+      means "no evidence either way", which the clamp treats as unsafe — it stands
+      down and the evaluator's verdict decides, as it did before the clamp existed.
+
+    **Co-refinement limitation.** Only the fit's single top-level profile reaches
+    this function, and refl1d writes one profile per model, so on a multi-state fit
+    that profile is ``states[0]``'s alone. The other states are never examined, so
+    such a fit is never marked checked and the deterministic χ² stop is inert for
+    co-refinement — those runs still finish on the evaluator's verdict. states[0]'s
+    profile is still checked for excursions, because a veto on the evidence
+    available is sound even when a clean bill of health is not.
     """
     z = fit_result.get("sld_z")
     rho = fit_result.get("sld_rho")
     if not z or not rho:
+        logger.info(
+            "[EVALUATION] The fit carries no exported SLD profile (refl1d writes "
+            "one only when the run has an output directory) — treating the "
+            "profile as unverified"
+        )
         return
     layer_rhos = _ordered_slds_for_artifacts(model, fit_result.get("parameters"))
     if len(layer_rhos) < 2:
+        logger.info(
+            "[EVALUATION] Fewer than two media resolvable from the model (%d), so "
+            "there is no SLD range to test the profile against — treating the "
+            "profile as unverified",
+            len(layer_rhos),
+        )
         return
 
     try:
@@ -1001,9 +1458,33 @@ def _detect_profile_artifacts_into(analysis: dict, fit_result: FitResult, model)
         return
 
     result = detect_profile_artifacts(z, rho, layer_rhos)
+
     analysis.setdefault("physical_concerns", [])
     analysis.setdefault("issues", [])
     analysis.setdefault("suggestions", [])
+
+    states = model.get("states") if isinstance(model, dict) else None
+    n_states = len(states) if isinstance(states, list) else 1
+
+    if not result.get("checked"):
+        logger.info(
+            "[EVALUATION] SLD-profile artifact detector declined to check the "
+            "profile (too few points, mismatched z/rho lengths, a non-finite "
+            "sample, or a zero SLD span across the media) — treating the profile "
+            "as unverified"
+        )
+    elif n_states > 1:
+        logger.warning(
+            "[EVALUATION] Multi-state fit (%d states): only the top-level SLD "
+            "profile is available here and it belongs to states[0] alone, so the "
+            "other states' profiles are NOT checked. This fit is therefore left "
+            "UNVERIFIED and the deterministic χ² stop cannot fire — a "
+            "co-refinement always finishes on the evaluator's verdict. Known "
+            "limitation.",
+            n_states,
+        )
+    else:
+        analysis["_profile_checked"] = True
 
     if result.get("has_artifact"):
         exc = result["excursions"][0]
@@ -1023,6 +1504,7 @@ def _detect_profile_artifacts_into(analysis: dict, fit_result: FitResult, model)
                 "[EVALUATION] Overriding acceptable=True: SLD-profile artifact present"
             )
         analysis["acceptable"] = False
+        analysis["_profile_artifact"] = True
         analysis["suggestions"].append(
             "Resolve the profile excursion: either constrain the offending "
             "interface roughness as a fraction of its layer thickness "

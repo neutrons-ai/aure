@@ -135,16 +135,51 @@ nr-isaac-format `architecture.md` for the store/representation contract.
 4. **ISAAC is delegated**, not reimplemented: export goes through `ingest-workflow` →
    `convert-ingest`. Keep AuRE's coupling to those CLIs (the `export` extra) thin.
 5. **The reported model is chosen in the runner's terminal block**, not the last
-   loop iteration and not a graph edge: `finalize` selects (lowest χ² + parsimony),
-   the optional `final_fit` polishes for uncertainties, then `save_final_state`
-   writes `final_state.json` + `problem.json`. `best_model`/`best_chi2` stay the
-   loop's regression baseline. See [docs/finalization.md](docs/finalization.md).
+   loop iteration and not a graph edge: `finalize` selects (lowest χ² +
+   parsimony tie-break) and reports the untried-hypothesis backlog, the optional
+   `final_fit` polishes for uncertainties, then `save_final_state` writes
+   `final_state.json` + `problem.json`. `best_model`/`best_chi2` stay the loop's
+   regression baseline. See [docs/finalization.md](docs/finalization.md).
+
+   Selection is **χ²-only** — it does not consult the SLD-profile veto, so the
+   reported model can be one `evaluation` rejected, and no surface says so. That
+   is a known, triaged defect, not a design decision: see
+   [issues.md](issues.md) #1–#3 before changing selection or adding a surface
+   that renders a run's answer.
+6. **In `evaluation`, the SLD-profile artifact check runs BEFORE the χ² acceptance
+   clamp.** A finite χ² inside the acceptance window `CHI2_MIN ≤ χ² ≤ CHI2_MAX`
+   deterministically forces `acceptable=True` (`_clamp_acceptance_to_chi2`) so
+   the loop stops reproducibly rather than at the LLM's discretion. The clamp
+   raises a verdict (`False → True`) and never lowers one, so above `CHI2_MAX`
+   the LLM decides and the profile veto is the only thing that can lower an
+   accept.
+
+   The clamp decides by reading the two markers the artifact check leaves behind
+   (`_profile_artifact`, `_profile_checked`) and **stands down** — declining to
+   force acceptance, so the LLM decides, as before the clamp — on a vetoed fit,
+   on an unverified one (no exported SLD profile, the detector declining with
+   `checked=False`, or *any* multi-state fit, whose other states' profiles are
+   never read back, so the stop is inert for co-refinement —
+   [issues.md](issues.md) #5), on one whose per-file/per-state χ² fails on its
+   own, and below `CHI2_MIN` (setup key `chi2_min`, default `0.5`, `0` disables),
+   where a reduced χ² far under 1 is evidence about the error model — an
+   overestimated `dR` column, or free parameters absorbing the noise — rather
+   than about the structure. All four are stand-downs, not vetoes.
+
+   Ordering the clamp above the check type-checks and passes a smoke test, but
+   both markers are then unset at clamp time and "not checked" means stand down:
+   the clamp becomes dead code and the χ² stop silently disappears. It flips to
+   the opposite failure — accepting impossible profiles — the moment anything
+   sets `_profile_checked` earlier than the check itself, which is why that
+   marker must stay the check's own positive statement. See
+   [docs/approach.md](docs/approach.md) §4.5.
 
 ## 7. Code map
 
 - `nodes/` — pipeline nodes (intake, analysis, modeling, fitting, evaluation, refinement).
-  The terminal `finalize` (select the reported model) and optional `final_fit`
-  (MCMC uncertainty polish) run in the runner's terminal block —
+  The terminal `finalize` (select the reported model; also emit the
+  untried-improvements report) and optional `final_fit` (MCMC uncertainty polish)
+  run in the runner's terminal block —
   see **[docs/finalization.md](docs/finalization.md)**.
 - `workflow/` — `runner.py` (the state-machine orchestrator + terminal
   finalize/final_fit/save; the single execution engine for CLI, web UI, and MCP),

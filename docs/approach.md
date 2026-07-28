@@ -238,12 +238,17 @@ and the basin it picks, and never aborts the fit on error.
 
 ### 4.5 Evaluation
 
-The **evaluation** node is the decision-maker. It does the following:
+The **evaluation** node is the decision-maker. It does the following (the
+numbering is topical, not chronological — `evaluation_node` runs 1 → 2 → 4 → 3 →
+6, then, on the refining branch only, 5 → 7):
 
 1. **Auto-expand stuck bounds.** If any fitted parameter ended at its
    bound, the bound is widened by a factor (e.g. ×1.5 outward) and the
    issue is logged. This is a purely mechanical step that saves the LLM
-   from having to ask for it.
+   from having to ask for it. The widened model is *computed* here but only
+   **adopted** on the refining path (after step 6): a run that accepts and stops
+   would otherwise report bounds nothing ever explored, so on that path the
+   issue text says the parameter is pinned instead of claiming a re-fit.
 2. **Residual-fringe analysis.** A small Fourier analysis of the
    residuals; if it shows a clear oscillation at a characteristic
    thickness, that thickness is reported to the LLM as a likely "missing
@@ -265,6 +270,10 @@ The **evaluation** node is the decision-maker. It does the following:
    than discrete layers. The σ/thickness ratio itself is reported only as an
    informational concern, never an error, because a large roughness is
    legitimate under the parametrization reading (§6.8).
+   On a co-refinement only `states[0]`'s profile is available to this check — the
+   per-state `profile.dat` files are written but never read back
+   ([issues.md](../issues.md) #5) — so a *veto* can still fire but a clean bill of
+   health cannot be given, which is what makes step 6's stop inert there.
 4. **Call the LLM for a judgement.** The LLM sees the fit result, the
    features, the residual analysis, the **χ² and BIC trajectory across
    all previous iterations**, and the **hypothesis list with statuses**.
@@ -288,7 +297,78 @@ The **evaluation** node is the decision-maker. It does the following:
      worth it. The node reverts to the best-BIC model and marks the
      hypothesis that was just tried as `rejected`.
 
-6. **Revise the hypotheses when the evidence demands it (gated).** When
+6. **Clamp acceptance to the χ² acceptance window.** `CHI2_MAX` (or the setup's
+   `chi2_max:`) is the run's contract with the user, so a **finite χ² inside the
+   window `chi2_min ≤ χ² ≤ chi2_max` forces `acceptable = True`** and the run
+   completes — otherwise the loop can spend its whole budget re-litigating a fit
+   that already passed, at the LLM's discretion and irreproducibly. The LLM's
+   objections are not discarded: they stay in `issues` and are reported as notes,
+   and the hypotheses the run never got to are listed by the finalize node. An
+   interactive run also still gets its review pause on a *clamped* accept (keyed
+   off `state["chi2_clamp_accepted"]`) — the one verdict where code overrode an
+   objecting evaluator is the one a human should see; feedback typed there is not
+   yet acted on ([issues.md](../issues.md) #15).
+
+   The clamp is **one-directional — a floor on stopping, not a ceiling.** It only
+   raises a verdict (`False → True`); it never lowers one. *Above* `chi2_max` the
+   LLM's `acceptable` is taken as-is and none of the stand-down conditions below
+   are even evaluated, so an LLM that accepts a χ² of 4200 on a profileless fit
+   with a failed (`+inf`) per-state χ² ends the run. Step 3's profile veto is the
+   only thing that lowers a verdict.
+
+   The clamp is deliberately the **last step that can change the verdict**
+   (everything after it only *reads* the settled verdict), and it stands down in
+   four cases — the first three a defect the aggregate χ² cannot see, the fourth a
+   regime in which χ² is not evidence about the structure at all:
+   - step 3 **vetoed** acceptance: a physically impossible profile is invisible
+     to χ² and must never be accepted on χ² alone;
+   - step 3 did not reach a trustworthy answer, which `_profile_checked` states
+     positively: the fit carries no exported SLD profile (refl1d writes one only
+     when the run has an output directory — an ad-hoc `run_analysis(...)`, MCP's
+     `co_refine_states` without `output_dir`, or `quick_analyze`, which has no
+     such parameter), the detector declined the profile it has (too few points,
+     mismatched `z`/`rho` lengths, a non-finite sample, or a zero SLD span across
+     the media), **or the fit is multi-state** — only `states[0]`'s profile is
+     read back, so a co-refinement is never verified and **the χ² stop is inert
+     there** ([issues.md](../issues.md) #5). "Not checked" is treated as unsafe,
+     not as clean, so the LLM's verdict decides, exactly as it did before the
+     threshold became binding;
+   - a **per-file / per-state χ²** is above the threshold, or carries the `+inf`
+     "fit failed" sentinel: the reported χ² is `problem.chisq()` averaged over
+     every model of a co-refinement, so one completely unfitted contrast can hide
+     under a passing aggregate;
+   - χ² is **below `chi2_min`** (`CHI2_MIN` / the setup's `chi2_min:`, default
+     `0.5`, `0` disables it, validated finite and required strictly below
+     `chi2_max`). A reduced χ² that far under 1 is not a better answer: it says
+     the residuals are much smaller than the quoted uncertainties, which in
+     reflectometry almost always means the `dR` column is overestimated or the
+     model carries enough free parameters to absorb the noise. That is evidence
+     about the **error model**, not about the structure, so it must not force
+     acceptance. The default is deliberately the same number
+     `_simple_evaluation` has always called "Possible overfitting" — the
+     heuristic now reads the configured floor, so the two can no longer
+     contradict each other. (The `neutron-reflectometry` skill still quotes the
+     literal 0.5 in its guidance table.)
+
+   **A stand-down is not a veto.** In all four cases the clamp merely declines to
+   *force* acceptance; the evaluator LLM's verdict then decides, as it did before
+   the clamp existed. That matters most for the floor: a dataset whose `dR`
+   genuinely is conservative can produce a low χ² on a correct model, and vetoing
+   there would re-introduce the endless refinement the clamp was added to stop. So
+   the floor hands the decision back *with the reasoning attached* — the prompt
+   gains an acceptance-floor block, the node records the finding in
+   `analysis["issues"]` (copied onto the `FitResult`, hence `final_state.json`),
+   and the success message repeats the caveat under the headline χ².
+
+   **Ordering invariant:** the clamp must stay *below* the artifact check (step 3)
+   — it decides by reading the two flags that check leaves behind. Hoisting it
+   above leaves both unset at clamp time, and "not checked" means stand down: the
+   clamp becomes dead code and the χ² stop silently disappears, while still
+   type-checking and passing a smoke test. The same reorder turns into the
+   *opposite* failure — accepting impossible profiles — the moment anything sets
+   `_profile_checked` earlier than the check itself, which is why that flag must
+   stay the check's own positive statement.
+7. **Revise the hypotheses when the evidence demands it (gated).** When
    the fit is not acceptable *and* there is a concrete signal that the
    intake-time hypothesis list may be incomplete — residual fringes
    pointing to a missing layer, χ² stalled for two or more iterations, or
@@ -302,9 +382,19 @@ The **evaluation** node is the decision-maker. It does the following:
    making, never what the answer should be (see §6.5).
 
 The evaluator's LLM may *suggest* a revert, but the guardrails *enforce*
-it deterministically. This is a deliberate division of labour: the LLM
-reasons about the shape of the fit, and code enforces the statistical
-invariants.
+it deterministically — and, since step 6, **stopping is partly code's decision
+too**: the LLM's `acceptable` is advisory *once χ² meets the threshold* (the
+clamp raises it) and whenever the profile check fires (the veto lowers it).
+Everywhere else — in particular for every fit above the threshold — `acceptable`
+is still the LLM's alone. This is a deliberate division of labour: the LLM
+reasons about the shape of the fit, and code enforces the statistical invariants
+and the run's stop contract.
+
+The deterministic steps are **an ordered chain, not independent post-LLM
+cleanup**: the profile veto (3) is applied first, then the χ² clamp (6) reads its
+outcome; the regression reverts (5) run only on the path where the verdict is
+still "not acceptable". See [architecture.md](../architecture.md) §6 before
+reordering them.
 
 After evaluation, the router decides the next step. There are three
 possible transitions:
@@ -598,6 +688,9 @@ The table below summarises who decides what.
 | Update hypothesis status after realising a change | LLM | Modeling refinement prompt |
 | Auto-expand stuck bounds | Code | `_expand_model_bounds` in `evaluation.py` |
 | Detect non-physical SLD-profile excursions | Code | `detect_profile_artifacts` in `feature_tools.py` |
+| **Stop when χ² meets the threshold** (LLM's `acceptable` is advisory *at or below* it only) | Code | `_clamp_acceptance_to_chi2` — runs *after* the profile veto, which outranks it; raises verdicts only, never lowers them |
+| **Choose the model the run reports** | Code | `finalize._select` — lowest χ², parsimony tie-break inside the χ² band; χ²-only, see [issues.md](../issues.md) #1 |
+| Report the untried hypotheses at the end | Code | `finalize._format_remaining_improvements` (statuses reported, never re-derived) |
 | Escape thin-layer local minima before fitting | Code | mode enumeration in `fitting.py` (gated by `MODE_ENUMERATION`) |
 | Revert on χ² regression | Code | χ² regression guardrail |
 | Revert on BIC regression + mark hypothesis `rejected` | Code | BIC regression guardrail |
@@ -689,7 +782,9 @@ For multi-state co-refinement runs (`states:` block in the user config),
 each fit iteration also produces a per-state `profile.dat` under
 `output/refl1d_output/fit_iter{i}_{method}/state_<name>/`, and the
 aggregated `FitResult` carries one `PerFileFitResult` entry per dataset
-tagged with its `state` name. See the `multi-state-corefinement` skill
+tagged with its `state` name. Those per-state profile files are never read
+back, though — only the single top-level one, which belongs to `states[0]`
+([issues.md](../issues.md) #5). See the `multi-state-corefinement` skill
 for the experimental patterns this addresses and for guidance on choosing
 `shared_parameters` vs `unshared_parameters`.
 

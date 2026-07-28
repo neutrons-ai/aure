@@ -317,11 +317,33 @@ Respond in JSON format:
 
 **Acceptance threshold: χ² ≤ {chi2_max}.**
 A fit with χ² within this threshold should be marked "acceptable": true.
+{chi2_floor}
 
 Consider the sample description when evaluating if parameters make physical sense.
 
 {user_criteria}
 """
+
+
+def _format_chi2_floor(chi2_min: float) -> str:
+    """The acceptance-floor half of the threshold block (empty when disabled).
+
+    The floor is not a second bar to clear — it is the point below which χ² stops
+    being evidence about the structure at all, so the evaluator is told what to
+    judge instead. ``chi2_min = 0`` (the documented off switch) must not render as
+    "χ² < 0", hence the empty string.
+    """
+    if not chi2_min or chi2_min <= 0:
+        return ""
+    return (
+        f"**Acceptance floor: χ² ≥ {chi2_min:g}.** Below it the threshold above "
+        f"does not apply and your verdict alone decides. A reduced χ² that far "
+        f"under 1 means the residuals are much smaller than the quoted "
+        f"uncertainties — usually an overestimated dR column, or enough free "
+        f"parameters to absorb the noise. Judge the error model and the "
+        f"parameter count, not the χ² number: accept only if the uncertainties "
+        f'are genuinely conservative, and otherwise say so in "issues".'
+    )
 
 
 def _format_residual_analysis(residual_analysis: Dict[str, Any] | None) -> str:
@@ -541,6 +563,7 @@ def format_fit_evaluation_prompt(
     parameters: Dict[str, float],
     features: Dict[str, Any],
     chi2_max: float = 5.0,
+    chi2_min: float = 0.0,
     user_criteria: str = "",
     residual_analysis: Dict[str, Any] | None = None,
     boundary_hits: list | None = None,
@@ -565,6 +588,7 @@ def format_fit_evaluation_prompt(
         parameters: Best-fit parameter values
         features: Extracted physics features
         chi2_max: χ² acceptance threshold (from ``CHI2_MAX`` env var)
+        chi2_min: χ² acceptance floor (from ``CHI2_MIN``); ``0`` renders no floor
         user_criteria: Formatted user-defined evaluation criteria
 
     Returns:
@@ -609,6 +633,7 @@ def format_fit_evaluation_prompt(
         parameters=params_str,
         features=features_str,
         chi2_max=chi2_max,
+        chi2_floor=_format_chi2_floor(chi2_min),
         user_criteria=user_criteria,
         residual_analysis=_format_residual_analysis(residual_analysis),
         boundary_hits=_format_boundary_hits(boundary_hits),

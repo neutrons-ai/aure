@@ -22,6 +22,15 @@ sample description to a fitted
   flags physically impossible roughness excursions a good χ² hides; and an
   optional `roughness_tie` (σ = fraction × thickness) that keeps a thin layer's
   interface from outgrowing it. See [docs/approach.md](docs/approach.md) §6.8.
+- **Deterministic stop when the fit is good enough** — a finite χ² inside the
+  run's acceptance window (`chi2_min:` ≤ χ² ≤ `chi2_max:`) ends the refinement
+  loop in code rather than at the evaluator LLM's discretion, and the structural
+  ideas the run never got to are listed in the report instead of being dropped.
+  The window has a floor as well as a ceiling: below `chi2_min:` (default 0.5) the
+  stop stands down and the evaluator's verdict decides again, because a reduced χ²
+  that far below 1 is evidence the quoted `dR` is too large rather than evidence
+  the structure is right. See *χ² acceptance window* below, including where the
+  stop does not apply.
 - **Adaptive, skill-driven hypothesis loop** — your stated hypothesis
   (`-h "there may be an oxide on top"`) is turned into top-ranked candidate
   structural changes at intake, and when a fit reveals an unexpected artifact
@@ -93,10 +102,16 @@ flowchart LR
    the tried hypothesis as rejected. A deterministic **SLD-profile artifact
    check** flags physically impossible roughness excursions (a profile dipping
    below/above what its bounding media can produce) that a good χ² would
-   otherwise hide. When the fit stalls or the residuals reveal an unmodeled
-   layer, it also **re-selects skills from the observed evidence and
-   proposes/re-ranks new hypotheses** — the only place besides intake that
-   grows the candidate list.
+   otherwise hide, and **vetoes acceptance** when it fires. Stopping *early* is
+   deterministic too: a finite χ² inside the acceptance window
+   (`chi2_min` ≤ χ² ≤ `chi2_max`) completes the run regardless of the LLM's
+   verdict — evaluated *after* the artifact check, which outranks it, and skipped
+   whenever the profile could not be verified or χ² landed below the floor (see
+   *χ² acceptance window*). The reverse is not true: above `chi2_max` the LLM's
+   `acceptable` is taken as-is, so the window can only end a run early, never
+   prolong one. When the fit stalls or the residuals reveal an unmodeled layer, it
+   also **re-selects skills from the observed evidence and proposes/re-ranks new
+   hypotheses** — the only place besides intake that grows the candidate list.
 6. **Refinement** — When the evaluator decides a refinement is needed, it
    tells the modeling node whether to do a parameter tweak or to realize
    a specific structural hypothesis from the ranked list. The loop
@@ -239,6 +254,93 @@ Multi-state: declare multiple states. The default tied set
 (when neither `shared_parameters` nor `unshared_parameters` is supplied) ties
 thickness, SLD, and interface for every layer plus the substrate interface.
 
+#### χ² acceptance window
+
+`chi2_max:` and `chi2_min:` are per-run setup keys — what counts as a good enough
+fit changes from one dataset to the next, so they belong in the YAML next to
+`max_refinements:` rather than only in `.env`:
+
+```yaml
+max_refinements: 5
+chi2_max: 2.5          # ceiling; built-in default 5.0
+chi2_min: 0.5          # floor;   built-in default 0.5 (0 disables it)
+```
+
+A finite χ² **inside the window** ends the refinement loop immediately. The stop
+is enforced in code, not left to the evaluator LLM's verdict, so a run stops
+reproducibly instead of spending further iterations re-litigating a fit that
+already passed — and the structural hypotheses it never got to are listed in the
+report (below), so a follow-up run with a tighter `chi2_max` can pursue them.
+
+**Why there is a floor.** A reduced χ² far below 1 is not a better fit: the
+residuals are much smaller than the quoted uncertainties, which in reflectometry
+almost always means an overestimated `dR` column, or a model with enough free
+parameters to absorb the noise. That is evidence about the **error bars**, not
+about the structure, so it must not read as a pass. Below `chi2_min` the stop
+therefore stands down and the evaluator decides instead, told what a sub-floor χ²
+implies, with the finding recorded as an issue on the fit result (so it reaches
+`final_state.json`) and repeated in the success message. Standing down is not a
+veto: a χ² of 0.004 does not block completion, because a genuinely conservative
+`dR` column is a real case. The default `0.5` is the number AuRE's own heuristic
+evaluator has always flagged as "possible overfitting". Use `chi2_min: 0` (or
+`CHI2_MIN=0`) to disable it; otherwise it must be finite, ≥ 0 and **strictly
+below** `chi2_max`, since a floor at or above the ceiling admits no χ² at all.
+
+**χ² alone never *forces* acceptance.** The stop stands down — leaving the
+evaluator's verdict to decide, as before the stop existed — when the SLD profile
+shows a non-physical excursion (an erf tail leaving the range its bounding media
+can produce; back to refinement however low χ² is); when the profile could not be
+*verified* — none was exported (refl1d writes one only when the run has an output
+directory, so an ad-hoc `run_analysis(...)` or an MCP run has nothing to check) or
+the detector declined the one it has (too few points, mismatched `z`/`rho`, a
+non-finite sample, every medium at the same SLD); when a per-file / per-state χ²
+is over the ceiling or carries the `+inf` "fit failed" sentinel (the reported χ² is
+averaged over every model in the problem, so one unfitted contrast can hide under
+a passing aggregate); and when χ² is below `chi2_min`.
+
+Two limitations, stated plainly:
+
+- **The stop is inert for multi-state co-refinement.** refl1d writes one SLD
+  profile per model and only the top-level one — `states[0]`'s — is read back, so
+  a co-refined fit is never marked verified and the stop always stands down.
+  Those runs still finish on the evaluator's verdict: `chi2_max` does nothing on
+  a `states:` run ([issues.md](issues.md) #5).
+- **The stop is one-directional.** It turns "keep refining" into "stop", never the
+  reverse. Above `chi2_max` the LLM's `acceptable` is taken as-is and *none* of
+  the conditions above are consulted, so an LLM that accepts a χ² of 4200 on a
+  profileless fit with a failed per-state χ² ends the run. Only the SLD-profile
+  artifact veto can overrule an accepting LLM.
+
+**Precedence** on a fresh run, highest first: the setup YAML's `chi2_max:` /
+`chi2_min:` (applied for that run as an environment override and restored
+afterwards, by `analyze`, `prepare` and `batch`) → `CHI2_MAX` / `CHI2_MIN`
+exported in your shell → the same names from `.env` → the built-in `5.0` and
+`0.5`. The shipped [.env.example](.env.example) sets `CHI2_MAX=2.5`; that is the
+env layer's value, not the built-in fallback. There is no CLI flag for either
+bound, and no setup key reaches a run driven through the web UI or MCP — those use
+the server process's environment. `aure resume` ignores the list: both bounds are
+resolved once, on a run's first pass, and pinned into the state, so a resume keeps
+the window the run was launched with and silently outranks the resuming shell. To
+resume against a different window, edit `state.chi2_max` / `state.chi2_min` in the
+checkpoint you resume from (a pinned `0.0` floor means "disabled", not "absent").
+
+**Untried improvements.** The `pending` entries of the ranked hypothesis list are
+reported at the end of every run, everywhere from the same selector: the
+`aure analyze` report (each entry with its proposed change, plus a tally like
+`3 of 7 attempted — confirmed (1); rejected (2)`), `aure batch`'s per-job terminal
+line (titles only), `aure analyze --json` (a `pending_hypotheses` array of
+`{id, title, change}`, always present), and a reporting-only message from the
+`finalize` node in `checkpoints/NNN_finalize.json` and `final_state.json`.
+Statuses are reported as they stand — nothing is re-derived at the end. Only the
+finalize message is suppressed when a byte-identical one is already in the
+transcript (what re-running finalize on the same state does), so a resumed run's
+`final_state.json` can lack a block the report still prints. `final_state.json`
+and `--json` always carry the backlog.
+
+**Interactive runs still pause on a clamped accept** — where the stop overrode an
+objecting evaluator, which is the one verdict a human should see. Feedback typed
+at that pause is not yet acted on ([issues.md](issues.md) #15).
+
 #### Locating data files
 
 Relative `data_files` paths are resolved against the first directory that
@@ -300,8 +402,10 @@ jobs:
 ### Web UI
 
 In the Setup tab:
-- **Load Setup** uploads a YAML and prefills every field (sample
-  description, states, ties, refinement settings).
+- **Load Setup** uploads a YAML and prefills every field the form has (sample
+  description, states, ties, refinement settings). It has no field for the χ²
+  acceptance window, so `chi2_max` / `chi2_min` are among the keys **Save Setup**
+  silently drops — see [issues.md](issues.md) #16.
 - **Save Setup** downloads the current form state as a YAML you can
   rerun via `aure analyze -c` / `aure batch` or share with collaborators.
 - Click **Load Data** to add files manually, tick the fit checkbox on
@@ -331,9 +435,11 @@ hand-editing YAML:
   back-reflection, and per-state extra descriptions without leaving the
   page. `background` fits one flat background tied across the state's data
   files; `theta_offset` / `sample_broadening` are partials-only.
-- **Load Setup / Save Setup** round-trip the entire form to a setup YAML
+- **Load Setup / Save Setup** round-trip the form to a setup YAML
   that also works with `aure analyze -c` and `aure batch` — handy for
-  saving experimental configurations or sharing with collaborators.
+  saving experimental configurations or sharing with collaborators. The form is
+  not a complete editor for the setup schema, and Save drops the keys it has no
+  field for ([issues.md](issues.md) #16), so keep curated setups in the YAML.
 
 ### Python API
 
@@ -357,7 +463,11 @@ result = run_analysis(
 )
 ```
 
-The output directory is named after the lowest run number in the set.
+The output directory is named after the lowest run number in the set. Pass
+`output_dir` if you want the deterministic checks: without it refl1d exports no
+SLD profile, so the profile-artifact check cannot run and — because "not checked"
+is treated as unsafe — the χ² stop stands down and the evaluator LLM decides when
+the run ends.
 
 ## CLI reference
 
@@ -393,6 +503,13 @@ aure analyze [DATA_FILE] [SAMPLE_DESCRIPTION] [OPTIONS]
 supplies them (the YAML's `states:` block carries the data files, its
 `sample_description:` field carries the description). When both positional
 arguments and the setup file specify the same field, positionals win.
+
+`-m/--max-refinements` is a ceiling, not a target: the loop also stops as soon as
+χ² lands in the acceptance window (`chi2_max:` / `chi2_min:` in the setup YAML,
+else `CHI2_MAX` / `CHI2_MIN` — see *χ² acceptance window* above for the
+precedence and the cases where the stop does not apply). The window in force is
+echoed in the run banner, and any untried structural hypotheses are listed at the
+end of the report and in the `--json` payload.
 
 | Option | Description |
 |--------|-------------|
@@ -489,6 +606,14 @@ The manifest is a YAML file with an optional `defaults` section and a
 Each job supports a `command` field — either `analyze` (default, full
 fit-and-refine workflow) or `prepare` (intake → analysis → modeling only,
 emits `problem.json`).
+
+Run controls set per job (`chi2_max`, `chi2_min`, `fit_method`, the LLM keys, …)
+are applied as environment overrides for that job only and restored afterwards,
+so jobs do not leak settings into each other. An `analyze` job's terminal output
+reports its χ² and the titles of the structural hypotheses left untried when it
+stopped. That χ² is `fit_results[-1]`'s — the last iteration *fitted*, which is
+not necessarily the one `finalize` reported ([issues.md](issues.md) #7), so do
+not gate CI on it without reading `final_state.json`.
 
 **Examples:**
 
@@ -605,6 +730,13 @@ aure evaluate REFL1D_DIR [OPTIONS]
 If `REFL1D_DIR` is the parent `refl1d_output/` directory, the latest
 `fit_iter*` subdirectory is selected automatically.
 
+Its `acceptable` field reports the evaluator LLM's raw judgement: this command
+applies neither the deterministic χ² stop nor the SLD-profile veto, and it judges
+against the *ambient* `CHI2_MAX` / `CHI2_MIN` rather than the window the evaluated
+run pinned. So `aure analyze` can complete on a fit `aure evaluate` calls
+unacceptable, and vice versa — re-export the run's window before calling it if you
+want them to agree ([issues.md](issues.md) #9).
+
 **Examples:**
 
 ```bash
@@ -714,6 +846,15 @@ assistants (e.g. Claude) can drive the workflow interactively.
 aure mcp-server                          # stdio (for Claude Desktop)
 aure mcp-server --transport sse --port 8080  # HTTP/SSE
 ```
+
+No MCP tool takes a χ² acceptance bound, so every run driven through this server
+uses the `CHI2_MAX` / `CHI2_MIN` of the **server process's** environment — set
+them before launching `aure mcp-server`, and use the CLI when you need a per-run
+window. `co_refine_states` reads its YAML with the co-refinement config loader,
+not the setup loader, so a `chi2_max:` in that file is silently ignored; and the
+deterministic χ² stop never fires for either tool anyway — `quick_analyze` has no
+`output_dir`, so no SLD profile is exported to verify, and `co_refine_states` is
+multi-state (see *χ² acceptance window* above).
 
 ### `aure serve`
 

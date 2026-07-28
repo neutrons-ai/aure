@@ -23,6 +23,7 @@ Synonyms (kept for ``analyzer plan-data`` interop):
 from __future__ import annotations
 
 import logging
+import math
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TypedDict
 
@@ -71,6 +72,8 @@ class SetupConfig(TypedDict, total=False):
     command: str  # "analyze" | "prepare"
     output_root: str  # parent for the output directory
     max_refinements: int
+    chi2_max: float  # a fit at or below this χ² ends the refinement loop
+    chi2_min: float  # below this χ², the deterministic stop stands down
     fit_method: str  # "lm" | "de" | "dream"
     fit_steps: int
     fit_burn: int
@@ -114,6 +117,8 @@ _KNOWN_TOP_LEVEL = {
     "command",
     "output_root",
     "max_refinements",
+    "chi2_max",
+    "chi2_min",
     "fit_method",
     "fit_steps",
     "fit_burn",
@@ -129,6 +134,9 @@ _KNOWN_TOP_LEVEL = {
     "alcf_access_token",
     "metadata",
 }
+
+# Float-valued keys, coerced and range-checked together below.
+_FLOAT_KEYS = ("chi2_max", "chi2_min", "llm_temperature")
 
 # Keys that the legacy schema used at the top level (or in a job entry)
 # but which are no longer supported. Loaders raise a migration error
@@ -256,11 +264,47 @@ def _setup_from_dict(
             except (TypeError, ValueError) as exc:
                 raise ConfigError(f"{source}: `{opt_int}` must be an integer") from exc
 
-    if "llm_temperature" in raw and raw["llm_temperature"] is not None:
-        try:
-            out["llm_temperature"] = float(raw["llm_temperature"])
-        except (TypeError, ValueError) as exc:
-            raise ConfigError(f"{source}: `llm_temperature` must be a number") from exc
+    for opt_float in _FLOAT_KEYS:
+        if opt_float in raw and raw[opt_float] is not None:
+            # bool before float: `float(True)` is 1.0, so `chi2_min: true` would
+            # otherwise load as a silent χ² threshold of 1.
+            if isinstance(raw[opt_float], bool):
+                raise ConfigError(
+                    f"{source}: `{opt_float}` must be a number, got {raw[opt_float]!r}"
+                )
+            try:
+                value = float(raw[opt_float])
+            except (TypeError, ValueError) as exc:
+                raise ConfigError(f"{source}: `{opt_float}` must be a number") from exc
+            # A ceiling ≤ 0 (or non-finite) can never be met, which would
+            # silently disable the deterministic acceptance stop altogether.
+            if opt_float == "chi2_max" and not (math.isfinite(value) and value > 0):
+                raise ConfigError(
+                    f"{source}: `chi2_max` must be a finite positive number, "
+                    f"got {raw[opt_float]!r}"
+                )
+            # The floor is the point below which χ² stops being evidence about
+            # the structure, and 0 is its documented off switch — so it may be
+            # zero, but not negative and not non-finite.
+            if opt_float == "chi2_min" and not (math.isfinite(value) and value >= 0):
+                raise ConfigError(
+                    f"{source}: `chi2_min` must be a finite non-negative number "
+                    f"(0 disables it), got {raw[opt_float]!r}"
+                )
+            out[opt_float] = value  # type: ignore[literal-required]
+
+    # Cross-field: the acceptance window has to be non-empty. Checked only when
+    # the document pins both bounds — the effective ceiling can also come from
+    # CHI2_MAX, and reading the environment here would make a file's validity
+    # depend on the shell that loads it.
+    floor, ceiling = out.get("chi2_min"), out.get("chi2_max")
+    if floor is not None and ceiling is not None and floor >= ceiling:
+        raise ConfigError(
+            f"{source}: `chi2_min` ({floor:g}) must be strictly less than `chi2_max` "
+            f"({ceiling:g}) — a floor at or above the ceiling can never be satisfied, "
+            "so the deterministic χ² stop would never fire and acceptance would "
+            "silently fall back to the evaluator LLM on every fit."
+        )
 
     for opt_str in (
         "llm_provider",
@@ -344,6 +388,8 @@ _DUMP_ORDER: tuple[str, ...] = (
     "command",
     "output_root",
     "max_refinements",
+    "chi2_max",
+    "chi2_min",
     "fit_method",
     "fit_steps",
     "fit_burn",

@@ -420,6 +420,31 @@ class ReflectivityState(TypedDict):
     bounds_only_refinement: (
         bool  # Set by evaluation when only bound-expansion is needed
     )
+    # Effective χ² acceptance threshold for this run, pinned by the runner from
+    # ``CHI2_MAX`` (itself settable per run via the setup YAML's ``chi2_max``).
+    # It lives in the state because a fit at or below it *terminates* the
+    # refinement loop deterministically: a resumed run reading the threshold
+    # from the resuming process's environment could stop at a bar the user never
+    # chose. ``None`` (or absent, in checkpoints predating this field) means
+    # "fall back to the env var".
+    chi2_max: Optional[float]
+    # Effective χ² acceptance *floor* for this run, pinned by the runner from
+    # ``CHI2_MIN`` (setup YAML key ``chi2_min``). A reduced χ² below it says the
+    # residuals are much smaller than the quoted uncertainties — an overestimated
+    # ``dR`` column, or a model free enough to absorb the noise — which is
+    # evidence about the error bars and not about the structure, so the
+    # deterministic clamp stands down there and the evaluator decides. ``0.0``
+    # means "no floor"; ``None`` (or absent, in checkpoints predating this field)
+    # means "fall back to the env var". Pinned like ``chi2_max`` so a resumed run
+    # keeps the floor its original launch chose.
+    chi2_min: Optional[float]
+    # Whether the acceptance on *this* evaluation came from the deterministic χ²
+    # clamp overriding an objecting evaluator, rather than from the evaluator
+    # agreeing. The runner reads it to decide whether an interactive run still
+    # owes the user a review pause on a completed workflow. Written by
+    # ``evaluation`` on every pass — including the not-accepting ones — so a
+    # resumed run cannot inherit a stale ``True`` from its checkpoint.
+    chi2_clamp_accepted: bool
 
 
 def create_initial_state(
@@ -499,6 +524,12 @@ def create_initial_state(
         output_dir=None,
         user_config=user_config,
         bounds_only_refinement=False,
+        # Pinned by the runner (which owns the env → state bridge) so this
+        # module stays free of any dependency on the evaluation node.
+        chi2_max=None,
+        chi2_min=None,
+        # No evaluation has run yet, so nothing has been clamp-accepted.
+        chi2_clamp_accepted=False,
     )
 
 
