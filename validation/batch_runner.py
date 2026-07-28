@@ -62,11 +62,14 @@ def run_single(
 
         summary["success"] = not bool(result.get("error"))
         summary["n_iterations"] = result.get("iteration", 0)
+        # The refinement loop's regression baseline, not the reported answer —
+        # recorded because it is a genuinely different quantity, not as the score.
         summary["best_chi2"] = result.get("best_chi2")
 
-        fit_results = result.get("fit_results") or []
-        if fit_results:
-            summary["chi_squared"] = fit_results[-1].get("chi_squared")
+        if result.get("fit_results"):
+            selected = _selected_fit(result)
+            summary["chi_squared"] = selected.get("chi_squared")
+            summary["profile_artifact"] = _has_profile_artifact(selected)
 
         if result.get("error"):
             summary["error"] = result["error"]
@@ -150,6 +153,33 @@ def run_all(
 # ---------------------------------------------------------------------------
 
 
+def _selected_fit(state: dict) -> Optional[dict]:
+    """The iteration ``finalize`` reported, not the last one fitted.
+
+    They differ routinely — finalize rejects regressions, prefers the simpler model
+    inside the χ² band, and sets profile-vetoed fits aside — so scoring the last fit
+    measures a model the run did not report. Falls back to the last fit for a state
+    with no selection record.
+    """
+    fits = state.get("fit_results") or []
+    if not fits:
+        return None
+    selection = state.get("final_selection") or {}
+    index = selection.get("index") if selection.get("selected") else None
+    if isinstance(index, int) and 0 <= index < len(fits):
+        return fits[index]
+    return fits[-1]
+
+
+def _has_profile_artifact(fit: Optional[dict]) -> bool:
+    """Whether the SLD-profile check vetoed this fit, if aure can tell us."""
+    try:
+        from aure.nodes.finalize import has_profile_artifact
+    except Exception:  # pragma: no cover - aure always present in practice
+        return False
+    return has_profile_artifact(fit)
+
+
 def _save_state_summary(state: dict, path: Path) -> None:
     """Save a JSON-serialisable subset of the workflow state."""
     subset = {
@@ -160,13 +190,22 @@ def _save_state_summary(state: dict, path: Path) -> None:
         "best_model": state.get("best_model"),
         "current_chi2": state.get("current_chi2"),
         "best_chi2": state.get("best_chi2"),
+        "final_selection": state.get("final_selection"),
         "iteration": state.get("iteration"),
         "workflow_complete": state.get("workflow_complete"),
         "error": state.get("error"),
     }
-    # Include last fit result parameters
     fits = state.get("fit_results") or []
     if fits:
+        selected = _selected_fit(state)
+        # The reported answer, which is what a comparison should score.
+        subset["selected_fit"] = {
+            "chi_squared": selected.get("chi_squared"),
+            "parameters": selected.get("parameters"),
+            "uncertainties": selected.get("uncertainties"),
+            "profile_artifact": _has_profile_artifact(selected),
+        }
+        # Kept so summaries written before `selected_fit` existed still parse.
         last = fits[-1]
         subset["last_fit"] = {
             "chi_squared": last.get("chi_squared"),

@@ -35,19 +35,6 @@ the shipped subset added.
 
 ---
 
-## Which fit is "the answer"
-
-### 7. The validation harness is veto-unaware and scores a different iteration
-
-**Predates this change.** `validation/batch_runner.py:69` reads
-`fit_results[-1]`; `validation/comparator.py:115` and
-`validation/cli.py:175,244` read `state["best_chi2"]`. Neither is the reported
-answer (`final_selection` / `current_chi2`), and neither knows about the profile
-veto — so the harness can score an iteration the run never reported, or the
-sub-floor fit that #10 let anchor the baseline.
-
----
-
 ## Acceptance thresholds
 
 ### 8. `aure evaluate` judges against the ambient threshold and applies no clamp

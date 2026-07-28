@@ -52,6 +52,10 @@ class LayerComparison:
     ref_chi2: Optional[float] = None
     fit_chi2: Optional[float] = None
 
+    # The fit AuRE reported failed its own SLD-profile check, so a good χ² here
+    # does not mean a good model.
+    fit_profile_artifact: bool = False
+
     # Per-parameter comparisons
     params: List[ParamComparison] = field(default_factory=list)
 
@@ -110,12 +114,24 @@ def compare_single(
 
     # ── χ² ────────────────────────────────────────────────────
     comp.ref_chi2 = ref.chisq
-    # Prefer best_chi2 from state, fall back to last_fit
+    # Score the fit the run actually reported, and take the parameters from that
+    # same fit. Reading χ² from `best_chi2` (the loop's regression baseline) while
+    # reading parameters from `last_fit` compared a reference against two different
+    # iterations at once. `selected_fit` is absent in summaries written before it
+    # existed, so the old keys remain the fallback.
+    selected_fit = state.get("selected_fit") or {}
     last_fit = state.get("last_fit") or {}
-    comp.fit_chi2 = state.get("best_chi2") or last_fit.get("chi_squared")
+    scored_fit = selected_fit or last_fit
+    comp.fit_chi2 = (
+        selected_fit.get("chi_squared")
+        or state.get("current_chi2")
+        or state.get("best_chi2")
+        or last_fit.get("chi_squared")
+    )
+    comp.fit_profile_artifact = bool(selected_fit.get("profile_artifact"))
 
     # ── Intensity ────────────────────────────────────────────
-    fit_params = last_fit.get("parameters") or {}
+    fit_params = scored_fit.get("parameters") or {}
     ref_intensity = ref.probe.get("intensity", {})
     if isinstance(ref_intensity, dict) and not ref_intensity.get("fixed"):
         ref_int_val = ref_intensity.get("value")
@@ -287,14 +303,17 @@ def compute_aggregate(comparisons: List[LayerComparison]) -> AggregateStats:
 
 def _extract_layer_names_from_state(state: dict) -> List[str]:
     """
-    Extract layer names from the last_fit parameters in the state summary.
+    Extract layer names from the reported fit's parameters in the state summary.
 
     Fit parameter keys look like "Cu thickness", "THF rho", etc.
     We collect the unique layer name prefixes in order.
-    Falls back to parsed_sample if last_fit is unavailable.
+    Reads the finalize-selected fit so the structure compared belongs to the same
+    iteration as the χ² and the parameter values; ``last_fit`` is the fallback for
+    summaries written before ``selected_fit`` existed. Falls back to
+    parsed_sample if neither is available.
     """
-    last_fit = state.get("last_fit") or {}
-    params = last_fit.get("parameters") or {}
+    fit = state.get("selected_fit") or state.get("last_fit") or {}
+    params = fit.get("parameters") or {}
 
     if params:
         seen = set()
@@ -447,6 +466,10 @@ def print_comparison(comp: LayerComparison) -> None:
             ratio = comp.fit_chi2 / comp.ref_chi2
             parts.append(f"ratio={ratio:.2f}×")
         print(f"  χ²: {', '.join(parts)}")
+
+    if comp.fit_profile_artifact:
+        # The excursion *buys* χ², so this run may look like the best in the set.
+        print("  ⚠  the reported model failed AuRE's SLD-profile check")
 
     if comp.params:
         print(
