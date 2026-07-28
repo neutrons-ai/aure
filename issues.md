@@ -37,20 +37,6 @@ the shipped subset added.
 
 ## Which fit is "the answer"
 
-### 6. `aure analyze --json` and `aure batch` report `fit_results[-1]`
-
-**Predates this change.** The human report resolves `final_selection["index"]`
-correctly ([`src/aure/cli.py:864`](src/aure/cli.py)), but three other surfaces
-take the last fit *performed* instead:
-
-- `aure analyze --json` — [`src/aure/cli.py:743`](src/aure/cli.py)
-- `aure batch`'s per-job headline χ² and per-job JSON —
-  [`src/aure/cli.py:1579`](src/aure/cli.py) (the number CI gates on)
-- the ISAAC context parameter block — [`src/aure/exporters/isaac.py:76`](src/aure/exporters/isaac.py)
-
-`fit_results[-1]` is routinely an iteration `finalize` rejected, so the JSON and
-the terminal can disagree about which model the run is reporting.
-
 ### 7. The validation harness is veto-unaware and scores a different iteration
 
 **Predates this change.** `validation/batch_runner.py:69` reads

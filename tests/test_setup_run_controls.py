@@ -569,3 +569,67 @@ def test_final_fit_chi2_max_must_be_a_usable_gate(tmp_path, data_file, bad):
 
     with pytest.raises(ConfigError, match="finite positive number"):
         load_setup(p)
+
+
+_SUPERSEDED_RUN = {
+    "Q": [0.01],
+    # finalize chose iteration 1 (χ² 1.20); the last iteration fitted was worse.
+    "fit_results": [
+        {"chi_squared": 1.20, "parameters": {"Cu thickness": 495.0}, "issues": []},
+        {"chi_squared": 4.70, "parameters": {"Cu thickness": 120.0}, "issues": []},
+    ],
+    "final_selection": {
+        "selected": True,
+        "index": 0,
+        "iteration": 1,
+        "superseded_last_iteration": True,
+    },
+}
+
+
+def test_analyze_json_reports_the_selected_fit_not_the_last_one(
+    tmp_path, data_file, monkeypatch
+):
+    """`--json` took `fit_results[-1]`, so a script and the terminal disagreed about
+    which model the run produced whenever finalize did not pick the last iteration —
+    which is routine, since it rejects regressions and sets vetoed fits aside."""
+    import json
+
+    result = _run_analyze(
+        tmp_path, data_file, monkeypatch, dict(_SUPERSEDED_RUN), args=("--json",)
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["fit_result"]["chi_squared"] == 1.20
+    assert payload["fit_result"]["parameters"] == {"Cu thickness": 495.0}
+    assert payload["selection"]["superseded_last_iteration"] is True
+    assert payload["selection"]["profile_artifact"] is False
+
+
+def test_batch_headline_chi2_is_the_selected_fit(tmp_path, data_file, monkeypatch):
+    """This is the number a CI gate reads."""
+    result = _run_batch(tmp_path, data_file, monkeypatch, dict(_SUPERSEDED_RUN))
+
+    assert result.exit_code == 0, result.output
+    assert "Done – χ² = 1.200" in result.output
+    assert "4.700" not in result.output
+
+
+def test_batch_flags_a_vetoed_model(tmp_path, data_file, monkeypatch):
+    state = {
+        "Q": [0.01],
+        "fit_results": [
+            {
+                "chi_squared": 0.62,
+                "parameters": {},
+                "profile_artifact": True,
+                "issues": [],
+            }
+        ],
+        "final_selection": {"selected": True, "index": 0, "iteration": 1},
+    }
+    result = _run_batch(tmp_path, data_file, monkeypatch, state)
+
+    assert result.exit_code == 0, result.output
+    assert "NOT PHYSICALLY VALID" in result.output

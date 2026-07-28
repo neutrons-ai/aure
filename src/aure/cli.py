@@ -743,14 +743,57 @@ def analyze(
             ),
         }
         if result.get("fit_results"):
-            latest_fit = result["fit_results"][-1] if result["fit_results"] else {}
+            _, _, selected = _selected_fit(result)
             output_data["fit_result"] = {
-                "chi_squared": latest_fit.get("chi_squared"),
-                "parameters": latest_fit.get("parameters"),
+                "chi_squared": (selected or {}).get("chi_squared"),
+                "parameters": (selected or {}).get("parameters"),
             }
+            output_data["selection"] = _selection_payload(result)
         click.echo(json.dumps(output_data, indent=2))
     else:
         _print_analysis_results(result, output_dir)
+
+
+def _selected_fit(result: dict) -> tuple:
+    """``(fit_results, final_selection, selected_fit)`` for a finished run.
+
+    The answer is the iteration ``finalize`` chose, which is routinely *not* the
+    last one performed — it rejects regressions, prefers the simpler model inside
+    the χ² band, and sets profile-vetoed fits aside. Every surface that reports a
+    run has to resolve it the same way or they disagree about which model the run
+    produced. Falls back to the last fit for a legacy state with no selection.
+    """
+    fit_list = result.get("fit_results") or []
+    selection = result.get("final_selection") or {}
+    if not fit_list:
+        return fit_list, selection, None
+    index = selection.get("index") if selection.get("selected") else None
+    if isinstance(index, int) and 0 <= index < len(fit_list):
+        return fit_list, selection, fit_list[index]
+    return fit_list, selection, fit_list[-1]
+
+
+def _selection_payload(result: dict) -> dict:
+    """Machine-readable account of which fit is being reported, and why.
+
+    Without this a script cannot tell that the χ² it is gating on belongs to an
+    earlier iteration than the last one fitted, nor that the reported model failed
+    the SLD-profile check — so it would ingest a physically impossible model with
+    no signal at all.
+    """
+    from .nodes.finalize import has_profile_artifact
+
+    fit_list, selection, fit = _selected_fit(result)
+    return {
+        "iteration": selection.get("iteration"),
+        "index": selection.get("index"),
+        "of_iterations_fitted": len(fit_list),
+        "superseded_last_iteration": bool(selection.get("superseded_last_iteration")),
+        "profile_artifact": has_profile_artifact(fit),
+        "demoted_for_profile_artifact": bool(
+            selection.get("demoted_for_profile_artifact")
+        ),
+    }
 
 
 def _pending_hypotheses_payload(hypotheses: Optional[list]) -> list:
@@ -858,17 +901,7 @@ def _print_analysis_results(result: dict, output_dir: Optional[str] = None):
         #        click.echo(f"    Script: {len(model_lines)} lines")
         click.echo()
 
-    # Fit results — the finalize node records which iteration was selected as
-    # the run's answer; without it (legacy state) fall back to the last fit.
-    fit_list = result.get("fit_results") or []
-    selection = result.get("final_selection") or {}
-    fit = None
-    if fit_list:
-        sel_index = selection.get("index") if selection.get("selected") else None
-        if isinstance(sel_index, int) and 0 <= sel_index < len(fit_list):
-            fit = fit_list[sel_index]
-        else:
-            fit = fit_list[-1]
+    fit_list, selection, fit = _selected_fit(result)
 
     # Also grab the top-level chi² fields set by the workflow
     current_chi2 = result.get("current_chi2")
@@ -1610,9 +1643,15 @@ def batch(manifest: str, job: tuple, dry_run: bool, data_dir: Optional[str]):
                     states=states or None,
                     user_config=job_user_config,
                 )
+                # The χ² a CI gate reads. It must be the iteration finalize chose,
+                # not the last one fitted — those differ whenever finalize rejects a
+                # regression, prefers a simpler model, or sets a vetoed fit aside.
                 chi2 = None
+                job_selection = None
                 if result.get("fit_results"):
-                    chi2 = result["fit_results"][-1].get("chi_squared")
+                    _, _, selected = _selected_fit(result)
+                    chi2 = (selected or {}).get("chi_squared")
+                    job_selection = _selection_payload(result)
 
                 results_summary.append(
                     {
@@ -1620,6 +1659,7 @@ def batch(manifest: str, job: tuple, dry_run: bool, data_dir: Optional[str]):
                         "command": command,
                         "success": True,
                         "chi_squared": chi2,
+                        "selection": job_selection,
                         "output_dir": output_dir,
                     }
                 )
@@ -1632,6 +1672,7 @@ def batch(manifest: str, job: tuple, dry_run: bool, data_dir: Optional[str]):
                                 "command": command,
                                 "success": True,
                                 "chi_squared": chi2,
+                                "selection": job_selection,
                                 "output_dir": output_dir,
                             }
                         )
@@ -1639,6 +1680,15 @@ def batch(manifest: str, job: tuple, dry_run: bool, data_dir: Optional[str]):
                 else:
                     chi_str = f"χ² = {chi2:.3f}" if chi2 is not None else "no fit"
                     click.echo(click.style(f"    Done – {chi_str}", fg="green"))
+                    if (job_selection or {}).get("profile_artifact"):
+                        click.echo(
+                            click.style(
+                                "    ⚠  NOT PHYSICALLY VALID — the reported model "
+                                "failed the SLD-profile check",
+                                fg="red",
+                                bold=True,
+                            )
+                        )
                     # Batch never calls `_print_analysis_results`, so without
                     # this the backlog a stopped-early run left behind is
                     # invisible outside final_state.json. Titles only.

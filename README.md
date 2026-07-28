@@ -606,9 +606,11 @@ Run controls set per job (`chi2_max`, `chi2_min`, `fit_method`, the LLM keys, �
 are applied as environment overrides for that job only and restored afterwards,
 so jobs do not leak settings into each other. An `analyze` job's terminal output
 reports its χ² and the titles of the structural hypotheses left untried when it
-stopped. That χ² is `fit_results[-1]`'s — the last iteration *fitted*, which is
-not necessarily the one `finalize` reported ([issues.md](issues.md) #6), so do
-not gate CI on it without reading `final_state.json`.
+stopped. That χ² is the iteration `finalize` reported — not the last one
+*fitted*, which is often an iteration it rejected — so it is safe to gate CI on.
+The per-job JSON carries a `selection` block alongside it (`iteration`,
+`superseded_last_iteration`, `profile_artifact`), and a job whose reported model
+failed the SLD-profile check says so on stderr and in that flag.
 
 **Examples:**
 
