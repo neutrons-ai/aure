@@ -37,19 +37,6 @@ the shipped subset added.
 
 ## Acceptance thresholds
 
-### 9. The regression baseline is floor-blind
-
-**Predates this change; the floor made it visible.** `fitting`
-([`src/aure/nodes/fitting.py:123-127`](src/aure/nodes/fitting.py)) records
-`best_chi2` / `best_model` as the lowest χ² **outright**, with no floor test. One
-noise-absorbing fit (χ² ≪ 1 from an overestimated `dR` column or excess free
-parameters) becomes the baseline that `evaluation`'s χ² and BIC guardrails
-compare against ([`evaluation.py:637`](src/aure/nodes/evaluation.py) and
-[`:657`](src/aure/nodes/evaluation.py)), so every later *honest* fit reads as a
-regression and gets reverted. The BIC branch is the harsher one: `BIC` is
-monotone in χ², it has no 5% slack, and it also marks the tried hypothesis
-`rejected`.
-
 ### 10. Per-state χ² is checked against the ceiling but not the floor
 
 **Introduced by this change** — the shipped clamp's own gap.

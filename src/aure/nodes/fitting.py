@@ -24,7 +24,7 @@ from .model_builder import (
     build_states_problem,
     needs_states_problem,
 )
-from .evaluation import _count_free_params, _compute_bic
+from .evaluation import _count_free_params, _compute_bic, _get_chi2_min
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +122,7 @@ def fitting_node(state: ReflectivityState) -> Dict[str, Any]:
         # attachment) can't silently corrupt the regression snapshot the
         # evaluation guardrail will restore on χ² worsening.
         best = state.get("best_chi2")
-        if best is None or result["chi_squared"] < best:
+        if _wins_baseline(result["chi_squared"], best, state):
             updates["best_chi2"] = result["chi_squared"]
             updates["best_model"] = copy.deepcopy(model)
             logger.info(f"[FITTING] New best χ² = {result['chi_squared']:.3f}")
@@ -148,10 +148,20 @@ def fitting_node(state: ReflectivityState) -> Dict[str, Any]:
             bic = _compute_bic(result["chi_squared"], n_data, n_params)
             result["bic"] = bic
             logger.info(f"[FITTING] BIC = {bic:.1f} (k={n_params}, n={n_data})")
+            # BIC is monotone in χ², so a sub-floor fit wins here for the same
+            # untrustworthy reason — and this guardrail has no slack and marks the
+            # tried hypothesis `rejected`, so it does more damage than the χ² one.
             best_bic = state.get("best_bic")
-            if best_bic is None or bic < best_bic:
+            if _wins_baseline(
+                result["chi_squared"],
+                state.get("best_bic_chi2"),
+                state,
+                candidate_score=bic,
+                incumbent_score=best_bic,
+            ):
                 updates["best_bic"] = bic
                 updates["best_bic_model"] = copy.deepcopy(model)
+                updates["best_bic_chi2"] = result["chi_squared"]
                 logger.info(f"[FITTING] New best BIC = {bic:.1f}")
 
         # Format message
@@ -170,6 +180,57 @@ def fitting_node(state: ReflectivityState) -> Dict[str, Any]:
         ]
 
     return updates
+
+
+def _wins_baseline(
+    candidate_chi2: float,
+    incumbent_chi2: Optional[float],
+    state: ReflectivityState,
+    *,
+    candidate_score: Optional[float] = None,
+    incumbent_score: Optional[float] = None,
+) -> bool:
+    """Whether a fit should become the refinement loop's regression baseline.
+
+    The baseline is what ``evaluation``'s χ² and BIC guardrails revert *to*, so a
+    fit below the acceptance floor must not claim it: a reduced χ² far under 1 is
+    evidence about the ``dR`` column rather than the structure, and one such
+    noise-absorbing iteration would make every later honest fit read as a
+    regression and get reverted — pinning the run to a model it should have moved
+    away from.
+
+    An in-window fit therefore always displaces a sub-floor incumbent, whatever the
+    scores say. A sub-floor fit is still recorded when nothing in-window exists yet,
+    because leaving the guardrails with *no* baseline would disable the check that
+    stops the LLM refining an already-degraded model — a worse failure than a
+    questionable baseline.
+
+    *candidate_score* / *incumbent_score* rank by something other than χ² (BIC);
+    the floor test always reads χ², since that is what the floor is about.
+    """
+    floor = _get_chi2_min(state)
+    cand_sub = floor > 0 and candidate_chi2 < floor
+    inc_sub = floor > 0 and incumbent_chi2 is not None and incumbent_chi2 < floor
+
+    if candidate_score is None:
+        candidate_score, incumbent_score = candidate_chi2, incumbent_chi2
+
+    if incumbent_score is None:
+        return True
+    # Trustworthy beats untrustworthy regardless of score; the reverse never holds.
+    if inc_sub and not cand_sub:
+        logger.info(
+            "[FITTING] Replacing the sub-floor regression baseline (χ²=%.3f, below "
+            "the χ² ≥ %.3f floor) with this fit (χ²=%.3f) — a noise-absorbing fit "
+            "must not be what later fits are judged against",
+            incumbent_chi2,
+            floor,
+            candidate_chi2,
+        )
+        return True
+    if cand_sub and not inc_sub:
+        return False
+    return candidate_score < incumbent_score
 
 
 def run_fit_for_model(

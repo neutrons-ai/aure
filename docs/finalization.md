@@ -101,9 +101,11 @@ Finalize makes the choice explicit and auditable:
 - Sets `current_model` and `current_chi2` to the winner.
 - Records `final_selection` (index, iteration, χ², tie-break metadata) for audit.
 - **Never writes `best_model` / `best_chi2`** — those are the loop's regression
-  baseline that `aure resume` compares against. That baseline is the lowest χ²
-  outright, with no floor test, which is its own defect —
-  [issues.md](../issues.md) #9.
+  baseline that `aure resume` compares against, and a different question from
+  "what does the run report". `fitting` maintains them, preferring a fit inside
+  the acceptance window: a sub-floor fit claiming the baseline made every later
+  honest fit read as a regression. It is recorded only when nothing in-window
+  exists, so the guardrails are never left without one.
 - Emits a **second, reporting-only message** listing the `structural_hypotheses`
   still `pending` (the run stops as soon as χ² lands in the acceptance window, so
   the ranked backlog is normally not exhausted) plus a one-line tally of what was

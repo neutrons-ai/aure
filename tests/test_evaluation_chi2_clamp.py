@@ -1052,3 +1052,70 @@ def test_one_unreadable_state_leaves_the_whole_fit_unverified():
 
     assert not analysis.get("_profile_checked")
     assert not analysis.get("_profile_artifact")
+
+
+# ======================================================================
+# The refinement loop's regression baseline must not be a sub-floor fit
+# ======================================================================
+
+
+@pytest.mark.parametrize(
+    "candidate,incumbent,wins,why",
+    [
+        (0.004, None, True, "nothing to compare against yet"),
+        # The bug: one noise-absorbing fit became the bar every later honest fit
+        # had to beat, so each read as a regression and got reverted.
+        (3.50, 0.004, True, "an honest fit displaces a sub-floor baseline"),
+        (0.004, 1.20, False, "a sub-floor fit cannot take it from an honest one"),
+        (3.50, 1.20, False, "plain comparison still applies within the window"),
+        (0.90, 1.20, True, "better in-window fit wins normally"),
+        (0.004, 0.010, True, "all sub-floor: something must hold the baseline"),
+    ],
+)
+def test_the_regression_baseline_prefers_an_in_window_fit(
+    monkeypatch, candidate, incumbent, wins, why
+):
+    """`best_chi2`/`best_model` is what evaluation's guardrails revert *to*, so a
+    fit the clamp refused to accept must not become it — but leaving the guardrails
+    with no baseline at all would disable the check that stops the LLM refining an
+    already-degraded model, so a sub-floor fit is recorded when nothing better
+    exists."""
+    from aure.nodes.fitting import _wins_baseline
+
+    monkeypatch.setenv("CHI2_MIN", "0.5")
+    monkeypatch.setenv("CHI2_MAX", "2.5")
+
+    assert _wins_baseline(candidate, incumbent, {}) is wins, why
+
+
+def test_a_disabled_floor_restores_plain_lowest_wins(monkeypatch):
+    """`chi2_min: 0` is the documented off switch, so the baseline rule must reduce
+    to exactly what it was before the floor existed."""
+    from aure.nodes.fitting import _wins_baseline
+
+    monkeypatch.setenv("CHI2_MIN", "0")
+    monkeypatch.setenv("CHI2_MAX", "2.5")
+
+    assert _wins_baseline(3.50, 0.004, {}) is False
+    assert _wins_baseline(0.004, 1.20, {}) is True
+
+
+def test_the_bic_baseline_is_ranked_by_bic_but_floored_on_chi2(monkeypatch):
+    """BIC is monotone in χ², so a noise-absorbing fit wins on it for exactly the
+    untrustworthy reason — and that guardrail has no slack and marks the tried
+    hypothesis rejected, so it does more damage than the χ² one."""
+    from aure.nodes.fitting import _wins_baseline
+
+    monkeypatch.setenv("CHI2_MIN", "0.5")
+    monkeypatch.setenv("CHI2_MAX", "2.5")
+
+    # Worse BIC, but the incumbent baseline is sub-floor: trustworthy still wins.
+    assert (
+        _wins_baseline(3.50, 0.004, {}, candidate_score=-100.0, incumbent_score=-900.0)
+        is True
+    )
+    # Both in-window: BIC decides, not χ².
+    assert (
+        _wins_baseline(1.90, 1.20, {}, candidate_score=-950.0, incumbent_score=-900.0)
+        is True
+    )

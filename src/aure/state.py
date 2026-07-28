@@ -401,6 +401,11 @@ class ReflectivityState(TypedDict):
     best_model: Optional[dict]  # ModelDefinition that produced the best χ²
     best_bic: Optional[float]  # Lowest BIC (complexity-penalized score)
     best_bic_model: Optional[dict]  # ModelDefinition that produced the best BIC
+    # The χ² of the fit holding the BIC baseline. Recorded because the baseline
+    # must not be claimed by a fit below the acceptance floor, and BIC alone
+    # cannot tell you whether it was — BIC is monotone in χ², so a
+    # noise-absorbing fit wins on it for exactly the untrustworthy reason.
+    best_bic_chi2: Optional[float]
     # Set by the terminal `finalize` node once the refinement loop has stopped.
     # `finalized` makes that node idempotent (the runner also calls it
     # defensively on loop-exit paths that never route through a node);
@@ -525,6 +530,7 @@ def create_initial_state(
         best_model=None,
         best_bic=None,
         best_bic_model=None,
+        best_bic_chi2=None,
         finalized=False,
         final_selection=None,
         final_fit=None,
