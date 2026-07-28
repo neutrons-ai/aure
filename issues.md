@@ -35,20 +35,6 @@ the shipped subset added.
 
 ---
 
-## The SLD-profile veto stops at `evaluation`
-
-`evaluation` refuses to accept a fit whose SLD profile leaves the range its
-bounding media can produce. Nothing past that node knows the veto happened.
-
-### 3. The web Results tab and History chart never mention the veto
-
-**Predates this change.** `grep -rn 'veto\|artifact\|demot\|profile_checked'
-src/aure/web/` is empty. The History tab's χ² progression can plot a vetoed
-iteration as the run's best point, unannotated, and the Results tab renders its
-model like any other.
-
----
-
 ## The profile the detector actually reads
 
 ### 4. Per-state SLD profiles are written but never read back

@@ -144,6 +144,11 @@ document.addEventListener("DOMContentLoaded", async () => {
       ? `<span class="badge bg-danger">Error</span>`
       : `<span class="badge bg-success">OK</span>`;
     const chi2 = d.chi2 != null ? d.chi2.toFixed(2) : "—";
+    // A vetoed fit is often the run's lowest χ² — the excursion is what buys it —
+    // so an unmarked number here reads as the best result.
+    const veto = d.vetoed
+      ? ' <span class="badge bg-danger" title="SLD profile leaves the range its bounding media can produce">non-physical</span>'
+      : "";
     const ts = d.timestamp ? new Date(d.timestamp).toLocaleTimeString() : "—";
     tbody.insertAdjacentHTML(
       "beforeend",
@@ -151,7 +156,7 @@ document.addEventListener("DOMContentLoaded", async () => {
          <td>${d.step}</td>
          <td><code>${d.node}</code></td>
          <td>${d.iteration}</td>
-         <td>${chi2}</td>
+         <td>${chi2}${veto}</td>
          <td>${llmBadges(d.llm_calls)}</td>
          <td>${ts}</td>
          <td>${status}</td>
@@ -171,10 +176,16 @@ document.addEventListener("DOMContentLoaded", async () => {
     x: withChi2.map((d) => d.step),
     y: withChi2.map((d) => d.chi2),
     text: withChi2.map(
-      (d) => `${d.node} iter ${d.iteration}<br>χ²=${d.chi2.toFixed(2)}`
+      (d) =>
+        `${d.node} iter ${d.iteration}<br>χ²=${d.chi2.toFixed(2)}` +
+        (d.vetoed ? "<br><b>vetoed: non-physical SLD profile</b>" : "")
     ),
     mode: "lines+markers",
-    marker: { size: 8, color: "#0d6efd" },
+    marker: {
+      size: withChi2.map((d) => (d.vetoed ? 11 : 8)),
+      color: withChi2.map((d) => (d.vetoed ? "#dc3545" : "#0d6efd")),
+      symbol: withChi2.map((d) => (d.vetoed ? "x" : "circle")),
+    },
     line: { width: 2, color: "#0d6efd" },
     hoverinfo: "text",
   };

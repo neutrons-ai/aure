@@ -109,10 +109,19 @@ class RunData:
         """
         Walk checkpoints and return one entry per step.
 
-        Each entry: ``{step, node, iteration, chi2, timestamp, error, llm_calls}``.
-        ``chi2`` is ``None`` for nodes that don't produce a fit.
+        Each entry: ``{step, node, iteration, chi2, vetoed, timestamp, error,
+        llm_calls}``. ``chi2`` is ``None`` for nodes that don't produce a fit.
         ``llm_calls`` lists LLM records added during that step.
+
+        ``vetoed`` marks a step whose fit failed the SLD-profile check. Without it
+        the chart plots such a fit as the run's lowest point with no hint that it
+        was rejected — and because the excursion *buys* χ², that is exactly where
+        the vetoed iteration tends to sit. It is False on the ``fitting`` step and
+        True on the following ``evaluation`` step, because that is when the fit is
+        actually judged.
         """
+        from ..nodes.finalize import has_profile_artifact
+
         cps = self._load_all_checkpoints()
         result: List[dict] = []
         prev_llm_count = 0
@@ -123,12 +132,14 @@ class RunData:
             all_llm = state.get("llm_calls", [])
             step_llm = all_llm[prev_llm_count:]
             prev_llm_count = len(all_llm)
+            fits = state.get("fit_results") or []
             result.append(
                 {
                     "step": i + 1,
                     "node": info.get("node", cp.get("node", "")),
                     "iteration": info.get("iteration", cp.get("iteration", 0)),
                     "chi2": state.get("current_chi2"),
+                    "vetoed": bool(fits) and has_profile_artifact(fits[-1]),
                     "timestamp": info.get("timestamp", cp.get("timestamp")),
                     "error": state.get("error"),
                     "llm_calls": step_llm,
@@ -448,6 +459,7 @@ class RunData:
                 "converged": None,
                 "iteration": None,
                 "best_iteration": None,
+                "profile_veto": None,
             }
 
         # Find best-chi2 iteration
@@ -503,6 +515,46 @@ class RunData:
             "iteration": idx,
             "best_iteration": best_idx,
             "parameters": rows,
+            "profile_veto": self._profile_veto(fit_results, idx, selection),
+        }
+
+    @staticmethod
+    def _profile_veto(fit_results: list, idx: int, selection: dict) -> dict:
+        """What the SLD-profile check said about the iteration being displayed.
+
+        Keyed on the *displayed* iteration, not the selected one: the Results tab
+        has an iteration dropdown, so a reader can navigate to a vetoed fit that
+        finalize deliberately set aside and would otherwise see it rendered like
+        any other answer.
+
+        ``demoted`` is the separate, quieter case — the displayed model is fine,
+        but a better-χ² iteration was set aside as non-physical, which explains why
+        the reported χ² is not the lowest one on the chart.
+        """
+        from ..nodes.finalize import has_profile_artifact
+
+        vetoed = [i for i, fr in enumerate(fit_results) if has_profile_artifact(fr)]
+        displayed = fit_results[idx] if 0 <= idx < len(fit_results) else None
+
+        reason = None
+        if idx in vetoed:
+            reason = selection.get("profile_veto_reason")
+            if not reason:
+                from ..nodes.finalize import _ARTIFACT_MARKER
+
+                for issue in (displayed or {}).get("issues") or []:
+                    if _ARTIFACT_MARKER in str(issue).lower():
+                        reason = str(issue)
+                        break
+
+        return {
+            "displayed_vetoed": idx in vetoed,
+            "reason": reason,
+            "demoted": bool(selection.get("demoted_for_profile_artifact")),
+            "no_clean_alternative": bool(
+                selection.get("selected_has_profile_artifact")
+            ),
+            "vetoed_iterations": vetoed,
         }
 
     # ------------------------------------------------------------------

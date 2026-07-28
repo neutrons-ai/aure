@@ -2,6 +2,17 @@
 {% block title %}Results{% endblock %}
 
 {% block content %}
+<!-- SLD-profile veto. Hidden unless the displayed fit failed the check, or a
+     better-χ² iteration was set aside as non-physical. -->
+<div class="row mb-3 d-none" id="profile-veto-row">
+  <div class="col">
+    <div class="alert mb-0" id="profile-veto-alert" role="alert">
+      <div class="fw-semibold" id="profile-veto-title"></div>
+      <div class="small mt-1" id="profile-veto-detail"></div>
+    </div>
+  </div>
+</div>
+
 <!-- Data loading report -->
 <div class="row mb-3" id="intake-report-row">
   <div class="col">
@@ -243,6 +254,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   ]);
 
   renderIntakeReport(intakeData);
+  renderProfileVeto(paramData.profile_veto);
 
   _reflData = reflData;
   _sldData = sldData;
@@ -641,10 +653,51 @@ async function onIterationChange(value) {
     _removeUserTraces("rq-chart");
     _removeUserTraces("sld-chart");
     renderParams(paramData);
+    renderProfileVeto(paramData.profile_veto);
     _positionDataAtFittedOffset();
   } catch (err) {
     console.warn("Failed to fetch iteration parameters:", err);
   }
+}
+
+/* ------------------------------------------------------------------ */
+/*  SLD-profile veto notice                                           */
+/* ------------------------------------------------------------------ */
+function renderProfileVeto(veto) {
+  const row = document.getElementById("profile-veto-row");
+  const alert = document.getElementById("profile-veto-alert");
+  const title = document.getElementById("profile-veto-title");
+  const detail = document.getElementById("profile-veto-detail");
+  if (!row) return;
+
+  if (!veto || (!veto.displayed_vetoed && !veto.demoted)) {
+    row.classList.add("d-none");
+    return;
+  }
+
+  alert.classList.remove("alert-danger", "alert-warning");
+  if (veto.displayed_vetoed) {
+    // The model on screen is the one the check rejected.
+    alert.classList.add("alert-danger");
+    title.textContent = "⚠ This model is not physically valid";
+    const parts = [
+      "Its SLD profile leaves the range its bounding media can produce — a defect the reflectivity χ² does not see. Do not report these slabs as distinct physical layers without re-examining the interface roughness.",
+    ];
+    if (veto.no_clean_alternative) {
+      parts.push("Every iteration of this run was vetoed, so there was no artifact-free alternative to report.");
+    }
+    if (veto.reason) parts.push(veto.reason);
+    detail.textContent = parts.join(" ");
+  } else {
+    // The answer shown is the right one; explain why it is not the lowest χ².
+    alert.classList.add("alert-warning");
+    title.textContent = "A lower-χ² iteration was set aside as non-physical";
+    const which = (veto.vetoed_iterations || []).map((i) => `#${i}`).join(", ");
+    detail.textContent =
+      `Iteration ${which} fitted better but failed the SLD-profile check, so it is not reported. ` +
+      "That is why the reported χ² is not the lowest in the run.";
+  }
+  row.classList.remove("d-none");
 }
 
 /* ------------------------------------------------------------------ */

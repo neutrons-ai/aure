@@ -292,4 +292,5 @@ number. Set `chi2_min: 0` to accept any χ² at or below `chi2_max`.
 reaches it — vetoed fits are set aside — but the floor does not, so a sub-floor
 χ² the clamp refused to accept can still be the reported answer
 ([issues.md](../issues.md) #11), and the veto still reaches nothing downstream of
-the report ([issues.md](../issues.md) #3).
+the report — it now travels to the CLI report, `--json`, both web tabs,
+`final_fit`'s gate and the ISAAC export.

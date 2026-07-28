@@ -146,8 +146,10 @@ nr-isaac-format `architecture.md` for the store/representation contract.
    model `evaluation` had rejected. It reads the `profile_artifact` flag
    `evaluation` stamps on each judged `FitResult`. It does *not* yet consult the
    acceptance floor, and the veto still reaches no surface downstream of the
-   report: see [issues.md](issues.md) #3 and #11 before changing selection or
-   adding a surface that renders a run's answer.
+   report: it does not yet consult the acceptance floor
+   ([issues.md](issues.md) #11). The veto now travels to every surface that
+   renders the answer — report, `--json`, the web tabs, `final_fit`'s gate and the
+   ISAAC export — so keep it that way when adding another.
 6. **In `evaluation`, the SLD-profile artifact check runs BEFORE the χ² acceptance
    clamp.** A finite χ² inside the acceptance window `CHI2_MIN ≤ χ² ≤ CHI2_MAX`
    deterministically forces `acceptable=True` (`_clamp_acceptance_to_chi2`) so

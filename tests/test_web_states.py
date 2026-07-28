@@ -811,3 +811,78 @@ def test_states_simulation_returns_corrected_data_q(tmp_path: Path) -> None:
     # The data's Q shifts with the offset; the measured R is unchanged.
     assert not np.allclose(Qd0, Qd1), "corrected data Q did not move with theta_offset"
     assert np.allclose(Rd0, Rd1), "measured R should not change"
+
+
+def _veto_state() -> dict:
+    """Two iterations: the lower-χ² one was vetoed, so finalize reported the other."""
+
+    def fit(chi2, vetoed):
+        return {
+            "iteration": 1,
+            "method": "amoeba",
+            "chi_squared": chi2,
+            "converged": True,
+            "parameters": {"Cu thickness": 495.0},
+            "uncertainties": None,
+            "bounds": {"Cu thickness": [200.0, 800.0]},
+            "profile_checked": True,
+            "profile_artifact": vetoed,
+            "issues": ["Non-physical SLD-profile excursion (min SLD -0.88): x"]
+            if vetoed
+            else [],
+        }
+
+    return {
+        "fit_results": [fit(0.62, True), fit(1.20, False)],
+        "current_chi2": 1.20,
+        "final_selection": {
+            "selected": True,
+            "index": 1,
+            "demoted_for_profile_artifact": True,
+            "selected_has_profile_artifact": False,
+        },
+    }
+
+
+def test_results_payload_flags_the_displayed_iteration_not_just_the_selected_one(
+    tmp_path: Path,
+) -> None:
+    """The Results tab has an iteration dropdown, so a reader can navigate to the
+    vetoed fit finalize deliberately set aside. Keying the flag on the selected
+    iteration alone would render that one like any other answer."""
+    rd = RunData(str(tmp_path))
+    with patch.object(rd, "get_final_state", return_value=_veto_state()):
+        default = rd.get_fit_parameters()["profile_veto"]
+        vetoed = rd.get_fit_parameters(0)["profile_veto"]
+
+    # Default is the clean selection: not itself invalid, but explain the χ².
+    assert default["displayed_vetoed"] is False
+    assert default["demoted"] is True
+    assert default["vetoed_iterations"] == [0]
+
+    # Navigating to the vetoed iteration flags it, with the detector's own words.
+    assert vetoed["displayed_vetoed"] is True
+    assert "Non-physical SLD-profile excursion" in vetoed["reason"]
+
+
+def test_history_steps_mark_a_vetoed_fit(tmp_path: Path) -> None:
+    """A vetoed fit is often the run's lowest χ², so an unmarked point reads as the
+    best result. False on `fitting` and True on `evaluation` is correct — that is
+    when the fit is actually judged."""
+    rd = RunData(str(tmp_path))
+    clean = {"chi_squared": 0.62, "profile_artifact": False, "issues": []}
+    judged = {"chi_squared": 0.62, "profile_artifact": True, "issues": []}
+    cps = [
+        {
+            "_info": {"node": "fitting", "iteration": 1},
+            "state": {"current_chi2": 0.62, "fit_results": [clean]},
+        },
+        {
+            "_info": {"node": "evaluation", "iteration": 1},
+            "state": {"current_chi2": 0.62, "fit_results": [judged]},
+        },
+    ]
+    with patch.object(rd, "_load_all_checkpoints", return_value=cps):
+        steps = rd.get_chi2_progression()
+
+    assert [s["vetoed"] for s in steps] == [False, True]
