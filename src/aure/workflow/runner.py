@@ -148,10 +148,17 @@ def run_analysis(
     # race any other request. The runner pins the window only when it is unset, so
     # a seeded value is what the run keeps — and what its checkpoints record, so a
     # resume inherits it too.
+    seeded_chi2_max = None
     if chi2_max is not None:
-        initial_state["chi2_max"] = float(chi2_max)
+        seeded_chi2_max = evaluation._validated_chi2_max(chi2_max, "chi2_max (run_analysis)")
+        if seeded_chi2_max is not None:
+            initial_state["chi2_max"] = seeded_chi2_max
+
     if chi2_min is not None:
-        initial_state["chi2_min"] = float(chi2_min)
+        seeded_chi2_min = evaluation._validated_chi2_min(chi2_min, "chi2_min (run_analysis)")
+        effective_chi2_max = seeded_chi2_max if seeded_chi2_max is not None else evaluation._get_chi2_max()
+        if seeded_chi2_min is not None and seeded_chi2_min < effective_chi2_max:
+            initial_state["chi2_min"] = seeded_chi2_min
 
     # Run with optional tracing
     with TracedWorkflow(
