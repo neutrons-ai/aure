@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 AuRE (Automated Reflectivity Evaluator) is an LLM-driven agent that fits neutron / X-ray reflectivity data with [Refl1D](https://refl1d.readthedocs.io). It accepts a raw data file plus a plain-English sample description and produces a fitted layer model. The orchestration layer is a hand-written state machine ([src/aure/workflow/runner.py](src/aure/workflow/runner.py)) — no external graph framework; LangChain is used only for the LLM calls. The science (probe loading, model building, optimization, χ²/BIC) is delegated to refl1d/bumps.
 
-The longest-form design rationale lives in [docs/approach.md](docs/approach.md) — read it before making architectural changes to the workflow. Known, reproduced defects that are deliberately unfixed are tracked in [issues.md](issues.md) — check it before "fixing" something that is already triaged there, and add to it rather than growing an unrelated change.
+The longest-form design rationale lives in [docs/approach.md](docs/approach.md) — read it before making architectural changes to the workflow. When a change turns up an unrelated defect, record it (an issue, a `TODO` at the site) rather than growing the change to cover it: a fix that also repairs everything it touched on the way is not reviewable.
 
 ## Environment & install
 
