@@ -322,7 +322,7 @@ def run_fit(
         return {
             "session_id": session_id,
             # A FitResult reports `converged`; there has never been a `success`.
-            "converged": result.get("converged"),
+            "converged": bool(result.get("converged", False)),
             "chi_squared": result.get("chi_squared"),
             "method": method,
             "parameters": result.get("parameters"),
