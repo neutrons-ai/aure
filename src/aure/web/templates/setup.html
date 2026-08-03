@@ -226,6 +226,29 @@
               </div>
             </div>
 
+            {# χ² acceptance window #}
+            <div class="mb-3">
+              <label class="form-label fw-semibold">χ² Acceptance Window</label>
+              <div class="d-flex align-items-center gap-2">
+                <input type="number" id="chi2-min" class="form-control"
+                       placeholder="0.5" step="0.1" min="0"
+                       style="max-width:110px" aria-label="chi2 floor" />
+                <span class="text-muted">≤ χ² ≤</span>
+                <input type="number" id="chi2-max" class="form-control"
+                       placeholder="5.0" step="0.1" min="0.1"
+                       style="max-width:110px" aria-label="chi2 ceiling" />
+              </div>
+              <div class="form-text">
+                A fit inside this window stops the refinement loop; the untried
+                structural ideas are reported instead. Below the floor the stop
+                stands down and the evaluator decides, because a χ² that far under
+                1 is evidence the <code>dR</code> column is overestimated rather
+                than that the structure is right. Leave blank for the defaults
+                (0.5 / 5.0, or <code>CHI2_MIN</code> / <code>CHI2_MAX</code>);
+                the floor must be below the ceiling.
+              </div>
+            </div>
+
             {# Interactive mode toggle #}
             <div class="mb-3 form-check form-switch">
               <input class="form-check-input" type="checkbox" id="interactive-mode" />

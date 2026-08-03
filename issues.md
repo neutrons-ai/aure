@@ -80,12 +80,3 @@ feedback only sets `pending_user_feedback` — and the loop then breaks at
 never acted on. Only the `restart_checkpoint` path clears `workflow_complete`.
 The four-line fix (clear `workflow_complete` and `chi2_clamp_accepted` when
 feedback arrives at a clamped accept) is in the preserved patch.
-
-### 15. The web Setup form cannot set the χ² acceptance window
-
-`chi2_max` / `chi2_min` are `SetupConfig` keys and are in `setup._DUMP_ORDER`,
-but `grep -rn 'chi2_m' src/aure/web/` is empty — the form has no field for
-either, so a setup loaded through it and saved again silently loses them (the
-same drop it already does for `fit_method`, `evaluation_criteria`,
-`model_constraints`, …). Any prose claiming the form round-trips those two keys
-needs correcting along with the form.

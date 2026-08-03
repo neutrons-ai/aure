@@ -108,6 +108,8 @@ def run_analysis(
     pause_callback: Optional[Callable[[Dict[str, Any], str], Optional[str]]] = None,
     data_files: Optional[list[dict]] = None,
     states: Optional[list[dict]] = None,
+    chi2_max: Optional[float] = None,
+    chi2_min: Optional[float] = None,
 ) -> ReflectivityState:
     """
     Run the reflectivity analysis workflow.
@@ -123,6 +125,8 @@ def run_analysis(
         interactive: Enable interactive mode (pause after evaluation for user feedback)
         pause_callback: Blocking callback(state, node_name) -> Optional[str] that
             returns user feedback text (or None). Only called when interactive=True.
+        chi2_max: χ² acceptance ceiling for this run; falls back to ``CHI2_MAX``.
+        chi2_min: χ² acceptance floor for this run; falls back to ``CHI2_MIN``.
 
     Returns:
         Final workflow state with results
@@ -139,6 +143,15 @@ def run_analysis(
     )
     if interactive:
         initial_state["interactive"] = True
+    # Seeding the window rather than exporting CHI2_MAX/CHI2_MIN: the web UI drives
+    # this from a background thread, where mutating the process environment would
+    # race any other request. The runner pins the window only when it is unset, so
+    # a seeded value is what the run keeps — and what its checkpoints record, so a
+    # resume inherits it too.
+    if chi2_max is not None:
+        initial_state["chi2_max"] = float(chi2_max)
+    if chi2_min is not None:
+        initial_state["chi2_min"] = float(chi2_min)
 
     # Run with optional tracing
     with TracedWorkflow(
@@ -467,9 +480,7 @@ def run_workflow_with_checkpoints(
         # NODE_FUNCTIONS registry simply skips it rather than crashing.
         final_fit_fn = NODE_FUNCTIONS.get("final_fit")
         if final_fit_fn is not None:
-            updates = run_with_tracing(
-                final_fit_fn, state, "node_final_fit", trace_ctx
-            )
+            updates = run_with_tracing(final_fit_fn, state, "node_final_fit", trace_ctx)
             if updates:
                 _merge_state_updates(state, updates)
                 if checkpoint_mgr:
