@@ -106,8 +106,10 @@ def test_defaults_to_30_when_unspecified():
 
 
 def test_follows_topmost_layer_roughness_max():
-    layers = [{"name": "Cu", "roughness_max": 20.0},
-              {"name": "SEI", "roughness_max": 220.0}]
+    layers = [
+        {"name": "Cu", "roughness_max": 20.0},
+        {"name": "SEI", "roughness_max": 220.0},
+    ]
     assert _outer_roughness_max(layers) == 220.0
 
 

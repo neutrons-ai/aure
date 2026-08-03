@@ -402,7 +402,7 @@ In the Setup tab:
 - **Load Setup** uploads a YAML and prefills every field the form has (sample
   description, states, ties, refinement settings). It has no field for the χ²
   acceptance window, so `chi2_max` / `chi2_min` are among the keys **Save Setup**
-  silently drops — see [issues.md](issues.md) #14.
+  silently drops — see [issues.md](issues.md) #15.
 - **Save Setup** downloads the current form state as a YAML you can
   rerun via `aure analyze -c` / `aure batch` or share with collaborators.
 - Click **Load Data** to add files manually, tick the fit checkbox on
@@ -436,7 +436,7 @@ hand-editing YAML:
   that also works with `aure analyze -c` and `aure batch` — handy for
   saving experimental configurations or sharing with collaborators. The form is
   not a complete editor for the setup schema, and Save drops the keys it has no
-  field for ([issues.md](issues.md) #14), so keep curated setups in the YAML.
+  field for ([issues.md](issues.md) #15), so keep curated setups in the YAML.
 
 ### Python API
 

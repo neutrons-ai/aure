@@ -166,9 +166,7 @@ def test_unshared_substrate_alias_actually_unties(two_files):
     """
     from aure.nodes.model_builder import build_states_problem
 
-    defn = _two_state_definition(
-        two_files, unshared_parameters=["substrate.interface"]
-    )
+    defn = _two_state_definition(two_files, unshared_parameters=["substrate.interface"])
     _, by_state, _ = build_states_problem(defn)
     s0 = by_state["D2O"][0].sample
     s1 = by_state["H2O"][0].sample
@@ -188,9 +186,7 @@ def test_shared_substrate_alias_ties_and_keeps_canonical_name(two_files):
     """
     from aure.nodes.model_builder import build_states_problem
 
-    defn = _two_state_definition(
-        two_files, shared_parameters=["substrate.interface"]
-    )
+    defn = _two_state_definition(two_files, shared_parameters=["substrate.interface"])
     _, by_state, _ = build_states_problem(defn)
     s0 = by_state["D2O"][0].sample
     s1 = by_state["H2O"][0].sample
@@ -338,9 +334,15 @@ def test_back_reflection_substrate_interface_indexed_correctly(two_files):
 # ----------------------------------------------------------------------
 
 _OXIDE = {
-    "name": "Cu oxide", "sld": 4.0, "sld_min": 2.0, "sld_max": 6.0,
-    "thickness": 30.0, "thickness_min": 5.0, "thickness_max": 100.0,
-    "roughness": 5.0, "roughness_max": 20.0,
+    "name": "Cu oxide",
+    "sld": 4.0,
+    "sld_min": 2.0,
+    "sld_max": 6.0,
+    "thickness": 30.0,
+    "thickness_min": 5.0,
+    "thickness_max": 100.0,
+    "roughness": 5.0,
+    "roughness_max": 20.0,
 }
 
 
@@ -350,7 +352,7 @@ def test_resolve_tied_set_union_does_not_raise_for_per_state_layer(two_files):
     from aure.nodes.model_builder import _resolve_tied_set, _valid_layer_names
 
     defn = _two_state_definition(two_files)
-    defn["layers"] = [_OXIDE, *defn["layers"]]          # template: [Cu oxide, Cu, Ti]
+    defn["layers"] = [_OXIDE, *defn["layers"]]  # template: [Cu oxide, Cu, Ti]
     defn["states"][1]["layers"] = list(defn["layers"][1:])  # H2O omits the oxide
     valid = _valid_layer_names(defn)
     assert "Cu oxide" in valid  # still a valid name (present in D2O / template)
@@ -370,7 +372,7 @@ def test_per_state_structure_oxide_absent_in_one_state(two_files):
     from aure.nodes.model_builder import build_states_problem
 
     defn = _two_state_definition(two_files)
-    defn["layers"] = [_OXIDE, *defn["layers"]]              # [Cu oxide, Cu, Ti]
+    defn["layers"] = [_OXIDE, *defn["layers"]]  # [Cu oxide, Cu, Ti]
     defn["states"][1]["layers"] = list(defn["layers"][1:])  # H2O = [Cu, Ti] (no oxide)
 
     problem, by_state, _ = build_states_problem(defn)
@@ -380,9 +382,9 @@ def test_per_state_structure_oxide_absent_in_one_state(two_files):
     assert len(s1) == len(s0) - 1  # H2O is missing the oxide layer
     # Cu and Ti exist in both states and are tied by IDENTITY despite the
     # oxide shifting D2O's indices (Cu: s0[2] vs s1[1]).
-    assert s1[1].thickness is s0[2].thickness   # Cu tied
+    assert s1[1].thickness is s0[2].thickness  # Cu tied
     assert s1[1].material.rho is s0[2].material.rho
-    assert s1[2].thickness is s0[3].thickness   # Ti tied
+    assert s1[2].thickness is s0[3].thickness  # Ti tied
     # substrate.interface still tied; ambient (different solvents) not tied
     assert s1[0].interface is s0[0].interface
     assert s1[-1].material.rho is not s0[-1].material.rho

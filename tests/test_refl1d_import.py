@@ -237,9 +237,7 @@ def test_multi_state_recovers_state_grouping(tmp_path, two_files):
 
     src = _save_problem_to(tmp_path, _two_state_definition(two_files))
     out = tmp_path / "imported"
-    summary = import_refl1d(
-        str(src), str(out), state_names=["D2O", "H2O"]
-    )
+    summary = import_refl1d(str(src), str(out), state_names=["D2O", "H2O"])
 
     assert summary["states"] == ["D2O", "H2O"]
     assert summary["n_files"] == 2
@@ -271,7 +269,9 @@ def _hetero_state_definition(files: list[str]) -> dict:
     }
     base_layers = defn["layers"]  # [Cu, Ti]
     defn["layers"] = [oxide, *base_layers]  # template = [Cu oxide, Cu, Ti]
-    defn["states"][1]["layers"] = [dict(layer) for layer in base_layers]  # H2O: no oxide
+    defn["states"][1]["layers"] = [
+        dict(layer) for layer in base_layers
+    ]  # H2O: no oxide
     return defn
 
 
@@ -306,9 +306,7 @@ def test_multi_state_heterogeneous_structure_round_trips(tmp_path, two_files):
     assert "Cu oxide" not in h2o_names
 
 
-def test_multi_state_recovered_definition_rebuilds_a_problem(
-    tmp_path, two_files
-):
+def test_multi_state_recovered_definition_rebuilds_a_problem(tmp_path, two_files):
     """The recovered ModelDefinition must round-trip back into a valid
     multi-state FitProblem with the same χ² (parameter ties preserved).
     """
@@ -377,9 +375,7 @@ def test_back_reflection_override_applies(tmp_path, one_file):
     from aure.refl1d_import import import_refl1d
 
     src = _save_problem_to(tmp_path, _single_state_definition(one_file))
-    summary = import_refl1d(
-        str(src), str(tmp_path / "imported"), back_reflection=True
-    )
+    summary = import_refl1d(str(src), str(tmp_path / "imported"), back_reflection=True)
     assert summary["back_reflection"] is True
 
 
@@ -454,9 +450,7 @@ def test_state_names_override_bypasses_collapse(tmp_path, two_files):
     save_problem_json(defn, fit_dir / "problem.json", data_files=data_files)
 
     out = tmp_path / "imported"
-    summary = import_refl1d(
-        str(fit_dir), str(out), state_names=["before", "after"]
-    )
+    summary = import_refl1d(str(fit_dir), str(out), state_names=["before", "after"])
     assert summary["states"] == ["before", "after"]
     assert summary["n_files"] == 2
 
@@ -527,9 +521,7 @@ def test_setup_references_original_data_files(tmp_path, two_files):
     final = json.loads((out / "final_state.json").read_text())
     state = final["state"]
     files_in_model = sorted(
-        ds["file"]
-        for st in state["current_model"]["states"]
-        for ds in st["data_files"]
+        ds["file"] for st in state["current_model"]["states"] for ds in st["data_files"]
     )
     # The setup paths win — the model points at the originals (resolved).
     assert files_in_model == sorted(os.path.realpath(p) for p in two_files)
@@ -567,9 +559,7 @@ def test_setup_mismatched_file_count_errors(tmp_path, two_files, one_file):
         import_refl1d(str(src), str(out), setup_path=str(setup_path))
 
 
-def test_setup_with_state_names_cli_override_rejected(
-    tmp_path, two_files
-):
+def test_setup_with_state_names_cli_override_rejected(tmp_path, two_files):
     """``--state-name`` and ``--setup`` are mutually exclusive — state
     names always come from the setup when supplied.
     """
@@ -675,9 +665,7 @@ def test_setup_data_dir_without_setup_errors():
     from aure.refl1d_import import import_refl1d
 
     with pytest.raises(ValueError, match="setup_data_dir is meaningful"):
-        import_refl1d(
-            "nowhere", "also_nowhere", setup_data_dir="/tmp"
-        )
+        import_refl1d("nowhere", "also_nowhere", setup_data_dir="/tmp")
 
 
 def test_setup_mode_round_trip_preserves_per_probe_intensities(tmp_path):
@@ -712,8 +700,7 @@ def test_setup_mode_round_trip_preserves_per_probe_intensities(tmp_path):
         {
             "name": "run_A",
             "data_files": [
-                {"file": f, "theta": 0.5 * (i + 1)}
-                for i, f in enumerate(files)
+                {"file": f, "theta": 0.5 * (i + 1)} for i, f in enumerate(files)
             ],
             "back_reflection": True,
             "theta_offset": {"init": 0.0, "min": -0.01, "max": 0.01},
@@ -915,9 +902,7 @@ def test_synthesized_description_orders_layers_top_down(tmp_path, two_files):
     cu_idx = desc.find("Cu")
     ti_idx = desc.find("Ti")
     assert ti_idx >= 0 and cu_idx >= 0
-    assert ti_idx < cu_idx, (
-        f"layers should read top-down but description says {desc!r}"
-    )
+    assert ti_idx < cu_idx, f"layers should read top-down but description says {desc!r}"
 
 
 def test_per_file_results_carry_state_name(tmp_path, two_files):
@@ -984,9 +969,7 @@ def test_multi_state_warns_when_no_ties_recovered(tmp_path, two_files):
     assert summary["tied_parameters"] == []
     assert summary["untied_parameters"]  # everything got recovered as untied
     assert summary["warnings"]
-    assert any(
-        "no shared parameter objects" in w for w in summary["warnings"]
-    )
+    assert any("no shared parameter objects" in w for w in summary["warnings"])
 
 
 def test_single_state_summary_has_no_tie_metadata(tmp_path, one_file):

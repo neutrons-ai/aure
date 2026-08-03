@@ -97,7 +97,9 @@ def test_run_info_records_distinct_sample_for_multistate(tmp_path):
             {"name": "B", "data_files": [{"file": "/x/b.txt", "label": "B"}]},
         ],
     }
-    mgr.initialize(initial_state, data_file="/x/a.txt", sample_description="two samples")
+    mgr.initialize(
+        initial_state, data_file="/x/a.txt", sample_description="two samples"
+    )
 
     run_info = json.loads((mgr.output_dir / "run_info.json").read_text())
     assert run_info["distinct_sample"] is True

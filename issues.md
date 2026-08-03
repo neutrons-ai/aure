@@ -51,20 +51,6 @@ the shipped subset added.
   ([`src/aure/nodes/fitting.py:334`](src/aure/nodes/fitting.py)) — three of the
   four keywords do not exist, so it is a `TypeError` on call.
 
-### 13. `ruff format` is not clean at baseline
-
-**Predates this change.** With the pinned hook version (ruff 0.15.5), `ruff
-format --check` on a clean `dc1dfca` checkout reports **7** files needing
-reformatting: `src/aure/cli.py`, `src/aure/exporters/isaac.py`,
-`src/aure/nodes/evaluation.py`, `src/aure/nodes/final_fit.py`,
-`src/aure/skills/loader.py`, `src/aure/web/routes.py`,
-`src/aure/workflow/runner.py`. Any hook run that touches one of them emits
-reflows unrelated to whatever change is in flight — `isaac.py` in particular,
-since it is otherwise untouched here. Reformat them in a standalone commit
-rather than absorbing the churn into a feature branch.
-
----
-
 ## Gaps created by the split itself
 
 Not pre-existing — these are things the shipped subset lacks because the rest of
