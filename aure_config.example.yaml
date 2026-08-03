@@ -12,8 +12,9 @@
 #
 # The web UI's Setup tab has Load / Save buttons that read and write this
 # format, but the form is not a full editor for it — Save silently drops the keys
-# it has no field for, chi2_max / chi2_min among them (see issues.md #15). Edit a
-# curated setup here, not through the web form.
+# it has no field for (fit_method, fit_steps/fit_burn, the final-fit keys,
+# evaluation_criteria, model_constraints). Edit a curated setup here, not through
+# the web form.
 #
 # Every field below is optional unless noted. Paths are resolved relative
 # to this file's directory.

@@ -886,3 +886,80 @@ def test_history_steps_mark_a_vetoed_fit(tmp_path: Path) -> None:
         steps = rd.get_chi2_progression()
 
     assert [s["vetoed"] for s in steps] == [False, True]
+
+
+def test_the_setup_form_round_trips_the_chi2_window(tmp_path: Path) -> None:
+    """`chi2_max`/`chi2_min` were SetupConfig keys with no field in the form, so a
+    setup loaded through the web UI and saved again silently lost them."""
+    from aure.web import create_app
+
+    data = tmp_path / "REFL_1_combined_data.txt"
+    data.write_text("# Q R dR\n0.01 1.0 0.05\n0.02 0.25 0.01\n")
+
+    app = create_app(None)
+    app.config["TESTING"] = True
+    client = app.test_client()
+
+    yaml_text = (
+        "sample_description: Cu on Si\n"
+        "chi2_max: 3.75\n"
+        "chi2_min: 0.25\n"
+        "states:\n"
+        "  - name: state0\n"
+        "    data_files:\n"
+        f"      - file: {data}\n"
+    )
+
+    loaded = client.post("/api/setup/load", json={"yaml": yaml_text}).get_json()
+    assert loaded["chi2_max"] == 3.75
+    assert loaded["chi2_min"] == 0.25
+
+    exported = client.post(
+        "/api/setup/export",
+        json={
+            "sample_description": "Cu on Si",
+            "chi2_max": loaded["chi2_max"],
+            "chi2_min": loaded["chi2_min"],
+            "states": [{"name": "state0", "data_files": [{"file": str(data)}]}],
+        },
+    ).get_data(as_text=True)
+    assert "chi2_max: 3.75" in exported
+    assert "chi2_min: 0.25" in exported
+
+
+def test_a_seeded_window_beats_the_ambient_environment(monkeypatch) -> None:
+    """The web UI runs the analysis on a background thread, so the window is seeded
+    into the state rather than exported to the environment — mutating os.environ
+    there would race any other request. The runner pins only what is unset, so a
+    seeded value is what the run keeps."""
+    from aure.workflow import runner
+
+    monkeypatch.setenv("CHI2_MAX", "9.0")
+    monkeypatch.setenv("CHI2_MIN", "0.1")
+
+    seen = {}
+
+    def _evaluation(state):
+        seen.update(chi2_max=state.get("chi2_max"), chi2_min=state.get("chi2_min"))
+        return {
+            "workflow_complete": True,
+            "fit_results": [{"chi_squared": 1.0, "issues": []}],
+        }
+
+    monkeypatch.setitem(runner.NODE_FUNCTIONS, "evaluation", _evaluation)
+    monkeypatch.setitem(runner.NODE_FUNCTIONS, "finalize", lambda s: {})
+    monkeypatch.setitem(runner.NODE_FUNCTIONS, "final_fit", lambda s: {})
+
+    final = runner.run_workflow_with_checkpoints(
+        initial_state={
+            "messages": [],
+            "iteration": 0,
+            "max_iterations": 2,
+            "chi2_max": 3.75,
+            "chi2_min": 0.25,
+        },
+        start_node="evaluation",
+    )
+
+    assert seen == {"chi2_max": 3.75, "chi2_min": 0.25}
+    assert final["chi2_max"] == 3.75  # and it is what the checkpoints record

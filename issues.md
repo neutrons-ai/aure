@@ -44,11 +44,4 @@ the shipped subset added.
 Not pre-existing — these are things the shipped subset lacks because the rest of
 the work was dropped.
 
-### 15. The web Setup form cannot set the χ² acceptance window
 
-`chi2_max` / `chi2_min` are `SetupConfig` keys and are in `setup._DUMP_ORDER`,
-but `grep -rn 'chi2_m' src/aure/web/` is empty — the form has no field for
-either, so a setup loaded through it and saved again silently loses them (the
-same drop it already does for `fit_method`, `evaluation_criteria`,
-`model_constraints`, …). Any prose claiming the form round-trips those two keys
-needs correcting along with the form.
