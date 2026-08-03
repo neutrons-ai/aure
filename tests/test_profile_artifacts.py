@@ -69,7 +69,7 @@ def test_erf_tail_dip_below_substrate_is_flagged():
             (260, -0.03, 12),
             (300, 6.42, 10),
             (869, -1.61, 10),
-            (925, 3.2, 30),   # sigma >> half of the 20 Å SiOx layer
+            (925, 3.2, 30),  # sigma >> half of the 20 Å SiOx layer
             (945, 2.07, 6),
         ]
     )
@@ -124,7 +124,12 @@ def test_evaluation_veto_overrides_acceptable():
         ],
     }
     fit = {"sld_z": z.tolist(), "sld_rho": rho.tolist(), "parameters": {}}
-    analysis = {"acceptable": True, "issues": [], "suggestions": [], "physical_concerns": []}
+    analysis = {
+        "acceptable": True,
+        "issues": [],
+        "suggestions": [],
+        "physical_concerns": [],
+    }
     _detect_profile_artifacts_into(analysis, fit, model)
     assert analysis["acceptable"] is False
     assert any("excursion" in i.lower() for i in analysis["issues"])
@@ -157,7 +162,12 @@ def test_evaluation_clean_profile_leaves_acceptable_untouched():
         ],
     }
     fit = {"sld_z": z.tolist(), "sld_rho": rho.tolist(), "parameters": {}}
-    analysis = {"acceptable": True, "issues": [], "suggestions": [], "physical_concerns": []}
+    analysis = {
+        "acceptable": True,
+        "issues": [],
+        "suggestions": [],
+        "physical_concerns": [],
+    }
     _detect_profile_artifacts_into(analysis, fit, model)
     assert analysis["acceptable"] is True
 

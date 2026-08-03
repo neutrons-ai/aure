@@ -467,9 +467,7 @@ def run_workflow_with_checkpoints(
         # NODE_FUNCTIONS registry simply skips it rather than crashing.
         final_fit_fn = NODE_FUNCTIONS.get("final_fit")
         if final_fit_fn is not None:
-            updates = run_with_tracing(
-                final_fit_fn, state, "node_final_fit", trace_ctx
-            )
+            updates = run_with_tracing(final_fit_fn, state, "node_final_fit", trace_ctx)
             if updates:
                 _merge_state_updates(state, updates)
                 if checkpoint_mgr:

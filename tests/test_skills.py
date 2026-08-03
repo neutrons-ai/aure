@@ -183,7 +183,11 @@ class TestLLMSkillSelection:
                 "simple silicon wafer",
                 registry=SkillRegistry(),
             )
-        assert set(result) == {"neutron-reflectometry", "structural-hypothesis-ranking", "thin-layer-degeneracy"}
+        assert set(result) == {
+            "neutron-reflectometry",
+            "structural-hypothesis-ranking",
+            "thin-layer-degeneracy",
+        }
 
     def test_llm_failure_returns_baseline_only(self):
         """When LLM call raises, return baseline skill only."""
@@ -195,7 +199,11 @@ class TestLLMSkillSelection:
                 "copper with native oxide layer",
                 registry=SkillRegistry(),
             )
-        assert set(result) == {"neutron-reflectometry", "structural-hypothesis-ranking", "thin-layer-degeneracy"}
+        assert set(result) == {
+            "neutron-reflectometry",
+            "structural-hypothesis-ranking",
+            "thin-layer-degeneracy",
+        }
 
     def test_llm_unavailable_returns_baseline_only(self):
         """When no LLM is configured, return baseline skill only."""
@@ -204,7 +212,11 @@ class TestLLMSkillSelection:
                 "polystyrene thin film",
                 registry=SkillRegistry(),
             )
-        assert set(result) == {"neutron-reflectometry", "structural-hypothesis-ranking", "thin-layer-degeneracy"}
+        assert set(result) == {
+            "neutron-reflectometry",
+            "structural-hypothesis-ranking",
+            "thin-layer-degeneracy",
+        }
 
     def test_llm_response_with_markdown_fences(self):
         """LLM wrapping response in ```json fences."""

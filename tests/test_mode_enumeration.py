@@ -34,7 +34,12 @@ def test_resolution_limit():
 
 def _truth_definition(data_file: str, thin_sld: float) -> dict:
     return {
-        "substrate": {"name": "Si", "sld": 2.07, "roughness": 3.0, "roughness_max": 10.0},
+        "substrate": {
+            "name": "Si",
+            "sld": 2.07,
+            "roughness": 3.0,
+            "roughness_max": 10.0,
+        },
         "ambient": {"name": "Si", "sld": 2.07},
         "back_reflection": False,
         "data_file": data_file,

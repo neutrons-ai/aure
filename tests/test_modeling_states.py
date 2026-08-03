@@ -194,7 +194,9 @@ def test_initial_build_single_state_theta_offset_is_attached():
     from aure.nodes.modeling import _build_initial_model
 
     out = _build_initial_model(
-        _make_state(_single_state(theta_offset={"init": 0.0, "min": -0.02, "max": 0.02}))
+        _make_state(
+            _single_state(theta_offset={"init": 0.0, "min": -0.02, "max": 0.02})
+        )
     )
     assert "error" not in out, out.get("error")
     model = out["current_model"]
@@ -476,14 +478,35 @@ from unittest.mock import MagicMock  # noqa: E402
 
 def _state_with_oxide(desc, user_config=None):
     parsed = {
-        "substrate": {"name": "silicon", "sld": 2.07, "roughness": 3.0, "roughness_max": 15.0},
+        "substrate": {
+            "name": "silicon",
+            "sld": 2.07,
+            "roughness": 3.0,
+            "roughness_max": 15.0,
+        },
         "layers": [
-            {"name": "Cu oxide", "sld": 4.0, "sld_min": 2.0, "sld_max": 6.0,
-             "thickness": 30.0, "thickness_min": 5.0, "thickness_max": 100.0,
-             "roughness": 5.0, "roughness_max": 20.0},
-            {"name": "Cu", "sld": 6.5, "sld_min": 4.0, "sld_max": 8.0,
-             "thickness": 500.0, "thickness_min": 250.0, "thickness_max": 750.0,
-             "roughness": 5.0, "roughness_max": 20.0},
+            {
+                "name": "Cu oxide",
+                "sld": 4.0,
+                "sld_min": 2.0,
+                "sld_max": 6.0,
+                "thickness": 30.0,
+                "thickness_min": 5.0,
+                "thickness_max": 100.0,
+                "roughness": 5.0,
+                "roughness_max": 20.0,
+            },
+            {
+                "name": "Cu",
+                "sld": 6.5,
+                "sld_min": 4.0,
+                "sld_max": 8.0,
+                "thickness": 500.0,
+                "thickness_min": 250.0,
+                "thickness_max": 750.0,
+                "roughness": 5.0,
+                "roughness_max": 20.0,
+            },
         ],
         "ambient": {"name": "D2O", "sld": 6.4},
         "back_reflection": True,
@@ -511,6 +534,7 @@ _OXIDE_DESC = (
 
 def _fake_llm(monkeypatch, payload):
     from aure.nodes import modeling
+
     monkeypatch.setattr(modeling, "llm_available", lambda: True)
     fake = MagicMock()
     fake.invoke.return_value = MagicMock(content=_json_mod.dumps(payload))
@@ -522,16 +546,29 @@ def test_nl_unshared_extracted_and_unties_oxide(monkeypatch):
     from aure.nodes import modeling
     from aure.nodes.model_builder import _resolve_tied_set
 
-    _fake_llm(monkeypatch, {"unshared_parameters": [
-        "Cu oxide.thickness", "Cu oxide.material.rho", "Cu oxide.interface"]})
+    _fake_llm(
+        monkeypatch,
+        {
+            "unshared_parameters": [
+                "Cu oxide.thickness",
+                "Cu oxide.material.rho",
+                "Cu oxide.interface",
+            ]
+        },
+    )
 
     out = modeling.modeling_node(_state_with_oxide(_OXIDE_DESC))
     assert "error" not in out, out.get("error")
     md = out["current_model"]
     assert set(md["unshared_parameters"]) == {
-        "Cu oxide.thickness", "Cu oxide.material.rho", "Cu oxide.interface"}
+        "Cu oxide.thickness",
+        "Cu oxide.material.rho",
+        "Cu oxide.interface",
+    }
     # persisted into user_config so it survives refinement
-    assert set(out["user_config"]["unshared_parameters"]) == set(md["unshared_parameters"])
+    assert set(out["user_config"]["unshared_parameters"]) == set(
+        md["unshared_parameters"]
+    )
     # the Cu oxide structural params are NOT tied across states
     tied = _resolve_tied_set(md)
     assert ("Cu oxide", "thickness") not in tied
@@ -548,11 +585,15 @@ def test_nl_extraction_skipped_when_user_config_ties_present(monkeypatch):
     # extractor changes anything; the explicit tie config must win regardless.
     # (Structure extraction is orthogonal to ties and may still query the LLM.)
     _fake_llm(monkeypatch, {"unshared_parameters": []})
-    st = _state_with_oxide(_OXIDE_DESC, user_config={"shared_parameters": ["Cu.thickness"]})
+    st = _state_with_oxide(
+        _OXIDE_DESC, user_config={"shared_parameters": ["Cu.thickness"]}
+    )
     out = modeling.modeling_node(st)
     assert "error" not in out, out.get("error")
     assert out["current_model"]["shared_parameters"] == ["Cu.thickness"]
-    assert not out["current_model"].get("unshared_parameters")  # NL tie extraction skipped
+    assert not out["current_model"].get(
+        "unshared_parameters"
+    )  # NL tie extraction skipped
 
 
 def test_nl_extraction_noop_without_llm(monkeypatch):
@@ -603,9 +644,15 @@ def test_refine_prunes_tie_for_removed_layer(monkeypatch):
 
     current = _multi_state_current_model()
     cu_oxide = {
-        "name": "Cu oxide", "sld": 4.0, "sld_min": 2.0, "sld_max": 6.0,
-        "thickness": 30.0, "thickness_min": 5.0, "thickness_max": 100.0,
-        "roughness": 5.0, "roughness_max": 20.0,
+        "name": "Cu oxide",
+        "sld": 4.0,
+        "sld_min": 2.0,
+        "sld_max": 6.0,
+        "thickness": 30.0,
+        "thickness_min": 5.0,
+        "thickness_max": 100.0,
+        "roughness": 5.0,
+        "roughness_max": 20.0,
     }
     current["layers"] = [cu_oxide, current["layers"][0]]  # [Cu oxide, Cu]
     current["shared_parameters"] = []
@@ -613,7 +660,8 @@ def test_refine_prunes_tie_for_removed_layer(monkeypatch):
 
     # LLM removes Cu oxide (structural change) and omits the tie spec.
     llm_return = {
-        k: v for k, v in current.items()
+        k: v
+        for k, v in current.items()
         if k not in ("states", "shared_parameters", "unshared_parameters")
     }
     llm_return["layers"] = [current["layers"][1]]  # only Cu remains
@@ -647,7 +695,9 @@ def test_per_state_structure_extracted_from_description(monkeypatch):
     def fake_invoke(msgs):
         content = msgs[0].content
         if "per_state_absent" in content:  # structure-extraction prompt
-            return MagicMock(content=json.dumps({"per_state_absent": {"H2O": ["Cu oxide"]}}))
+            return MagicMock(
+                content=json.dumps({"per_state_absent": {"H2O": ["Cu oxide"]}})
+            )
         return MagicMock(content=json.dumps({"unshared_parameters": []}))  # tie prompt
 
     fake = MagicMock()

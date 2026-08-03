@@ -47,14 +47,18 @@ def test_unusable_values_fall_back_to_default(raw):
 
 def test_value_reaches_the_client():
     client = openai_compat.create_openai_compatible(
-        {"model": "gpt-oss:120b"}, 0.0,
-        api_key="not-a-real-key", base_url="http://localhost:11434/v1",
+        {"model": "gpt-oss:120b"},
+        0.0,
+        api_key="not-a-real-key",
+        base_url="http://localhost:11434/v1",
     )
     assert client.max_retries == openai_compat._DEFAULT_MAX_RETRIES
 
     os.environ["LLM_MAX_RETRIES"] = "0"
     fail_fast = openai_compat.create_openai_compatible(
-        {"model": "gpt-oss:120b"}, 0.0,
-        api_key="not-a-real-key", base_url="http://localhost:11434/v1",
+        {"model": "gpt-oss:120b"},
+        0.0,
+        api_key="not-a-real-key",
+        base_url="http://localhost:11434/v1",
     )
     assert fail_fast.max_retries == 0
