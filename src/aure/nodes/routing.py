@@ -83,6 +83,13 @@ def route_after_evaluation(
     if iteration >= max_iter:
         return "complete"
 
+    # A user who answered the interactive review with guidance has asked for
+    # another pass, whether or not the evaluator recorded any issues — and at a
+    # clamped accept it typically recorded none. `modeling` reads and clears
+    # `pending_user_feedback`, so that is where the request has to go.
+    if state.get("pending_user_feedback"):
+        return "modeling"
+
     # Get suggestions from evaluation
     fit_results = state.get("fit_results", [])
     if fit_results:
