@@ -333,9 +333,10 @@ transcript (what re-running finalize on the same state does), so a resumed run's
 `final_state.json` can lack a block the report still prints. `final_state.json`
 and `--json` always carry the backlog.
 
-**Interactive runs still pause on a clamped accept** — where the stop overrode an
-objecting evaluator, which is the one verdict a human should see. Feedback typed
-at that pause is not yet acted on ([issues.md](issues.md) #13).
+**Interactive runs pause on a clamped accept** — where the stop overrode an
+objecting evaluator, which is the one verdict a human should see. Answering with
+guidance withdraws the acceptance and reopens the refinement loop, so the change
+you ask for actually happens; confirming with nothing, or stopping, ends the run.
 
 #### Locating data files
 

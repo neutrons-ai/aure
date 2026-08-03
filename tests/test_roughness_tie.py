@@ -56,7 +56,12 @@ def _definition(data_file: str, tie: bool) -> dict:
             "fraction_max": 0.5,
         }
     return {
-        "substrate": {"name": "Si", "sld": 2.07, "roughness": 3.0, "roughness_max": 15.0},
+        "substrate": {
+            "name": "Si",
+            "sld": 2.07,
+            "roughness": 3.0,
+            "roughness_max": 15.0,
+        },
         "ambient": {"name": "Si", "sld": 2.07},
         "back_reflection": False,
         "data_file": data_file,

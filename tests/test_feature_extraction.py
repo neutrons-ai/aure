@@ -212,7 +212,7 @@ def test_residual_fringes_from_missing_layer():
     # "True" sample: Si substrate | Cu (200 Å) | Si overlayer (2000 Å) | air
     R_data = _parratt(
         Q,
-        sld=[0.0, 2.07, 6.55, 2.07],      # air, Si_over, Cu, Si_sub
+        sld=[0.0, 2.07, 6.55, 2.07],  # air, Si_over, Cu, Si_sub
         thickness=[0.0, 2000.0, 200.0, 0.0],
         roughness=[5.0, 5.0, 3.0],
     )
@@ -220,7 +220,7 @@ def test_residual_fringes_from_missing_layer():
     # "Model" (missing the Si overlayer): Si substrate | Cu (200 Å) | air
     R_model = _parratt(
         Q,
-        sld=[0.0, 6.55, 2.07],             # air, Cu, Si_sub
+        sld=[0.0, 6.55, 2.07],  # air, Cu, Si_sub
         thickness=[0.0, 200.0, 0.0],
         roughness=[5.0, 3.0],
     )
@@ -252,23 +252,14 @@ def test_residual_flat_no_fringes():
     """When model matches data well, no residual fringes should be detected."""
     Q = np.linspace(0.01, 0.15, 400)
 
-    # Same model for both data and fit → ratio ≈ 1.0
-    R = _parratt(
-        Q,
-        sld=[0.0, 6.55, 2.07],
-        thickness=[0.0, 200.0, 0.0],
-        roughness=[5.0, 3.0],
-    )
-
-    # Add a tiny bit of noise
+    # The same model for both data and fit, so the ratio is 1.0 by construction —
+    # synthesised directly rather than divided out of two identical curves.
     rng = np.random.default_rng(42)
     residual_ratio = 1.0 + rng.normal(0, 0.005, len(Q))
 
     result = analyze_residual_fringes(Q, residual_ratio)
 
-    assert not result["has_residual_fringes"], (
-        "Flat residual should not show fringes"
-    )
+    assert not result["has_residual_fringes"], "Flat residual should not show fringes"
 
 
 def test_residual_short_data():

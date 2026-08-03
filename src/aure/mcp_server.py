@@ -278,7 +278,8 @@ def get_session_model(session_id: str) -> dict:
 def run_fit(
     session_id: str,
     method: str = "lm",
-    max_iterations: int = 200,
+    steps: int = 1000,
+    burn: Optional[int] = None,
 ) -> dict:
     """
     Run the fitting algorithm on the current model.
@@ -286,7 +287,8 @@ def run_fit(
     Args:
         session_id: The session ID
         method: Fitting method - 'lm' (fast), 'de' (global), 'dream' (MCMC)
-        max_iterations: Maximum fitting iterations
+        steps: Sample/step budget for the optimizer
+        burn: Burn-in for MCMC; defaults to `steps`
 
     Returns:
         Fit results including chi-squared and parameters
@@ -302,11 +304,15 @@ def run_fit(
     try:
         from .nodes.fitting import run_refl1d_fit
 
+        # `model_script` / `data_file` / `max_iterations` were never parameters of
+        # this function — the names date from when models were Python scripts. The
+        # data file travels inside the ModelDefinition, so it is not passed here.
         result = run_refl1d_fit(
-            model_script=state["current_model"],
-            data_file=state["data_file"],
+            model_definition=state["current_model"],
             method=method,
-            max_iterations=max_iterations,
+            iteration=state.get("iteration", 0),
+            steps=steps,
+            burn=steps if burn is None else burn,
         )
 
         # Update state
@@ -315,7 +321,8 @@ def run_fit(
 
         return {
             "session_id": session_id,
-            "success": result.get("success", False),
+            # A FitResult reports `converged`; there has never been a `success`.
+            "converged": bool(result.get("converged", False)),
             "chi_squared": result.get("chi_squared"),
             "method": method,
             "parameters": result.get("parameters"),
@@ -347,21 +354,23 @@ def evaluate_fit(session_id: str) -> dict:
         return {"error": "No fit result. Run run_fit first."}
 
     try:
-        from .nodes.evaluation import analyze_fit_quality
+        # `analyze_fit_quality` has never existed. `_simple_evaluation` is the
+        # surviving deterministic evaluator and returns the same issues /
+        # suggestions shape, which keeps this tool LLM-free as it intends.
+        from .nodes.evaluation import _simple_evaluation
 
-        evaluation = analyze_fit_quality(
-            chi_squared=state["fit_result"].get("chi_squared", 999),
-            residuals=state["fit_result"].get("residuals", []),
-            parameters=state["fit_result"].get("parameters", {}),
-            parsed_sample=state.get("parsed_sample", {}),
-        )
+        evaluation = _simple_evaluation(state["fit_result"])
 
         state["evaluation"] = evaluation
 
         return {
             "session_id": session_id,
-            "acceptable": evaluation.get("acceptable", False),
-            "chi_squared_quality": evaluation.get("chi_squared_quality"),
+            # `_simple_evaluation` reports rather than decides: acceptance is the
+            # workflow's deterministic clamp, which needs an SLD-profile check this
+            # tool does not run. Advisory, like `aure evaluate`.
+            "acceptable_is_advisory": True,
+            "acceptable": (evaluation.get("quality_assessment") == "good") and not (evaluation.get("issues") or []),
+            "chi_squared_quality": evaluation.get("quality_assessment"),
             "issues": evaluation.get("issues", []),
             "suggestions": evaluation.get("suggestions", []),
         }
