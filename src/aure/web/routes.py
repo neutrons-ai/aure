@@ -1159,8 +1159,17 @@ def api_start_analysis():
 
     interactive = bool(body.get("interactive", False))
     max_iterations = int(body.get("max_iterations", 5))
+    from math import isfinite
+
     chi2_max = _parse_optional_float(body.get("chi2_max"))
     chi2_min = _parse_optional_float(body.get("chi2_min"))
+
+    if chi2_max is not None and (not isfinite(chi2_max) or chi2_max <= 0):
+        return jsonify({"errors": ["chi2_max must be a positive, finite number"]}), 400
+    if chi2_min is not None and (not isfinite(chi2_min) or chi2_min < 0):
+        return jsonify({"errors": ["chi2_min must be a non-negative, finite number"]}), 400
+    if chi2_max is not None and chi2_min is not None and chi2_min >= chi2_max:
+        return jsonify({"errors": ["chi2_min must be below chi2_max"]}), 400
 
     # Reset run state
     with lock:
