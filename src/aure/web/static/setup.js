@@ -1272,10 +1272,28 @@ function _buildAnalysisBody(opts) {
 
   // Blank means "fall back to the default", so omit rather than send an empty
   // value the setup loader would reject as a non-number.
-  const chi2Max = document.getElementById("chi2-max").value;
-  const chi2Min = document.getElementById("chi2-min").value;
-  if (chi2Max !== "") body.chi2_max = parseFloat(chi2Max);
-  if (chi2Min !== "") body.chi2_min = parseFloat(chi2Min);
+  const chi2MaxRaw = document.getElementById("chi2-max").value;
+  const chi2MinRaw = document.getElementById("chi2-min").value;
+  const chi2Max = chi2MaxRaw === "" ? null : Number(chi2MaxRaw);
+  const chi2Min = chi2MinRaw === "" ? null : Number(chi2MinRaw);
+
+  if (chi2Max != null) {
+    if (!Number.isFinite(chi2Max) || chi2Max <= 0) {
+      errors.push("χ² ceiling must be a positive, finite number.");
+    } else {
+      body.chi2_max = chi2Max;
+    }
+  }
+  if (chi2Min != null) {
+    if (!Number.isFinite(chi2Min) || chi2Min < 0) {
+      errors.push("χ² floor must be a non-negative, finite number.");
+    } else {
+      body.chi2_min = chi2Min;
+    }
+  }
+  if (chi2Max != null && chi2Min != null && chi2Min >= chi2Max) {
+    errors.push("χ² floor must be below the χ² ceiling.");
+  }
 
   const stateNames = _collectStateNames();
   const fitStates = fitFiles.map(function (f) {
