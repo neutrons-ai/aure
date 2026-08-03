@@ -70,17 +70,6 @@ rather than absorbing the churn into a feature branch.
 Not pre-existing — these are things the shipped subset lacks because the rest of
 the work was dropped.
 
-### 14. Interactive review feedback at a clamped accept is collected and thrown away
-
-[`runner.py:321`](src/aure/workflow/runner.py) deliberately keeps the review
-pause alive when `chi2_clamp_accepted` is set (the one verdict where code
-overrode an objecting evaluator is the one a human should see), but plain text
-feedback only sets `pending_user_feedback` — and the loop then breaks at
-[`runner.py:409`](src/aure/workflow/runner.py) on `workflow_complete`, so it is
-never acted on. Only the `restart_checkpoint` path clears `workflow_complete`.
-The four-line fix (clear `workflow_complete` and `chi2_clamp_accepted` when
-feedback arrives at a clamped accept) is in the preserved patch.
-
 ### 15. The web Setup form cannot set the χ² acceptance window
 
 `chi2_max` / `chi2_min` are `SetupConfig` keys and are in `setup._DUMP_ORDER`,
