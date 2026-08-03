@@ -1167,7 +1167,9 @@ def api_start_analysis():
     if chi2_max is not None and (not isfinite(chi2_max) or chi2_max <= 0):
         return jsonify({"errors": ["chi2_max must be a positive, finite number"]}), 400
     if chi2_min is not None and (not isfinite(chi2_min) or chi2_min < 0):
-        return jsonify({"errors": ["chi2_min must be a non-negative, finite number"]}), 400
+        return jsonify(
+            {"errors": ["chi2_min must be a non-negative, finite number"]}
+        ), 400
     if chi2_max is not None and chi2_min is not None and chi2_min >= chi2_max:
         return jsonify({"errors": ["chi2_min must be below chi2_max"]}), 400
 

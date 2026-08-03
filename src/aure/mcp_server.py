@@ -337,13 +337,16 @@ def evaluate_fit(session_id: str) -> dict:
     """
     Evaluate the quality of the current fit.
 
-    Checks chi-squared, residual patterns, and parameter reasonableness.
+    Reports a deterministic quality assessment plus any issues and suggestions.
+    It does **not** decide whether the fit is acceptable: that is the workflow's
+    χ² acceptance stop, which is gated on an SLD-profile check this tool does not
+    run. Use `aure analyze` when you need the acceptance decision.
 
     Args:
         session_id: The session ID
 
     Returns:
-        Evaluation results with issues and suggestions
+        Quality assessment, issues and suggestions — no acceptance verdict
     """
     if session_id not in _sessions:
         return {"error": f"Session not found: {session_id}"}
@@ -365,14 +368,23 @@ def evaluate_fit(session_id: str) -> dict:
 
         return {
             "session_id": session_id,
-            # `_simple_evaluation` reports rather than decides: acceptance is the
-            # workflow's deterministic clamp, which needs an SLD-profile check this
-            # tool does not run. Advisory, like `aure evaluate`.
-            "acceptable_is_advisory": True,
-            "acceptable": (evaluation.get("quality_assessment") == "good") and not (evaluation.get("issues") or []),
             "chi_squared_quality": evaluation.get("quality_assessment"),
             "issues": evaluation.get("issues", []),
             "suggestions": evaluation.get("suggestions", []),
+            # Deliberately no `acceptable`. `_simple_evaluation` reports and does not
+            # decide — it returns False unconditionally so the workflow's χ² clamp
+            # stays the single acceptance point, with the SLD-profile check that
+            # gates it. Deriving a verdict here from `quality_assessment` and
+            # `issues` would be a second acceptance rule living nowhere else, and
+            # one blind to the profile check this tool never runs.
+            #
+            # Stated rather than omitted because the caller is an LLM, which would
+            # otherwise read "good" with no issues and conclude acceptance itself.
+            "acceptance": (
+                "not decided here — run the workflow (`aure analyze`) for the "
+                "acceptance decision, which also needs the SLD-profile check this "
+                "tool does not perform"
+            ),
         }
     except Exception as e:
         return {"error": str(e), "session_id": session_id}

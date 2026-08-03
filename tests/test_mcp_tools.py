@@ -84,9 +84,11 @@ def test_evaluate_fit_returns_an_assessment(session):
     assert "error" not in out, out["error"]
     assert out["chi_squared_quality"] in {"good", "poor"}
     assert isinstance(out["issues"], list)
-    # Advisory for the same reason `aure evaluate` is: no SLD-profile check runs
-    # here, so this is not the workflow's acceptance decision.
-    assert out["acceptable_is_advisory"] is True
+    # No acceptance verdict: `_simple_evaluation` reports and does not decide, so
+    # the workflow's χ² clamp stays the single acceptance point. Deriving one here
+    # would be a second rule, blind to the SLD-profile check this tool never runs.
+    assert "acceptable" not in out
+    assert "workflow" in out["acceptance"]
 
 
 def test_both_tools_still_report_a_missing_session():
