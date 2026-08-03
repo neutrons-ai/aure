@@ -369,7 +369,7 @@ def evaluate_fit(session_id: str) -> dict:
             # workflow's deterministic clamp, which needs an SLD-profile check this
             # tool does not run. Advisory, like `aure evaluate`.
             "acceptable_is_advisory": True,
-            "acceptable": evaluation.get("acceptable", False),
+            "acceptable": (evaluation.get("quality_assessment") == "good") and not (evaluation.get("issues") or []),
             "chi_squared_quality": evaluation.get("quality_assessment"),
             "issues": evaluation.get("issues", []),
             "suggestions": evaluation.get("suggestions", []),
