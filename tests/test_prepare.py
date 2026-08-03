@@ -80,9 +80,7 @@ def _write_tiny_data_file() -> str:
     """Write a trivial 3-column reflectivity file."""
     import numpy as np
 
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".dat", delete=False
-    ) as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".dat", delete=False) as f:
         f.write("# Q R dR\n")
         for q in np.linspace(0.01, 0.25, 50):
             f.write(f"{q:.6f}  1.0e-3  1.0e-4\n")

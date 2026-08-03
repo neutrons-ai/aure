@@ -8,9 +8,7 @@ import pytest
 
 from aure.state import (
     create_initial_state,
-    DatasetInfo,
     PerFileFitResult,
-    ReflectivityState,
 )
 
 
@@ -112,7 +110,12 @@ class TestModelBuilderMultiFile:
 
     def _make_definition(self):
         return {
-            "substrate": {"name": "silicon", "sld": 2.07, "roughness": 3.0, "roughness_max": 15.0},
+            "substrate": {
+                "name": "silicon",
+                "sld": 2.07,
+                "roughness": 3.0,
+                "roughness_max": 15.0,
+            },
             "layers": [
                 {
                     "name": "polystyrene",
@@ -351,7 +354,12 @@ class TestFittingMultiFile:
 
     def _make_definition(self):
         return {
-            "substrate": {"name": "silicon", "sld": 2.07, "roughness": 3.0, "roughness_max": 15.0},
+            "substrate": {
+                "name": "silicon",
+                "sld": 2.07,
+                "roughness": 3.0,
+                "roughness_max": 15.0,
+            },
             "layers": [
                 {
                     "name": "polystyrene",
@@ -448,8 +456,7 @@ class TestFittingMultiFile:
 
         defn = self._make_definition()
         data_files = [
-            {"file": f, "label": f"seg-{i}"}
-            for i, f in enumerate(self.files)
+            {"file": f, "label": f"seg-{i}"} for i, f in enumerate(self.files)
         ]
         result = run_multi_refl1d_fit(
             model_definition=defn,
@@ -478,7 +485,12 @@ class TestFittingNodeDispatch:
 
     def _make_state(self, multi: bool = False):
         defn = {
-            "substrate": {"name": "silicon", "sld": 2.07, "roughness": 3.0, "roughness_max": 15.0},
+            "substrate": {
+                "name": "silicon",
+                "sld": 2.07,
+                "roughness": 3.0,
+                "roughness_max": 15.0,
+            },
             "layers": [
                 {
                     "name": "polystyrene",

@@ -100,9 +100,7 @@ def _derive_run_dir_name(states, data_files, data_file) -> str:
 
     ids: list[str] = []
     for files, state_name in groups:
-        paths = [
-            (df.get("file") if isinstance(df, dict) else df) for df in files
-        ]
+        paths = [(df.get("file") if isinstance(df, dict) else df) for df in files]
         run_names = [_extract_run_name(p) for p in paths if p]
         numeric = [int(n) for n in run_names if n.isdigit()]
         if numeric:

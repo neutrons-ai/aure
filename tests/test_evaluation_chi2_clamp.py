@@ -1162,3 +1162,68 @@ def test_a_sub_floor_state_blocks_the_clamp_and_is_reported(monkeypatch, stub_ll
         {"state": "h2o", "chi_squared": 0.9},
     ]
     assert evaluation.evaluation_node(ok)["workflow_complete"] is True
+
+
+@pytest.mark.parametrize(
+    "feedback,reopens",
+    [
+        ("the SEI layer looks too thick", True),
+        (None, False),  # confirmed with no guidance
+        ("__STOP__", False),
+    ],
+    ids=["guidance", "confirmed", "stopped"],
+)
+def test_guidance_at_a_clamped_accept_reopens_the_loop(monkeypatch, feedback, reopens):
+    """The pause fires here because the χ² threshold overrode an objecting
+    evaluator, so answering it with guidance has to be able to reopen the loop.
+    It only set `pending_user_feedback` and the runner then broke on
+    `workflow_complete`, so the feedback was recorded and never acted on.
+
+    Confirming with nothing, and `__STOP__`, must still end the run: the pause is a
+    chance to intervene, not a mandatory extra iteration.
+    """
+    from aure.workflow import runner
+
+    evaluations = []
+
+    def _evaluation(state):
+        evaluations.append(state.get("pending_user_feedback"))
+        return {
+            "workflow_complete": True,
+            "chi2_clamp_accepted": True,
+            "iteration": len(evaluations),
+            "fit_results": [{"chi_squared": 1.0, "issues": [], "suggestions": []}],
+        }
+
+    monkeypatch.setitem(runner.NODE_FUNCTIONS, "evaluation", _evaluation)
+    monkeypatch.setitem(runner.NODE_FUNCTIONS, "modeling", lambda state: {})
+    monkeypatch.setitem(runner.NODE_FUNCTIONS, "fitting", lambda state: {})
+    monkeypatch.setitem(runner.NODE_FUNCTIONS, "finalize", lambda state: {})
+    monkeypatch.setitem(runner.NODE_FUNCTIONS, "final_fit", lambda state: {})
+
+    # Answer the first pause only, so a reopened loop terminates on the second.
+    answers = [feedback]
+
+    def _pause(state, node):
+        return answers.pop(0) if answers else "__STOP__"
+
+    final = runner.run_workflow_with_checkpoints(
+        initial_state={
+            "messages": [],
+            "interactive": True,
+            "current_model": _model(),
+            "iteration": 0,
+            "max_iterations": 4,
+            "chi2_max": 1.25,
+        },
+        start_node="evaluation",
+        pause_callback=_pause,
+    )
+
+    if reopens:
+        # The loop ran again and the node saw the guidance.
+        assert len(evaluations) > 1
+        assert evaluations[1] == feedback
+    else:
+        assert len(evaluations) == 1
+    assert final["workflow_complete"] is True

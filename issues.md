@@ -37,35 +37,12 @@ the shipped subset added.
 
 ## Unrelated to this change
 
-### 13. `ruff format` is not clean at baseline
 
-**Predates this change.** With the pinned hook version (ruff 0.15.5), `ruff
-format --check` on a clean `dc1dfca` checkout reports **7** files needing
-reformatting: `src/aure/cli.py`, `src/aure/exporters/isaac.py`,
-`src/aure/nodes/evaluation.py`, `src/aure/nodes/final_fit.py`,
-`src/aure/skills/loader.py`, `src/aure/web/routes.py`,
-`src/aure/workflow/runner.py`. Any hook run that touches one of them emits
-reflows unrelated to whatever change is in flight — `isaac.py` in particular,
-since it is otherwise untouched here. Reformat them in a standalone commit
-rather than absorbing the churn into a feature branch.
-
----
 
 ## Gaps created by the split itself
 
 Not pre-existing — these are things the shipped subset lacks because the rest of
 the work was dropped.
-
-### 14. Interactive review feedback at a clamped accept is collected and thrown away
-
-[`runner.py:321`](src/aure/workflow/runner.py) deliberately keeps the review
-pause alive when `chi2_clamp_accepted` is set (the one verdict where code
-overrode an objecting evaluator is the one a human should see), but plain text
-feedback only sets `pending_user_feedback` — and the loop then breaks at
-[`runner.py:409`](src/aure/workflow/runner.py) on `workflow_complete`, so it is
-never acted on. Only the `restart_checkpoint` path clears `workflow_complete`.
-The four-line fix (clear `workflow_complete` and `chi2_clamp_accepted` when
-feedback arrives at a clamped accept) is in the preserved patch.
 
 ### 15. The web Setup form cannot set the χ² acceptance window
 
