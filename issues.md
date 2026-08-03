@@ -37,19 +37,7 @@ the shipped subset added.
 
 ## Unrelated to this change
 
-### 12. Two MCP tools are dead
 
-**Predates this change; wholly unrelated to it.**
-
-- `mcp_server.evaluate_fit` imports `analyze_fit_quality` from `nodes.evaluation`
-  ([`src/aure/mcp_server.py:350`](src/aure/mcp_server.py)). No such symbol
-  exists anywhere in the package (`hasattr` → `False`) — `ImportError` on call.
-- `mcp_server.run_fit` calls `run_refl1d_fit(model_script=…, data_file=…,
-  method=…, max_iterations=…)` ([`src/aure/mcp_server.py:305`](src/aure/mcp_server.py)).
-  The real signature is `run_refl1d_fit(model_definition, method, iteration,
-  steps, burn, export_dir, model_name)`
-  ([`src/aure/nodes/fitting.py:334`](src/aure/nodes/fitting.py)) — three of the
-  four keywords do not exist, so it is a `TypeError` on call.
 
 ## Gaps created by the split itself
 
