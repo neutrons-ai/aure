@@ -304,10 +304,11 @@ numbering is topical, not chronological — `evaluation_node` runs 1 → 2 → 4
    that already passed, at the LLM's discretion and irreproducibly. The LLM's
    objections are not discarded: they stay in `issues` and are reported as notes,
    and the hypotheses the run never got to are listed by the finalize node. An
-   interactive run also still gets its review pause on a *clamped* accept (keyed
-   off `state["chi2_clamp_accepted"]`) — the one verdict where code overrode an
-   objecting evaluator is the one a human should see; feedback typed there is not
-   yet acted on ([issues.md](../issues.md) #13).
+   interactive run also gets its review pause on a *clamped* accept (keyed off
+   `state["chi2_clamp_accepted"]`) — the one verdict where code overrode an
+   objecting evaluator is the one a human should see. Guidance typed there clears
+   both flags and routes back to `modeling`, which consumes
+   `pending_user_feedback`; an empty confirmation or `__STOP__` still ends the run.
 
    The clamp is **one-directional — a floor on stopping, not a ceiling.** It only
    raises a verdict (`False → True`); it never lowers one. *Above* `chi2_max` the

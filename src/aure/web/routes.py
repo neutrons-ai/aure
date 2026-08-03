@@ -78,6 +78,22 @@ def _sanitize_dir_name(name: str) -> str:
     return re.sub(r"[^\w\-]", "_", str(name)).strip("_") or "run"
 
 
+def _parse_optional_float(raw) -> "Optional[float]":
+    """A form number that may be blank. Blank/absent means "use the default".
+
+    Invalid text is treated as absent rather than rejected: the setup loader and
+    ``_get_chi2_max``/``_get_chi2_min`` validate the value that actually reaches
+    them, and failing a whole run because a field held junk would be worse than
+    falling back to the configured default.
+    """
+    if raw is None or raw == "":
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 def _derive_run_dir_name(states, data_files, data_file) -> str:
     """Derive the output/run folder name.
 
@@ -100,9 +116,7 @@ def _derive_run_dir_name(states, data_files, data_file) -> str:
 
     ids: list[str] = []
     for files, state_name in groups:
-        paths = [
-            (df.get("file") if isinstance(df, dict) else df) for df in files
-        ]
+        paths = [(df.get("file") if isinstance(df, dict) else df) for df in files]
         run_names = [_extract_run_name(p) for p in paths if p]
         numeric = [int(n) for n in run_names if n.isdigit()]
         if numeric:
@@ -871,6 +885,9 @@ def api_setup_load():
         payload["model_name"] = setup["model_name"]
     if setup.get("max_refinements") is not None:
         payload["max_refinements"] = setup["max_refinements"]
+    for key in ("chi2_max", "chi2_min"):
+        if setup.get(key) is not None:
+            payload[key] = setup[key]
     return jsonify(payload)
 
 
@@ -1142,6 +1159,17 @@ def api_start_analysis():
 
     interactive = bool(body.get("interactive", False))
     max_iterations = int(body.get("max_iterations", 5))
+    from math import isfinite
+
+    chi2_max = _parse_optional_float(body.get("chi2_max"))
+    chi2_min = _parse_optional_float(body.get("chi2_min"))
+
+    if chi2_max is not None and (not isfinite(chi2_max) or chi2_max <= 0):
+        return jsonify({"errors": ["chi2_max must be a positive, finite number"]}), 400
+    if chi2_min is not None and (not isfinite(chi2_min) or chi2_min < 0):
+        return jsonify({"errors": ["chi2_min must be a non-negative, finite number"]}), 400
+    if chi2_max is not None and chi2_min is not None and chi2_min >= chi2_max:
+        return jsonify({"errors": ["chi2_min must be below chi2_max"]}), 400
 
     # Reset run state
     with lock:
@@ -1239,6 +1267,8 @@ def api_start_analysis():
                 data_files=data_files,
                 states=states,
                 user_config=user_config_extra or None,
+                chi2_max=chi2_max,
+                chi2_min=chi2_min,
             )
             with lock:
                 run_state["status"] = "complete"

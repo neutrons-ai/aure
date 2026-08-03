@@ -133,7 +133,7 @@ class SkillRegistry:
         text = (meta.path / "SKILL.md").read_text(encoding="utf-8")
         # Skip frontmatter
         end = text.index("---", 3)
-        body = text[end + 3:].strip()
+        body = text[end + 3 :].strip()
         self._body_cache[name] = body
         return body
 

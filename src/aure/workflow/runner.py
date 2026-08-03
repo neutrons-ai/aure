@@ -108,6 +108,8 @@ def run_analysis(
     pause_callback: Optional[Callable[[Dict[str, Any], str], Optional[str]]] = None,
     data_files: Optional[list[dict]] = None,
     states: Optional[list[dict]] = None,
+    chi2_max: Optional[float] = None,
+    chi2_min: Optional[float] = None,
 ) -> ReflectivityState:
     """
     Run the reflectivity analysis workflow.
@@ -123,6 +125,8 @@ def run_analysis(
         interactive: Enable interactive mode (pause after evaluation for user feedback)
         pause_callback: Blocking callback(state, node_name) -> Optional[str] that
             returns user feedback text (or None). Only called when interactive=True.
+        chi2_max: χ² acceptance ceiling for this run; falls back to ``CHI2_MAX``.
+        chi2_min: χ² acceptance floor for this run; falls back to ``CHI2_MIN``.
 
     Returns:
         Final workflow state with results
@@ -139,6 +143,22 @@ def run_analysis(
     )
     if interactive:
         initial_state["interactive"] = True
+    # Seeding the window rather than exporting CHI2_MAX/CHI2_MIN: the web UI drives
+    # this from a background thread, where mutating the process environment would
+    # race any other request. The runner pins the window only when it is unset, so
+    # a seeded value is what the run keeps — and what its checkpoints record, so a
+    # resume inherits it too.
+    seeded_chi2_max = None
+    if chi2_max is not None:
+        seeded_chi2_max = evaluation._validated_chi2_max(chi2_max, "chi2_max (run_analysis)")
+        if seeded_chi2_max is not None:
+            initial_state["chi2_max"] = seeded_chi2_max
+
+    if chi2_min is not None:
+        seeded_chi2_min = evaluation._validated_chi2_min(chi2_min, "chi2_min (run_analysis)")
+        effective_chi2_max = seeded_chi2_max if seeded_chi2_max is not None else evaluation._get_chi2_max()
+        if seeded_chi2_min is not None and seeded_chi2_min < effective_chi2_max:
+            initial_state["chi2_min"] = seeded_chi2_min
 
     # Run with optional tracing
     with TracedWorkflow(
@@ -394,6 +414,22 @@ def run_workflow_with_checkpoints(
                             timestamp=None,
                         )
                     ]
+                    # Withdraw a clamped accept. The pause exists here precisely
+                    # because the χ² threshold overrode an objecting evaluator, so
+                    # answering it with guidance has to be able to reopen the loop —
+                    # otherwise the run breaks on `workflow_complete` below and the
+                    # feedback is recorded but never acted on. `chi2_clamp_accepted`
+                    # is cleared with it so the next evaluation does not pause again
+                    # on a stale flag.
+                    if state.get("workflow_complete") and state.get(
+                        "chi2_clamp_accepted"
+                    ):
+                        state["workflow_complete"] = False
+                        state["chi2_clamp_accepted"] = False
+                        logger.info(
+                            "[RUNNER] User gave guidance at a clamped accept — "
+                            "reopening the refinement loop"
+                        )
                     logger.info(
                         "[RUNNER] Received user feedback: %s", feedback_text[:100]
                     )
@@ -467,9 +503,7 @@ def run_workflow_with_checkpoints(
         # NODE_FUNCTIONS registry simply skips it rather than crashing.
         final_fit_fn = NODE_FUNCTIONS.get("final_fit")
         if final_fit_fn is not None:
-            updates = run_with_tracing(
-                final_fit_fn, state, "node_final_fit", trace_ctx
-            )
+            updates = run_with_tracing(final_fit_fn, state, "node_final_fit", trace_ctx)
             if updates:
                 _merge_state_updates(state, updates)
                 if checkpoint_mgr:

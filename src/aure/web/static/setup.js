@@ -152,6 +152,8 @@ function _saveFormValues() {
     output_dir: document.getElementById("output-dir").value,
     interactive: document.getElementById("interactive-mode").checked,
     max_iterations: parseInt(document.getElementById("max-iterations").value, 10) || 5,
+    chi2_max: document.getElementById("chi2-max").value,
+    chi2_min: document.getElementById("chi2-min").value,
     plotted_files: plottedFiles.map(function (f) {
       return { path: f.path, isFit: f.isFit, state: f.state || null };
     }),
@@ -243,6 +245,8 @@ function _restoreFormValues() {
     if (vals.output_dir)  document.getElementById("output-dir").value = vals.output_dir;
     if (vals.interactive)  document.getElementById("interactive-mode").checked = vals.interactive;
     if (vals.max_iterations) document.getElementById("max-iterations").value = vals.max_iterations;
+    if (vals.chi2_max) document.getElementById("chi2-max").value = vals.chi2_max;
+    if (vals.chi2_min) document.getElementById("chi2-min").value = vals.chi2_min;
     if (vals.group_into_states) {
       groupIntoStates = true;
       var gtoggle = document.getElementById("group-into-states");
@@ -1266,6 +1270,31 @@ function _buildAnalysisBody(opts) {
     max_iterations: maxIter,
   };
 
+  // Blank means "fall back to the default", so omit rather than send an empty
+  // value the setup loader would reject as a non-number.
+  const chi2MaxRaw = document.getElementById("chi2-max").value;
+  const chi2MinRaw = document.getElementById("chi2-min").value;
+  const chi2Max = chi2MaxRaw === "" ? null : Number(chi2MaxRaw);
+  const chi2Min = chi2MinRaw === "" ? null : Number(chi2MinRaw);
+
+  if (chi2Max != null) {
+    if (!Number.isFinite(chi2Max) || chi2Max <= 0) {
+      errors.push("χ² ceiling must be a positive, finite number.");
+    } else {
+      body.chi2_max = chi2Max;
+    }
+  }
+  if (chi2Min != null) {
+    if (!Number.isFinite(chi2Min) || chi2Min < 0) {
+      errors.push("χ² floor must be a non-negative, finite number.");
+    } else {
+      body.chi2_min = chi2Min;
+    }
+  }
+  if (chi2Max != null && chi2Min != null && chi2Min >= chi2Max) {
+    errors.push("χ² floor must be below the χ² ceiling.");
+  }
+
   const stateNames = _collectStateNames();
   const fitStates = fitFiles.map(function (f) {
     return (f.state || "").trim();
@@ -1393,6 +1422,12 @@ function _applySetupPrefill(payload) {
   }
   if (payload.max_refinements != null) {
     document.getElementById("max-iterations").value = payload.max_refinements;
+  }
+  if (payload.chi2_max != null) {
+    document.getElementById("chi2-max").value = payload.chi2_max;
+  }
+  if (payload.chi2_min != null) {
+    document.getElementById("chi2-min").value = payload.chi2_min;
   }
 
   // Build a path → state-name map for file checkboxes.
