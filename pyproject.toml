@@ -48,6 +48,13 @@ include = ["aure*"]
 
 [tool.setuptools.package-data]
 "aure.web" = ["templates/**/*", "static/**/*"]
+# The skill directories hold no __init__.py, so `packages.find` does not carry
+# them and their SKILL.md files are absent from a built wheel or sdist. That is
+# invisible under `pip install -e .` but breaks every non-editable install --
+# including the Docker image -- leaving SkillRegistry empty and silently
+# stripping all domain knowledge from prompts.
+# tests/test_packaging.py builds a wheel and asserts these are present.
+"aure.skills" = ["*/SKILL.md", "*/references/*", "*/assets/*", "*/scripts/*"]
 
 [project.scripts]
 aure = "aure.cli:main"

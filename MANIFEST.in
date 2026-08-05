@@ -1,0 +1,6 @@
+# Belt and braces alongside [tool.setuptools.package-data] in pyproject.toml.
+# The skill directories are data, not packages (no __init__.py), so nothing
+# includes them automatically. Losing them is silent -- see tests/test_packaging.py.
+recursive-include src/aure/skills *.md
+recursive-include src/aure/web/templates *
+recursive-include src/aure/web/static *

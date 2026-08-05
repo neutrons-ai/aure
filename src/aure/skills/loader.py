@@ -67,6 +67,20 @@ class SkillRegistry:
             except Exception as e:
                 logger.warning("Skipping invalid skill '%s': %s", child.name, e)
 
+        if not self._metadata:
+            # An empty registry is never legitimate for the packaged skills
+            # directory, and it degrades silently: select_skills() returns [],
+            # load_skill_context() returns "", and every prompt goes out with
+            # no domain knowledge and no error. The usual cause is a
+            # non-editable install that dropped the SKILL.md files -- see the
+            # "aure.skills" entry in [tool.setuptools.package-data].
+            logger.error(
+                "No skills found in %s. If this is an installed (non-editable) "
+                "aure, the SKILL.md files are missing from the distribution and "
+                "all prompts will run without domain knowledge.",
+                self._skills_dir,
+            )
+
     @staticmethod
     def _parse_frontmatter(skill_md: Path, dir_name: str) -> SkillMetadata:
         """Parse YAML frontmatter from a SKILL.md file."""
