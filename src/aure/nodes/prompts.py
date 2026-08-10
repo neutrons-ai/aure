@@ -385,11 +385,26 @@ def _format_boundary_hits(boundary_hits: list | None) -> str:
 
     lines = []
     for bh in boundary_hits:
-        lines.append(
-            f"  - **{bh['name']}**: value {bh['value']:.4f} hit "
-            f"{bh['bound_hit']} bound ({bh['bound_value']:.4f}). "
-            f"Range has been auto-expanded for the next fit."
-        )
+        if bh.get("detected_by") == "uncertainty":
+            # Worded differently on purpose. The value itself looks
+            # comfortable, so a reader told only that it "hit its bound"
+            # would look for a number that is not there and distrust the
+            # rest of the report.
+            unc = bh.get("uncertainty")
+            spread = f" +/- {unc:.4f}" if isinstance(unc, (int, float)) else ""
+            lines.append(
+                f"  - **{bh['name']}**: value {bh['value']:.4f}{spread} is not "
+                f"itself at a bound, but its uncertainty reaches the "
+                f"{bh['bound_hit']} bound ({bh['bound_value']:.4f}), so the "
+                f"range is constraining the answer. Range has been "
+                f"auto-expanded for the next fit."
+            )
+        else:
+            lines.append(
+                f"  - **{bh['name']}**: value {bh['value']:.4f} hit "
+                f"{bh['bound_hit']} bound ({bh['bound_value']:.4f}). "
+                f"Range has been auto-expanded for the next fit."
+            )
     lines.append("")
     lines.append(
         "  Parameters hitting their range boundaries may indicate the model "

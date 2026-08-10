@@ -1708,16 +1708,46 @@ def _detect_profile_artifacts_into(
 def _check_boundary_hits(
     fit_result: FitResult,
     tolerance: float = 0.01,
+    sigma: float = 2.0,
+    max_width_fraction: float = 0.75,
 ) -> list:
     """Check if any fitted parameters are at or near their range boundaries.
 
-    A parameter is considered "at boundary" when its value is within
-    *tolerance* (relative) of a bound edge.
+    Two ways a parameter can be pinned by its range:
 
-    Returns a list of dicts: ``{name, value, bound_hit, bound_value}``.
+    * its **value** is within *tolerance* (relative) of a bound edge; or
+    * its **uncertainty interval** reaches the edge — ``value ± sigma·dx``
+      crosses it — even though the point estimate does not.
+
+    The second case is invisible to a point-estimate test and is common after
+    a dream run, where the posterior is skewed towards the bound it is pressed
+    against. A real example: ``CuOx interface`` fitted at 5.11 in ``[5, 11]``
+    is 1.8 % from its floor, so a 1 % test passes it, while its posterior runs
+    down to 5.03. The range is constraining the answer and the evaluator never
+    hears about it.
+
+    Uncertainty hits are only reported for parameters the data actually
+    constrain. When ``2·sigma·dx`` covers more than *max_width_fraction* of
+    the range the parameter is not pinned against an edge, it is
+    unconstrained — and widening its bounds (see :func:`_expand_model_bounds`)
+    makes the next fit worse rather than better, iteration after iteration.
+    Those are skipped deliberately.
+
+    The 0.75 default is calibrated rather than chosen for roundness: the
+    ``CuOx interface`` case above has ``dx = 0.906`` on a span of 6, so its
+    interval covers 60 % of the range while still being a genuine pin. A
+    tighter guard rejects the very case this exists to catch.
+
+    ``dx`` is unavailable for optimizers that do not estimate it, in which case
+    this degrades to the point-estimate test alone.
+
+    Returns a list of dicts:
+    ``{name, value, bound_hit, bound_value, detected_by[, uncertainty]}``,
+    where ``detected_by`` is ``"value"`` or ``"uncertainty"``.
     """
     params = fit_result.get("parameters") or {}
     bounds = fit_result.get("bounds") or {}
+    uncertainties = fit_result.get("uncertainties") or {}
     hits = []
     for name, value in params.items():
         b = bounds.get(name)
@@ -1729,12 +1759,49 @@ def _check_boundary_hits(
             continue
         if abs(value - lo) <= tolerance * span:
             hits.append(
-                {"name": name, "value": value, "bound_hit": "lower", "bound_value": lo}
+                {
+                    "name": name,
+                    "value": value,
+                    "bound_hit": "lower",
+                    "bound_value": lo,
+                    "detected_by": "value",
+                }
             )
-        elif abs(value - hi) <= tolerance * span:
+            continue
+        if abs(value - hi) <= tolerance * span:
             hits.append(
-                {"name": name, "value": value, "bound_hit": "upper", "bound_value": hi}
+                {
+                    "name": name,
+                    "value": value,
+                    "bound_hit": "upper",
+                    "bound_value": hi,
+                    "detected_by": "value",
+                }
             )
+            continue
+
+        dx = uncertainties.get(name)
+        if not isinstance(dx, (int, float)) or dx <= 0 or np.isnan(dx):
+            continue
+        reach = sigma * dx
+        if 2 * reach >= max_width_fraction * span:
+            continue  # unconstrained, not pinned
+        if value - reach <= lo:
+            side, edge = "lower", lo
+        elif value + reach >= hi:
+            side, edge = "upper", hi
+        else:
+            continue
+        hits.append(
+            {
+                "name": name,
+                "value": value,
+                "bound_hit": side,
+                "bound_value": edge,
+                "detected_by": "uncertainty",
+                "uncertainty": dx,
+            }
+        )
     return hits
 
 
