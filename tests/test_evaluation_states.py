@@ -35,6 +35,189 @@ def test_boundary_hits_carry_state_prefix_in_name():
     assert "Cu thickness" not in names
 
 
+def test_boundary_hits_flag_an_uncertainty_that_reaches_the_bound():
+    """A point-estimate test alone misses a posterior pressed against a range.
+
+    Real case from a REF_L oxide fit: ``CuOx interface`` lands at 5.11 in
+    ``[5, 11]`` -- 1.8% of the span from its floor, so the 1% test passes it --
+    while its uncertainty runs down through the floor. The range is
+    constraining the answer and the evaluator never heard about it.
+    """
+    from aure.nodes.evaluation import _check_boundary_hits
+
+    # The real numbers from that fit, so this also pins the calibration of
+    # `max_width_fraction`: dx=0.906 on a span of 6 means the interval covers
+    # 60% of the range, and a guard tighter than that rejects a genuine pin.
+    fit_result = {
+        "parameters": {"CuOx interface": 5.1104},
+        "bounds": {"CuOx interface": [5.0, 11.0]},
+        "uncertainties": {"CuOx interface": 0.9059},
+    }
+
+    hits = _check_boundary_hits(fit_result)
+
+    assert [h["name"] for h in hits] == ["CuOx interface"]
+    assert hits[0]["bound_hit"] == "lower"
+    assert hits[0]["detected_by"] == "uncertainty"
+    assert hits[0]["uncertainty"] == 0.9059
+
+    # And the point-estimate test alone -- what AuRE did before -- sees nothing.
+    without = {k: v for k, v in fit_result.items() if k != "uncertainties"}
+    assert _check_boundary_hits(without) == []
+
+
+def test_boundary_hits_ignore_an_unconstrained_parameter():
+    """A posterior spanning most of the range is not pinned against an edge --
+    it is unconstrained, and widening its bounds makes the next fit worse.
+
+    Without this guard the workflow expands the range every iteration, and
+    each expansion makes the parameter less constrained than before.
+    """
+    from aure.nodes.evaluation import _check_boundary_hits
+
+    fit_result = {
+        "parameters": {"Ti rho": 0.0},
+        "bounds": {"Ti rho": [-2.0, 1.0]},
+        "uncertainties": {"Ti rho": 1.2},  # +/- 2 sigma covers 4.8 of a span of 3
+    }
+
+    assert _check_boundary_hits(fit_result) == []
+
+
+def test_boundary_hits_are_unchanged_without_uncertainties():
+    """Optimizers that do not estimate dx must behave exactly as before."""
+    from aure.nodes.evaluation import _check_boundary_hits
+
+    fit_result = {
+        "parameters": {"Cu thickness": 500.0, "D2O Cu interface": 5.0},
+        "bounds": {"Cu thickness": [250.0, 750.0], "D2O Cu interface": [1.0, 5.0]},
+    }
+
+    hits = _check_boundary_hits(fit_result)
+
+    assert [h["name"] for h in hits] == ["D2O Cu interface"]
+    assert hits[0]["detected_by"] == "value"
+
+
+def test_a_value_at_the_bound_is_reported_once_not_twice():
+    """A railed parameter satisfies both tests; reporting it twice would
+    double-expand its range."""
+    from aure.nodes.evaluation import _check_boundary_hits
+
+    fit_result = {
+        "parameters": {"Cu thickness": 750.0},
+        "bounds": {"Cu thickness": [250.0, 750.0]},
+        "uncertainties": {"Cu thickness": 5.0},
+    }
+
+    hits = _check_boundary_hits(fit_result)
+
+    assert len(hits) == 1
+    assert hits[0]["detected_by"] == "value"
+
+
+def test_a_comfortable_parameter_with_a_tight_posterior_is_not_flagged():
+    """The guard has to leave normal fits alone."""
+    from aure.nodes.evaluation import _check_boundary_hits
+
+    fit_result = {
+        "parameters": {"Cu thickness": 500.0},
+        "bounds": {"Cu thickness": [250.0, 750.0]},
+        "uncertainties": {"Cu thickness": 5.0},
+    }
+
+    assert _check_boundary_hits(fit_result) == []
+
+
+def test_a_nonsense_uncertainty_is_ignored():
+    """dx arrives from a fitter, not from us."""
+    import numpy as np
+
+    from aure.nodes.evaluation import _check_boundary_hits
+
+    bounds = {"a": [0.0, 10.0]}
+    for bad in (0.0, -1.0, np.nan, None, "wide"):
+        fit_result = {
+            "parameters": {"a": 5.0},
+            "bounds": bounds,
+            "uncertainties": {"a": bad},
+        }
+        assert _check_boundary_hits(fit_result) == [], bad
+
+
+def test_an_uncertainty_hit_is_described_as_one_in_the_prompt():
+    """The value looks comfortable, so a reader told only that it "hit its
+    bound" would look for a number that is not there."""
+    from aure.nodes.prompts import _format_boundary_hits
+
+    text = _format_boundary_hits(
+        [
+            {
+                "name": "CuOx interface",
+                "value": 5.11,
+                "bound_hit": "lower",
+                "bound_value": 5.0,
+                "detected_by": "uncertainty",
+                "uncertainty": 0.4,
+            }
+        ]
+    )
+
+    assert "not itself at a bound" in text
+    assert "uncertainty reaches the lower bound" in text
+    assert "5.1100" in text
+
+
+def test_a_value_hit_keeps_its_original_wording():
+    from aure.nodes.prompts import _format_boundary_hits
+
+    text = _format_boundary_hits(
+        [
+            {
+                "name": "Cu thickness",
+                "value": 750.0,
+                "bound_hit": "upper",
+                "bound_value": 750.0,
+                "detected_by": "value",
+            }
+        ]
+    )
+
+    assert "value 750.0000 hit upper bound (750.0000)" in text
+
+
+def test_an_uncertainty_hit_expands_the_range_like_any_other():
+    """The prompt tells the model the range was auto-expanded, so it has to
+    have been -- otherwise the next iteration reports the same pin again."""
+    from aure.nodes.evaluation import _expand_model_bounds
+
+    model = {
+        "layers": [
+            {
+                "name": "CuOx",
+                "roughness_min": 5.0,
+                "roughness_max": 11.0,
+            }
+        ]
+    }
+
+    expanded = _expand_model_bounds(
+        model,
+        [
+            {
+                "name": "CuOx interface",
+                "value": 5.11,
+                "bound_hit": "lower",
+                "bound_value": 5.0,
+                "detected_by": "uncertainty",
+            }
+        ],
+    )
+
+    assert expanded["layers"][0]["roughness_min"] == 2.0
+    assert model["layers"][0]["roughness_min"] == 5.0, "the input is not mutated"
+
+
 # ----------------------------------------------------------------------
 # Per-state residual fringe analysis
 # ----------------------------------------------------------------------

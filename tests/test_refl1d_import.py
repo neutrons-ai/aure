@@ -1007,3 +1007,51 @@ def test_data_files_are_self_contained(tmp_path, one_file):
     # And build_problem should still work against it.
     problem = build_problem(model)
     assert problem.chisq() >= 0
+
+
+# ----------------------------------------------------------------------
+# Uncertainties recovered from a dream export
+# ----------------------------------------------------------------------
+
+
+def test_uncertainties_are_read_from_a_dream_err_json(tmp_path):
+    """`extract_fit_result_from_problem` has no bumps fit_result to read `dx`
+    from, so without this the field stays empty and every consumer of it --
+    notably the uncertainty half of `_check_boundary_hits` -- silently does
+    nothing on the `aure evaluate` path.
+    """
+    import json
+
+    from aure.refl1d_import import _read_uncertainties
+
+    (tmp_path / "model-err.json").write_text(
+        json.dumps(
+            {
+                "CuOx interface": {"best": 5.11, "std": 0.906, "p95": [5.03, 8.38]},
+                "no std here": {"best": 1.0},
+                "not a mapping": "surprise",
+            }
+        )
+    )
+
+    assert _read_uncertainties(str(tmp_path)) == {"CuOx interface": 0.906}
+
+
+def test_missing_uncertainties_are_absent_rather_than_zero(tmp_path):
+    """An optimizer run writes no -err.json. Reporting 0.0 would claim
+    certainty the fit never established."""
+    from aure.refl1d_import import _read_uncertainties
+
+    assert _read_uncertainties(str(tmp_path)) == {}
+    assert _read_uncertainties(None) == {}
+    assert _read_uncertainties(str(tmp_path / "nope")) == {}
+
+
+def test_a_malformed_err_json_does_not_break_the_import(tmp_path):
+    """The file comes from bumps, and a truncated write must degrade to "no
+    uncertainties" rather than failing the whole extraction."""
+    from aure.refl1d_import import _read_uncertainties
+
+    (tmp_path / "model-err.json").write_text("{ truncated")
+
+    assert _read_uncertainties(str(tmp_path)) == {}

@@ -806,6 +806,38 @@ def definition_from_problem(
 # --------------------------------------------------------------------------
 
 
+def _read_uncertainties(export_dir: Optional[str]) -> Dict[str, float]:
+    """Read 1-sigma parameter uncertainties from a dream run's ``-err.json``.
+
+    bumps writes one entry per free parameter with ``best``, ``median``,
+    ``std``, ``p68`` and ``p95``. Only ``std`` is taken, because that is the
+    shape :class:`FitResult` already carries everywhere else and mixing two
+    conventions in one field is worse than losing the percentiles.
+
+    An optimizer run writes no such file, which is an absence of information
+    rather than certainty; the caller sees an empty mapping either way.
+    """
+    if not export_dir:
+        return {}
+    directory = Path(export_dir)
+    if not directory.is_dir():
+        return {}
+    for candidate in sorted(directory.glob("*-err.json")):
+        try:
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            logger.warning(f"[IMPORT] Could not read {candidate.name}: {exc}")
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        return {
+            name: float(entry["std"])
+            for name, entry in payload.items()
+            if isinstance(entry, dict) and isinstance(entry.get("std"), (int, float))
+        }
+    return {}
+
+
 def extract_fit_result_from_problem(
     problem,
     *,
@@ -829,7 +861,6 @@ def extract_fit_result_from_problem(
     is_multi = len(experiments) > 1
 
     parameters: Dict[str, float] = {}
-    uncertainties: Dict[str, float] = {}
     param_bounds: Dict[str, list] = {}
     for par in problem._parameters:
         name = str(par.name)
@@ -837,6 +868,13 @@ def extract_fit_result_from_problem(
         lo, hi = _bounds(par)
         if lo is not None and hi is not None:
             param_bounds[name] = [lo, hi]
+
+    # There is no bumps ``fit_result`` here to read ``dx`` from, but a dream
+    # run wrote the same information to ``-err.json`` next to the export.
+    # Without this the field stays empty and every check that reads it --
+    # notably the uncertainty half of ``_check_boundary_hits`` -- silently
+    # does nothing on the one path most likely to be pointed at a finished fit.
+    uncertainties: Dict[str, float] = _read_uncertainties(export_dir)
 
     Q_fit: List[float] = []
     R_fit: List[float] = []
