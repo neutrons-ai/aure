@@ -10,12 +10,13 @@ Usage:
 import contextlib
 import json
 import logging
+import math
 import subprocess
 import sys
 import tempfile
 import urllib.request
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import click
 
@@ -868,6 +869,21 @@ def _echo_pending_hypotheses(
         click.echo(f"{indent}  ({format_attempted_counts(hypotheses)})")
 
 
+def _fmt_num(value: Any, spec: str = ".2f") -> str:
+    """Format a number that may be missing, None, non-numeric or non-finite.
+
+    Not every field the workflow reports is guaranteed to carry a value: a
+    layer whose thickness the sample description never pinned down reaches the
+    summary as None. Formatting that directly raises TypeError, which would
+    abort the run report — and the run's exit status — after the fit has
+    already succeeded and been written to disk.
+    """
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if math.isfinite(value):
+            return format(value, spec)
+    return "n/a"
+
+
 def _print_analysis_results(result: dict, output_dir: Optional[str] = None):
     """Pretty-print analysis results."""
     click.echo()
@@ -888,19 +904,21 @@ def _print_analysis_results(result: dict, output_dir: Optional[str] = None):
     parsed = result.get("parsed_sample")
     if parsed:
         click.echo(click.style("  Sample Structure", fg="cyan", bold=True))
+        substrate = parsed.get("substrate") or {}
         click.echo(
-            f"    Substrate: {parsed['substrate']['name']} "
-            f"(SLD={parsed['substrate']['sld']:.2f})"
+            f"    Substrate: {substrate.get('name', 'unknown')} "
+            f"(SLD={_fmt_num(substrate.get('sld'))})"
         )
         for i, layer in enumerate(parsed.get("layers", [])):
             click.echo(
-                f"    Layer {i + 1}: {layer['name']} - "
-                f"{layer['thickness']:.0f} Å "
-                f"(SLD={layer['sld']:.2f})"
+                f"    Layer {i + 1}: {layer.get('name', 'unknown')} - "
+                f"{_fmt_num(layer.get('thickness'), '.0f')} Å "
+                f"(SLD={_fmt_num(layer.get('sld'))})"
             )
+        ambient = parsed.get("ambient") or {}
         click.echo(
-            f"    Ambient: {parsed['ambient']['name']} "
-            f"(SLD={parsed['ambient']['sld']:.2f})"
+            f"    Ambient: {ambient.get('name', 'unknown')} "
+            f"(SLD={_fmt_num(ambient.get('sld'))})"
         )
         click.echo()
 
