@@ -101,6 +101,11 @@ _LAYER_SUFFIX_TO_KEY = {
 
 _DEFAULT_TOL = 0.02
 
+#: How much worse a preferred tier's χ² may be before the tier order stops
+#: applying, as a multiple of the best χ² across every scored fit. See
+#: :func:`_get_tier_chi2_factor`.
+_DEFAULT_TIER_CHI2_FACTOR = 3.0
+
 
 def _get_selection_tolerance() -> float:
     """Relative χ² band within which the simpler model wins (``FINAL_SELECTION_TOL``)."""
@@ -111,6 +116,37 @@ def _get_selection_tolerance() -> float:
     if not math.isfinite(tol) or tol < 0:
         return _DEFAULT_TOL
     return tol
+
+
+def _get_tier_chi2_factor() -> float:
+    """How far the tier order may override χ² (``FINAL_TIER_CHI2_FACTOR``).
+
+    The tier order — profile-clean, then sub-floor, then vetoed — decides which
+    fits are eligible at all, and it does so without looking at χ². That is
+    right when the candidates are comparable and wrong when they are not: on the
+    2026-08-17 cu_film sweep the artifact detector vetoed every candidate in 38
+    of 51 runs, so a single surviving iteration won its tier outright no matter
+    how badly it fitted. Case 201152 reported χ² = 130.55 because the one
+    profile-clean iteration was that fit; the loop had already found χ² = 3.82.
+
+    A model that misses the data by that margin is not the better answer for
+    being drawn with clean interfaces — both are wrong, and the one that also
+    contradicts the measurement is the worse report. So a preferred tier only
+    keeps its precedence while its best χ² stays within this factor of the best
+    χ² overall; past that the next tier is admitted alongside it and χ² decides.
+
+    ``0`` or a non-finite value disables the guard, restoring the strict tier
+    order for anyone who wants it.
+    """
+    try:
+        factor = float(
+            os.environ.get("FINAL_TIER_CHI2_FACTOR", str(_DEFAULT_TIER_CHI2_FACTOR))
+        )
+    except (TypeError, ValueError):
+        return _DEFAULT_TIER_CHI2_FACTOR
+    if not math.isfinite(factor) or factor < 0:
+        return _DEFAULT_TIER_CHI2_FACTOR
+    return factor
 
 
 # ======================================================================
@@ -420,7 +456,30 @@ def _select(
         return 0
 
     tiers = {i: _tier(fr) for i, fr in scored}
-    pool = [(i, fr) for i, fr in scored if tiers[i] == min(tiers.values())]
+    best_tier = min(tiers.values())
+    pool = [(i, fr) for i, fr in scored if tiers[i] == best_tier]
+
+    # ...but only while the preferred tier is still fitting the data. A tier
+    # that survives on physical plausibility alone, at many times the χ² of a
+    # fit it outranks, is not the better answer to report; see
+    # _get_tier_chi2_factor.
+    #
+    # The comparison deliberately ignores sub-floor fits. Their χ² is a
+    # statement about the `dR` column, not about the structure, so it is not a
+    # yardstick anything else can be "far worse" than — measuring against one
+    # would trip this guard on every run that produced an overfitted iteration,
+    # which inverts the reason that tier exists.
+    factor = _get_tier_chi2_factor()
+    lowest_any = min(fr["chi_squared"] for _, fr in scored)
+    tier_override = False
+    if factor > 0 and best_tier < 2:
+        comparable = [(i, fr) for i, fr in scored if tiers[i] != 1]
+        if comparable:
+            lowest_comparable = min(fr["chi_squared"] for _, fr in comparable)
+            tier_best = min(fr["chi_squared"] for _, fr in pool)
+            if lowest_comparable > 0 and tier_best > lowest_comparable * factor:
+                tier_override = True
+                pool = comparable
 
     vetoed = [
         {"index": i, "iteration": fr.get("iteration"), "chi_squared": fr["chi_squared"]}
@@ -454,7 +513,7 @@ def _select(
 
     # "Demoted" means a filter changed the answer, not merely that it matched: a
     # set-aside fit that would have lost on χ² anyway is not worth reporting as one.
-    lowest_overall = min(fr["chi_squared"] for _, fr in scored)
+    lowest_overall = lowest_any
     changed_answer = best_chi2 > lowest_overall
     selected_tier = tiers[index]
 
@@ -464,9 +523,15 @@ def _select(
         definition,
         {
             "criterion": (
-                "lowest chi2 among profile-clean fits inside the acceptance "
+                "lowest chi2 across every scored fit, parsimony tie-break — the "
+                "tier order was set aside because the preferred tier fitted the "
+                "data far worse"
+                if tier_override
+                else "lowest chi2 among profile-clean fits inside the acceptance "
                 "window, parsimony tie-break"
             ),
+            "tier_chi2_override": tier_override,
+            "tier_chi2_factor": factor,
             "tolerance": tol,
             "parsimony_tiebreak": fit["chi_squared"] > best_chi2,
             "lowest_chi2": best_chi2,
@@ -635,6 +700,15 @@ def _format_selection(sel: dict) -> str:
             "artifact-free alternative to report. Do not report these slabs as "
             "distinct layers — constrain the offending interface roughness and "
             "re-run, or treat the stack as a profile parametrization."
+        )
+    if sel.get("tier_chi2_override"):
+        lines.append(
+            f"**A physically cleaner fit was available and was not reported.** It "
+            f"missed the data by more than {sel.get('tier_chi2_factor', 0):g}× the "
+            f"best χ² of the run, so it was ranked on χ² alongside the rest rather "
+            f"than promoted on plausibility alone: a model that contradicts the "
+            f"measurement is not the safer answer for having clean interfaces. "
+            f"Both problems are real — treat this run as unresolved."
         )
     lines.append(
         f"**Final model:** iteration {sel['iteration']} "

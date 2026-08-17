@@ -115,12 +115,16 @@ def test_evaluation_veto_overrides_acceptable():
     model = {
         "ambient": {"name": "THF", "sld": 6.13},
         "substrate": {"name": "Si", "sld": 2.07},
+        # Substrate-first, as every ModelDefinition carries its layers. These
+        # fixtures used to list them ambient-first, which cancelled out the
+        # terminal swap in `_ordered_slds_for_artifacts` and kept both mistakes
+        # invisible to this file.
         "layers": [
-            {"name": "SEI", "sld": 4.58, "thickness": 160, "roughness": 15},
-            {"name": "Plated", "sld": -0.03, "thickness": 56, "roughness": 8},
-            {"name": "Cu", "sld": 6.42, "thickness": 569, "roughness": 10},
-            {"name": "Ti", "sld": -1.61, "thickness": 56, "roughness": 10},
             {"name": "SiOx", "sld": 3.2, "thickness": 20, "roughness": 30},
+            {"name": "Ti", "sld": -1.61, "thickness": 56, "roughness": 10},
+            {"name": "Cu", "sld": 6.42, "thickness": 569, "roughness": 10},
+            {"name": "Plated", "sld": -0.03, "thickness": 56, "roughness": 8},
+            {"name": "SEI", "sld": 4.58, "thickness": 160, "roughness": 15},
         ],
     }
     fit = {"sld_z": z.tolist(), "sld_rho": rho.tolist(), "parameters": {}}
@@ -153,12 +157,12 @@ def test_evaluation_clean_profile_leaves_acceptable_untouched():
     model = {
         "ambient": {"name": "THF", "sld": 6.13},
         "substrate": {"name": "Si", "sld": 2.07},
-        "layers": [
-            {"name": "SEI", "sld": 4.58, "thickness": 160, "roughness": 15},
-            {"name": "Plated", "sld": -0.03, "thickness": 56, "roughness": 12},
-            {"name": "Cu", "sld": 6.42, "thickness": 569, "roughness": 10},
-            {"name": "Ti", "sld": -1.61, "thickness": 56, "roughness": 10},
+        "layers": [  # substrate-first; see the note in the veto test above
             {"name": "SiOx", "sld": 3.2, "thickness": 20, "roughness": 8},
+            {"name": "Ti", "sld": -1.61, "thickness": 56, "roughness": 10},
+            {"name": "Cu", "sld": 6.42, "thickness": 569, "roughness": 10},
+            {"name": "Plated", "sld": -0.03, "thickness": 56, "roughness": 12},
+            {"name": "SEI", "sld": 4.58, "thickness": 160, "roughness": 15},
         ],
     }
     fit = {"sld_z": z.tolist(), "sld_rho": rho.tolist(), "parameters": {}}

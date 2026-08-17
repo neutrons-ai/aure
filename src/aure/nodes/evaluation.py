@@ -1440,9 +1440,31 @@ def _format_evaluation(
 def _ordered_slds_for_artifacts(
     model: dict, parameters: dict, state_name: Optional[str] = None
 ) -> list:
-    """Ordered SLD sequence [ambient, layers..., substrate] for artifact
+    """Ordered SLD sequence ``[substrate, layers..., ambient]`` for artifact
     detection, preferring fitted values from ``parameters`` (refl1d names each
     material's SLD parameter ``"<name> rho"``) and falling back to model seeds.
+
+    **The order is the physical stack order, and it matters.** A ModelDefinition
+    lists its layers substrate-first (``prompts``: "Layers are listed from
+    substrate to ambient"), and ``modeling`` emits the refl1d stack to match:
+    ``substrate | material1 | ... | ambient`` in normal geometry, and the same
+    adjacency written in beam order — ``ambient | materialN | ... | substrate``,
+    with the layers *reversed* — in back reflection. Either way the substrate
+    neighbours ``layers[0]`` and the ambient neighbours ``layers[-1]``.
+
+    This used to emit ``[ambient, layers..., substrate]``, which is neither
+    order: it kept the layers substrate-first while putting the terminals in
+    beam order, so both ends were spliced onto the wrong neighbours. The
+    interior is untouched, but the two media that decide whether the first and
+    last layers are turning points are swapped.
+
+    ``detect_profile_artifacts`` is direction-agnostic but not order-agnostic:
+    it derives the set of *legitimate* extrema from exactly this sequence. With
+    the terminals swapped it expected the wrong turning points and reported the
+    real ones as excursions. On the 2026-08-17 cu_film sweep that vetoed every
+    candidate in 38 of 51 runs — and since ``finalize`` ranks by that veto, it
+    decided which model each run reported. Judged against this order the same
+    profiles agree with the validation harness's independent detector.
 
     *state_name* is tried as a prefix first. ``build_states_problem`` renames
     untied parameters ``"<state> <material> rho"`` — the ambient SLD is untied by
@@ -1468,16 +1490,16 @@ def _ordered_slds_for_artifacts(
         return None if val is None else float(val)
 
     seq = []
-    amb = _sld(model.get("ambient"))
-    if amb is not None:
-        seq.append(amb)
+    sub = _sld(model.get("substrate"))
+    if sub is not None:
+        seq.append(sub)
     for layer in model.get("layers") or []:
         v = _sld(layer)
         if v is not None:
             seq.append(v)
-    sub = _sld(model.get("substrate"))
-    if sub is not None:
-        seq.append(sub)
+    amb = _sld(model.get("ambient"))
+    if amb is not None:
+        seq.append(amb)
     return seq
 
 
@@ -1627,6 +1649,21 @@ def _detect_profile_artifacts_into(
                 tag,
             )
             continue
+        # Two orientation conventions meet here, and they do not agree:
+        #
+        #   * a ModelDefinition always lists its layers substrate-first, so
+        #     `media` runs substrate -> ambient;
+        #   * `z`/`rho` come from refl1d, which renders the stack in beam order
+        #     — ambient -> substrate under back reflection.
+        #
+        # That mismatch is harmless *here* and only here: `detect_profile_artifacts`
+        # compares extremum values against the turning-point values of `media`,
+        # and a sequence's turning points are unchanged by reversing it, so
+        # neither array needs flipping to match the other. What the detector
+        # cannot survive is a sequence that is in *no* consistent order — which
+        # is what `_ordered_slds_for_artifacts` used to return. Any future use of
+        # this profile that reads position rather than value (a depth, a
+        # centroid, a per-layer attribution) must orient it explicitly first.
         media = _ordered_slds_for_artifacts(eff_model, params, state_name=name)
         if len(media) < 2:
             all_checked = False

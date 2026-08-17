@@ -782,6 +782,54 @@ def test_the_fallback_ladder_prefers_overfitted_over_impossible(monkeypatch):
     assert "below the acceptance floor" in out["messages"][0]["content"]
 
 
+def test_a_clean_fit_that_misses_the_data_does_not_outrank_a_vetoed_one():
+    """The tier order stops applying once the preferred tier stops fitting.
+
+    Reproduces cu_film/Cu_0/201152 from the 2026-08-17 sweep: the refinement
+    loop diverged (χ² 3.82 -> 117 -> 292 -> 125 -> 130), the artifact detector
+    vetoed every iteration except the last, and finalize promoted that one on
+    plausibility alone — reporting χ² = 130.55 with χ² = 3.82 already in hand.
+    A model that misses the data by 34x is not the safer answer for having
+    clean interfaces.
+    """
+    fits = []
+    for iteration, chi2 in enumerate([3.82, 117.24, 291.53, 124.69, 130.55]):
+        fit = _fit(iteration, chi2)
+        fit["profile_artifact"] = iteration != 4
+        fits.append(fit)
+
+    out = finalize_node(_state(fits))
+    sel = out["final_selection"]
+
+    assert sel["iteration"] == 0
+    assert sel["tier_chi2_override"] is True
+    assert sel["selected_has_profile_artifact"] is True  # and the report says so
+    assert "physically cleaner fit was available" in out["messages"][0]["content"]
+
+
+def test_the_tier_guard_stays_out_of_the_way_when_the_clean_fit_is_competitive():
+    """A modest χ² penalty is exactly what the veto is meant to buy."""
+    vetoed = _fit(0, 1.20)
+    vetoed["profile_artifact"] = True
+
+    sel = finalize_node(_state([vetoed, _fit(1, 2.40)]))["final_selection"]
+
+    assert sel["iteration"] == 1  # the clean fit still wins
+    assert sel["tier_chi2_override"] is False
+    assert sel["demoted_for_profile_artifact"] is True
+
+
+def test_the_tier_guard_can_be_disabled(monkeypatch):
+    monkeypatch.setenv("FINAL_TIER_CHI2_FACTOR", "0")
+
+    vetoed = _fit(0, 3.82)
+    vetoed["profile_artifact"] = True
+    sel = finalize_node(_state([vetoed, _fit(1, 130.55)]))["final_selection"]
+
+    assert sel["iteration"] == 1  # strict tier order restored
+    assert sel["tier_chi2_override"] is False
+
+
 def test_a_disabled_floor_leaves_selection_untouched(monkeypatch):
     monkeypatch.setenv("CHI2_MIN", "0")
     monkeypatch.setenv("CHI2_MAX", "2.5")
