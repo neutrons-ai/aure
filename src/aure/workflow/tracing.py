@@ -58,6 +58,13 @@ def run_with_tracing(
     Returns:
         The function's return value (updates dict)
     """
+    # Label the LLM call ledger with the node about to run, so every recorded
+    # call is attributable. Done here because this wraps every node on both the
+    # traced and untraced paths; the ledger is a no-op unless a sink is set.
+    from ..llm import ledger
+
+    ledger.set_node(name.replace("node_", ""))
+
     if trace_ctx is None:
         return func(state)
 

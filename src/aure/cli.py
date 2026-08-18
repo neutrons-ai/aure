@@ -697,6 +697,15 @@ def analyze(
                 )
 
         # Run analysis
+        # Open the per-call LLM ledger alongside the checkpoints. Measurement
+        # only: it records what each call cost and never influences one. See
+        # aure.llm.ledger; AURE_LLM_LOG overrides the destination.
+        from .llm import ledger
+
+        ledger.set_sink(
+            str(Path(output_dir) / "llm_calls.jsonl") if output_dir else None
+        )
+
         try:
             result = run_analysis(
                 data_file=data_file,

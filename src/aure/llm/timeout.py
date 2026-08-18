@@ -55,12 +55,39 @@ def invoke_with_timeout(llm, prompt, timeout_seconds: int = None) -> Any:
 
 
 def _do_invoke(llm, prompt):
-    """Perform the actual LLM invocation."""
+    """Perform the actual LLM invocation, recording it in the call ledger.
+
+    Every node reaches the provider through here, which is why the ledger hooks
+    this function and not each call site. The record is written whether the call
+    succeeds or raises, so a timed-out or refused call still appears with its
+    cost — a failed call is billed and must not vanish from the total.
+    """
+    import time
+
+    from . import ledger
+
     if isinstance(prompt, str):
         from langchain_core.messages import HumanMessage
 
-        return llm.invoke([HumanMessage(content=prompt)])
-    return llm.invoke(prompt)
+        payload = [HumanMessage(content=prompt)]
+    else:
+        payload = prompt
+
+    started = time.monotonic()
+    try:
+        response = llm.invoke(payload)
+    except Exception as exc:
+        ledger.record(
+            None, duration_s=time.monotonic() - started,
+            model=getattr(llm, "model_name", None), prompt=prompt,
+            ok=False, error=f"{type(exc).__name__}: {exc}",
+        )
+        raise
+    ledger.record(
+        response, duration_s=time.monotonic() - started,
+        model=getattr(llm, "model_name", None), prompt=prompt,
+    )
+    return response
 
 
 def _invoke_signal(llm, prompt, timeout_seconds: int) -> Any:
