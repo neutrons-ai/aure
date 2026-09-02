@@ -791,8 +791,15 @@ def hypothesis_title(hypothesis: dict) -> str:
 
 
 def hypothesis_label(hypothesis: dict) -> str:
-    """``"[3] Split Cu into two slabs"`` — id + title, for terminal listings."""
-    return f"[{hypothesis.get('id', '?')}] {hypothesis_title(hypothesis)}"
+    """``"[3] Split Cu into two slabs"`` — id + title, for terminal listings.
+
+    A hypothesis scoped to a subset of states carries the scope, because
+    "add an oxide" and "add an oxide in the air state only" are different
+    claims and the reader of the report cannot tell them apart from the title.
+    """
+    scope = hypothesis.get("states") or []
+    suffix = f" (states: {', '.join(str(n) for n in scope)})" if scope else ""
+    return f"[{hypothesis.get('id', '?')}] {hypothesis_title(hypothesis)}{suffix}"
 
 
 def _attempted_groups(hypotheses: Optional[List[dict]]) -> List[Tuple[str, List[dict]]]:

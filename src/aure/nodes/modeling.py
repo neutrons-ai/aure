@@ -208,6 +208,9 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
 
         user_constraints = format_user_constraints(state.get("user_config"))
         user_feedback = state.get("pending_user_feedback")
+        # Tie specs dropped automatically because their layer is gone; those
+        # need no explanation from the model (see below).
+        pruned_specs: list[str] = []
 
         # Load skill context
         registry = SkillRegistry()
@@ -429,8 +432,39 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
                 current_iteration=iteration,
             )
 
+        # The tie/scope rationale describes THIS edit only, so it is popped
+        # into the transcript rather than persisted on the model, where a later
+        # iteration would inherit a stale explanation.
+        tie_rationale = str(new_model.pop("tie_rationale", "") or "").strip()
+
         # Format explanation message
         changes = _summarize_definition_changes(current_model, new_model)
+        if pruned_specs:
+            changes.append(
+                "Dropped tie spec(s) for removed layer(s): "
+                + ", ".join(sorted(pruned_specs))
+            )
+        # A tie the pruner removed is already accounted for; anything else that
+        # moved is a judgement the model made and owes a reason for.
+        tie_moved: set = set()
+        for key in ("shared_parameters", "unshared_parameters"):
+            tie_moved |= set(current_model.get(key) or []) ^ set(
+                new_model.get(key) or []
+            )
+        tie_changed = bool(tie_moved - set(pruned_specs))
+        if tie_rationale:
+            changes.append(f"Tie/scope rationale: {tie_rationale}")
+        elif tie_changed:
+            # The decision stands (the LLM may edit ties when the user has not
+            # pinned them) but it is unexplained; say so in the transcript
+            # rather than letting it pass silently.
+            logger.warning(
+                "[MODELING] Cross-state tie spec changed without a tie_rationale"
+            )
+            changes.append(
+                "Tie/scope rationale: (none given by the model — tie change "
+                "unexplained; review before trusting the shared parameters)"
+            )
         updates["messages"] = [
             Message(
                 role="assistant",
@@ -1534,7 +1568,92 @@ def _summarize_definition_changes(old_model: dict, new_model: dict) -> list[str]
         if ov is not None and nv is not None and abs(nv - ov) > 0.01:
             changes.append(f"Intensity {attr}: {ov} → {nv}")
 
+    changes.extend(_summarize_state_structure_changes(old_model, new_model))
+    changes.extend(_summarize_tie_changes(old_model, new_model))
+
     if not changes:
         changes.append("Parameter values and bounds adjusted")
 
+    return changes
+
+
+def _effective_state_layers(model: dict) -> dict:
+    """Map state name → the layer names that state actually fits.
+
+    A state without its own ``layers`` inherits the model-level template, which
+    is what :func:`~aure.nodes.model_builder._state_overrides` does at build
+    time; mirroring it here means the diff reports what the FIT will see rather
+    than what the JSON happens to spell out.
+    """
+    template = [
+        layer.get("name")
+        for layer in (model.get("layers") or [])
+        if isinstance(layer, dict)
+    ]
+    out: dict[str, list] = {}
+    for st in model.get("states") or []:
+        name = st.get("name")
+        if not name:
+            continue
+        own = st.get("layers")
+        out[name] = (
+            [layer.get("name") for layer in own if isinstance(layer, dict)]
+            if own is not None
+            else list(template)
+        )
+    return out
+
+
+def _summarize_state_structure_changes(old_model: dict, new_model: dict) -> list[str]:
+    """Report per-state stack differences (sample != structure).
+
+    The top-level diff only sees the shared template, so a change made to ONE
+    state's own ``layers`` — the whole point of a per-state structure —
+    produced an empty "Changes made" list. A structural claim scoped to a
+    single state is exactly the kind of decision that has to be in the
+    transcript.
+    """
+    old_by_state = _effective_state_layers(old_model)
+    new_by_state = _effective_state_layers(new_model)
+    changes: list[str] = []
+    for name, new_layers in new_by_state.items():
+        old_layers = old_by_state.get(name)
+        if old_layers is None or old_layers == new_layers:
+            continue
+        added = [n for n in new_layers if n not in old_layers]
+        removed = [n for n in old_layers if n not in new_layers]
+        if added:
+            changes.append(f"State '{name}': added layer(s) {', '.join(added)}")
+        if removed:
+            changes.append(f"State '{name}': removed layer(s) {', '.join(removed)}")
+        if not added and not removed:
+            changes.append(
+                f"State '{name}': layer order changed to {' / '.join(new_layers)}"
+            )
+    return changes
+
+
+def _summarize_tie_changes(old_model: dict, new_model: dict) -> list[str]:
+    """Report changes to the cross-state tie spec.
+
+    Which parameters are tied across states is a physics decision — a tie
+    forces one number onto two quantities that a structural change may have
+    just made non-equivalent — so a change to it belongs next to the structural
+    change that motivated it, not only in the logs. The model's stated reason
+    (``tie_rationale``) is surfaced separately by the caller; this half is
+    deterministic and does not depend on the LLM having explained itself.
+    """
+    changes: list[str] = []
+    for key, verb in (
+        ("shared_parameters", "tied across states"),
+        ("unshared_parameters", "untied (per-state)"),
+    ):
+        old_spec = set(old_model.get(key) or [])
+        new_spec = set(new_model.get(key) or [])
+        added = sorted(new_spec - old_spec)
+        removed = sorted(old_spec - new_spec)
+        if added:
+            changes.append(f"Now {verb}: {', '.join(added)}")
+        if removed:
+            changes.append(f"No longer {verb}: {', '.join(removed)}")
     return changes

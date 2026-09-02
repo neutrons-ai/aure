@@ -326,6 +326,17 @@ class StructuralHypothesis(TypedDict, total=False):
     created_in_iteration : int | None
         Iteration number when the hypothesis was added (None for intake-time
         entries; set for hypotheses proposed later by the evaluation node).
+    states : list[str]
+        Names of the measurement states this change applies to, for a
+        multi-state co-refinement. An EMPTY list (or the absent key) means the
+        change applies to every state — i.e. to the shared template — which is
+        the only meaning a single-state run has. A non-empty list scopes the
+        change to those states alone ("sample != structure": a layer present in
+        some states and absent in others), and the modeling node realizes it by
+        editing those states' own ``layers`` rather than the top-level
+        template. Names are validated against the run's states by
+        ``nodes.hypotheses.normalize_hypothesis_states``; a scope naming every
+        state collapses back to the empty (global) spelling.
     notes : str
         Free-form notes (e.g., outcome after trial).
     """
@@ -337,6 +348,7 @@ class StructuralHypothesis(TypedDict, total=False):
     skill_source: str
     origin: str
     status: str
+    states: List[str]
     tried_in_iteration: Optional[int]
     created_in_iteration: Optional[int]
     notes: str

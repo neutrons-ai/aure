@@ -23,7 +23,11 @@ from ..state import ReflectivityState, FitResult, Message, LLMCallRecord
 from ..llm import llm_available, get_llm
 from ..config import format_user_criteria
 from ..skills import SkillRegistry, load_skill_context, select_skills
-from .hypotheses import merge_structural_hypotheses, rerank_hypotheses
+from .hypotheses import (
+    merge_structural_hypotheses,
+    normalize_hypothesis_states,
+    rerank_hypotheses,
+)
 from .prompts import format_fit_evaluation_prompt, format_hypothesis_revision_prompt
 
 logger = logging.getLogger(__name__)
@@ -534,6 +538,10 @@ def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
             per_file_results=latest_fit.get("per_file_results"),
             fit_history=fit_results,
             structural_hypotheses=state.get("structural_hypotheses", []),
+            # Multi-state runs leave `residual_analysis` unset by design (there
+            # is no meaningful aggregate residual across separate probes), so
+            # without this the evaluator is told no fringes were found.
+            per_state_residual_analysis=latest_fit.get("per_state_residual_analysis"),
         )
         used_fallback = analysis.pop("_used_fallback", False)
         updates["llm_calls"].append(
@@ -927,6 +935,20 @@ def _chi2_series(fit_history: Optional[list]) -> list:
     return out
 
 
+def _state_names(state: ReflectivityState) -> list:
+    """The run's measurement state names, in declaration order.
+
+    Reads the model definition first (it is what modeling will actually edit)
+    and falls back to the intake-populated state list.
+    """
+    model = state.get("current_model") or {}
+    for source in (model.get("states"), state.get("states")):
+        names = [st.get("name") for st in (source or []) if st.get("name")]
+        if names:
+            return names
+    return []
+
+
 def _should_revise_hypotheses(
     latest_fit: FitResult,
     hypotheses: list,
@@ -984,6 +1006,19 @@ def _format_observations(
                 f"- Residual fringe implies an unmodeled layer "
                 f"~{t.get('thickness', 0):.0f} Å ({t.get('confidence', '?')} confidence)"
             )
+    # Multi-state: the aggregate above is unset, so the per-state analyses are
+    # the only fringe evidence available to steer skill re-selection.
+    per_state = latest_fit.get("per_state_residual_analysis") or {}
+    for st_name, st_ra in per_state.items():
+        if not (st_ra or {}).get("has_residual_fringes"):
+            continue
+        for t in st_ra.get("unmodeled_thicknesses", []):
+            thick = t.get("thickness", 0)
+            conf = t.get("confidence", "?")
+            lines.append(
+                f"- [state {st_name}] Residual fringe implies an unmodeled "
+                f"layer ~{thick:.0f} Å ({conf} confidence)"
+            )
     for bh in boundary_hits or []:
         lines.append(
             f"- Parameter '{bh['name']}' pinned at its {bh['bound_hit']} bound"
@@ -1021,9 +1056,11 @@ def propose_hypothesis_revision_with_llm(
         chi_squared=latest_fit.get("chi_squared", float("inf")),
         bic=bic,
         residual_analysis=latest_fit.get("residual_analysis"),
+        per_state_residual_analysis=latest_fit.get("per_state_residual_analysis"),
         boundary_hits=boundary_hits,
         concerns=(analysis.get("physical_concerns") or [])
         + (analysis.get("issues") or []),
+        state_names=_state_names(state),
     )
     response = llm.invoke([HumanMessage(content=prompt)])
     match = re.search(r"\{[\s\S]*\}", response.content)
@@ -1036,8 +1073,16 @@ def propose_hypothesis_revision_with_llm(
         return {"new_hypotheses": [], "ranking": []}
     new_h = obj.get("new_hypotheses")
     ranking = obj.get("ranking")
+    new_h = new_h if isinstance(new_h, list) else []
+    # Validate each proposed scope here rather than in the merge: this is the
+    # only layer that knows the run's state names, and a hallucinated name must
+    # not reach a hypothesis that modeling will later try to realize.
+    known = _state_names(state)
+    for h in new_h:
+        if isinstance(h, dict):
+            h["states"] = normalize_hypothesis_states(h.get("states"), known)
     return {
-        "new_hypotheses": new_h if isinstance(new_h, list) else [],
+        "new_hypotheses": new_h,
         "ranking": ranking if isinstance(ranking, list) else [],
     }
 
@@ -1182,6 +1227,7 @@ def analyze_fit_quality_with_llm(
     per_file_results: Optional[list] = None,
     fit_history: Optional[list] = None,
     structural_hypotheses: Optional[list] = None,
+    per_state_residual_analysis: Optional[Dict] = None,
 ) -> Dict[str, Any]:
     """
     Use LLM to analyze fit quality in context.
@@ -1220,6 +1266,7 @@ def analyze_fit_quality_with_llm(
         per_file_results=per_file_results,
         fit_history=fit_history,
         structural_hypotheses=structural_hypotheses,
+        per_state_residual_analysis=per_state_residual_analysis,
     )
 
     response = llm.invoke([HumanMessage(content=prompt)])

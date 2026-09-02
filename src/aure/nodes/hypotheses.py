@@ -18,6 +18,8 @@ nodes:
 * ``rerank_hypotheses`` — reorder the list by an explicit id ranking (rank is
   encoded by list position, which is how consumers read it).
 * ``next_hypothesis_id`` — allocate the next stable id.
+* ``normalize_hypothesis_states`` — validate an LLM-proposed per-state *scope*
+  against the run's actual state names.
 """
 
 from __future__ import annotations
@@ -31,9 +33,44 @@ logger = logging.getLogger(__name__)
 ALLOWED_STATUSES = {"pending", "tried", "confirmed", "rejected"}
 
 # Fields the merge will copy from an LLM-returned entry onto an existing one.
-# Everything else (id/title/rationale/change/skill_source/origin) is identity
-# and immutable once the hypothesis exists.
+# Everything else (id/title/rationale/change/skill_source/origin/states) is
+# identity and immutable once the hypothesis exists. ``states`` belongs with
+# identity, not with status: "add an oxide to the air state" and "add an oxide
+# to every state" are different hypotheses that must be accepted or rejected
+# on their own evidence, so re-scoping an existing entry is a rename.
 _MUTABLE_FIELDS = ("status", "tried_in_iteration", "notes")
+
+
+def normalize_hypothesis_states(raw: Any, known: Optional[List[str]]) -> List[str]:
+    """Validate an LLM-proposed state scope for one hypothesis.
+
+    Returns the subset of *raw* that names a real state, in the order the run
+    declares them. An empty list means "applies to every state" — the shared
+    template — and is also what a scope covering all of them collapses to, so
+    consumers have exactly one spelling for "global" to test.
+
+    Unknown names are dropped rather than raising: a hallucinated state name
+    must not scope a change to a state that does not exist, and must not take
+    down the run either. A single-state run (or an unknown *known* list) has
+    nothing to scope, so it always yields the global spelling.
+    """
+    if not known or len(known) < 2 or not isinstance(raw, list):
+        return []
+    wanted = {str(x).strip() for x in raw if isinstance(x, (str, int, float))}
+    if not wanted:
+        return []
+    scoped = [name for name in known if name in wanted]
+    unknown = wanted - set(known)
+    if unknown:
+        logger.warning(
+            "[HYPOTHESES] Dropped unknown state name(s) %s from a hypothesis "
+            "scope; known states: %s",
+            sorted(unknown),
+            known,
+        )
+    if len(scoped) == len(known):
+        return []  # covers everything — that is the global template case
+    return scoped
 
 
 def next_hypothesis_id(hypotheses: List[Dict[str, Any]]) -> int:
@@ -140,6 +177,11 @@ def merge_structural_hypotheses(
                 "change": str(h.get("change", "")).strip(),
                 "skill_source": str(h.get("skill_source", "")).strip(),
                 "origin": str(h.get("origin") or default_origin),
+                # Already normalized by the caller (which knows the state
+                # names); anything else is treated as unscoped.
+                "states": (
+                    list(h["states"]) if isinstance(h.get("states"), list) else []
+                ),
                 "status": _coerce_status(
                     h.get("status"), hyp_id=next_id, default="pending"
                 ),

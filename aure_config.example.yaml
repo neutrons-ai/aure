@@ -90,6 +90,25 @@ states:
 # #   theta_offset: true             # partials-only; true => init 0, range +/-0.02
 # #   sample_broadening: true        # partials-only; true => init 0, max 0.05
 #
+# # Per-state STRUCTURE (sample != structure). By default every state fits the
+# # same layer stack, which AuRE derives from `sample_description`. When the
+# # states genuinely differ in structure — an oxide present in air and reduced
+# # away under potential, a swollen layer only in the solvent state — give the
+# # deviating state its own COMPLETE stack; states without `layers` keep
+# # inheriting the shared one. Ties naming a layer a state does not have simply
+# # do not apply there, so no change to shared_/unshared_parameters is required
+# # for the removal itself (but see the note under the tie keys below).
+# #   - name: reduced
+# #     data_files: [...]
+# #     layers:
+# #       - {name: SiO2, sld: 3.47, thickness: 15, roughness: 3}
+# #       - {name: Cu, sld: 6.55, thickness: 300, roughness: 8}
+# #     substrate: {name: Si, sld: 2.07, roughness: 3}   # optional, if it differs
+# # Layer entries take the same fields as the model's own layers (sld, sld_min,
+# # sld_max, thickness, thickness_min, thickness_max, roughness, roughness_max)
+# # and are passed through verbatim — they are validated when the fit is built,
+# # not when the YAML is read.
+#
 # # All states must share the same orientation — mixing normal and back-
 # # reflecting states in one run would silently mis-alias substrate.interface.
 #
@@ -104,6 +123,15 @@ states:
 #   - Ti.material.rho
 #   - Ti.interface
 # # unshared_parameters: [CuOx.thickness]
+# #
+# # When one state carries its own stack (above), reconsider the ties on the
+# # layers ADJACENT to the difference. `<layer>.interface` is the roughness of
+# # that layer's boundary with whatever sits on top of it, so inserting a layer
+# # in one state only makes a tied interface describe two physically different
+# # boundaries; and if the extra layer FORMS OUT OF the one below it (a native
+# # oxide consuming the metal), that layer's thickness is no longer the same in
+# # both states either. Untie those specifically — not everything, since every
+# # untied parameter is paid for in every state.
 
 # --------------------------------------------------------------------------
 # Refinement controls (optional)

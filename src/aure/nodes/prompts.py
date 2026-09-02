@@ -149,6 +149,9 @@ parameter-only refinement fails to reach the χ² acceptance threshold.
 - Ambient: {ambient}
 - Back-reflection geometry: {back_reflection}
 
+## Measurement States (co-refinement)
+{states_section}
+
 ## User's Stated Hypothesis
 {user_hypothesis}
 
@@ -190,6 +193,24 @@ spanning both). List this even when the layer stack already looks complete — t
 missing piece is the ambient's isotope, not a layer. Rank it high when the data
 could show a critical edge / strong low-Q feature.
 
+A hypothesis may also be scoped to a SUBSET OF THE STATES listed above, when
+more than one state is present. The states share a layer template, but they are
+different physical conditions and their structure may genuinely differ — an
+oxide present in air and reduced away under potential, a swollen layer only in
+the solvent state, an SEI that forms only after cycling. Use the `states` field
+for that:
+
+- `states: []` (or omitted) — the change applies to EVERY state, i.e. to the
+  shared template. This is the default and the only option for a single state.
+- `states: ["<name>", …]` — the change applies to those states ALONE. Use the
+  exact names from the Measurement States section.
+
+Scope a hypothesis narrowly only when the description, the user's hypothesis,
+or the domain skills give a REASON the states should differ structurally. A
+layer that plainly belongs to the sample itself (a substrate oxide, a deposited
+film) is shared: scoping it to one state is a worse, less parsimonious version
+of the same hypothesis. When in doubt, leave `states` empty.
+
 For each hypothesis, produce:
 - `title`: one short line
 - `rationale`: one sentence citing an active skill by name (or the user)
@@ -197,6 +218,7 @@ For each hypothesis, produce:
   point, thickness range Å, SLD range 10⁻⁶ Å⁻², roughness range Å; for a
   reinterpretation: the material and its new SLD value + range (no layer added)
 - `skill_source`: name of the skill motivating the hypothesis, or "user"
+- `states`: the state names this applies to, or `[]` for all states
 
 Return 2–6 hypotheses in rank order. If no structural change OR reinterpretation
 is plausible (e.g. the user has specified a complete model in a non-liquid
@@ -215,7 +237,8 @@ Respond with ONLY a JSON array of objects:
     "title": "Add native CuO on top of Cu",
     "rationale": "metal-oxide-interfaces: an outermost Cu layer exposed to D2O develops a 10-50 A native oxide unless otherwise stated",
     "change": "insert a CuO layer of 10-50 A (SLD 4.5-5.5) between Cu and D2O, roughness 3-15 A",
-    "skill_source": "metal-oxide-interfaces"
+    "skill_source": "metal-oxide-interfaces",
+    "states": []
   }}
 ]
 ```
@@ -225,6 +248,37 @@ Output ONLY the JSON array, no markdown fences, no other text.
 
 
 _NO_RUN_TITLES = "(none available — infer nothing from the file name)"
+
+
+_NO_STATES = (
+    "  (single-state analysis — every change applies to the whole model; "
+    'leave "states" empty)'
+)
+
+
+def _format_states_section(state_names: list | None) -> str:
+    """Render the run's measurement states for the hypothesis prompts.
+
+    Without this the hypothesis prompts see a single flattened stack and have
+    no vocabulary for "this layer is in one state only" — the change is not
+    merely unranked, it is inexpressible. Rendered even for a single state, so
+    the absence of states is stated rather than left to inference.
+    """
+    names = [str(n) for n in (state_names or []) if str(n).strip()]
+    if len(names) < 2:
+        return _NO_STATES
+    lines = [f"  - `{n}`" for n in names]
+    lines.append("")
+    lines.append(
+        "  These are different physical STATES of ONE analysis (solvent "
+        "contrast, anneal step, applied potential, …), co-refined together. "
+        "They share a layer TEMPLATE, but a state may carry its own stack: a "
+        "layer can be present in some states and absent in others (an oxide in "
+        "air that is reduced away under potential; a swollen layer only in "
+        "solvent). A hypothesis may therefore be scoped to a subset of states "
+        'via its "states" field.'
+    )
+    return "\n".join(lines)
 
 
 def _format_run_titles(run_titles: list | None) -> str:
@@ -252,6 +306,7 @@ def format_structural_hypothesis_prompt(
     skill_context: str,
     hypothesis: str | None = None,
     run_titles: list | None = None,
+    state_names: list | None = None,
 ) -> str:
     """Format the prompt that asks the LLM to produce ranked structural
     hypotheses from the parsed sample and active skill bodies.
@@ -266,6 +321,10 @@ def format_structural_hypothesis_prompt(
     free-form header titles, passed only when ``USE_RUN_TITLE`` is enabled —
     gets the same treatment one trust level down, and is explicitly framed as
     weak evidence that may not override the description.
+
+    ``state_names`` lists the run's measurement states. The parsed sample is a
+    single flattened stack, so without them the prompt cannot express — let
+    alone rank — a change that applies to one state and not another.
     """
     sub = parsed_sample.get("substrate", {}) or {}
     amb = parsed_sample.get("ambient", {}) or {}
@@ -286,6 +345,7 @@ def format_structural_hypothesis_prompt(
         back_reflection=parsed_sample.get("back_reflection", False),
         user_hypothesis=(hypothesis or "").strip() or "(none stated)",
         run_titles=_format_run_titles(run_titles),
+        states_section=_format_states_section(state_names),
     )
 
 
@@ -312,7 +372,7 @@ FIT_EVALUATION_PROMPT = """You are evaluating the results of a neutron reflectiv
 ## χ² / BIC Trajectory (iterations in order)
 {trajectory}
 
-## Per-File Fit Quality (multi-file co-refinement)
+## Per-File / Per-State Fit Quality (co-refinement)
 {per_file_chi2}
 
 ## Best-fit Parameters
@@ -423,6 +483,68 @@ def _format_residual_analysis(residual_analysis: Dict[str, Any] | None) -> str:
     return "\n".join(lines)
 
 
+def _format_residual_section(
+    residual_analysis: Dict[str, Any] | None,
+    per_state_residual_analysis: Dict[str, Any] | None = None,
+) -> str:
+    """Render the "Residual Fringe Analysis" section for the LLM prompts.
+
+    A multi-state co-refinement has no meaningful *aggregate* residual — each
+    state has its own probe, its own ambient, and possibly its own structure —
+    so evaluation analyses each state separately into
+    ``per_state_residual_analysis`` and leaves the aggregate unset. Rendering
+    the aggregate anyway told every multi-state run that no residual fringes
+    were detected, which suppressed the single strongest piece of evidence for
+    a missing layer. When the per-state dict is present it is therefore what
+    the prompt shows, and the aggregate is ignored.
+
+    The closing note names which states carry fringes, because *which* states
+    is the whole diagnostic: fringes everywhere point at the shared template,
+    fringes in a subset point at that subset — either its untied parameters or
+    a genuine per-state structural difference.
+    """
+    if not per_state_residual_analysis:
+        return _format_residual_analysis(residual_analysis)
+
+    names = list(per_state_residual_analysis.keys())
+    with_fringes = [
+        n
+        for n in names
+        if (per_state_residual_analysis.get(n) or {}).get("has_residual_fringes")
+    ]
+
+    lines: list[str] = []
+    for name in names:
+        lines.append(f"  State `{name}`:")
+        block = _format_residual_analysis(per_state_residual_analysis.get(name))
+        lines.extend("  " + line for line in block.splitlines())
+
+    lines.append("")
+    if not with_fringes:
+        lines.append("  No state shows structured residual oscillations.")
+    elif len(with_fringes) == len(names):
+        lines.append(
+            "  EVERY state shows residual fringes, so the missing structure is "
+            "most likely in the SHARED template — a layer absent from the model "
+            "for all states."
+        )
+    else:
+        affected = ", ".join(f"`{n}`" for n in with_fringes)
+        clean = ", ".join(f"`{n}`" for n in names if n not in with_fringes)
+        lines.append(
+            f"  Residual fringes appear in {affected} but NOT in {clean}. That "
+            f"asymmetry is evidence about those states specifically, and has two "
+            f"candidate explanations: (a) their UNTIED parameters (per-state "
+            f"ambient SLD, a swelling/annealing thickness) are off, or (b) the "
+            f"states genuinely differ in STRUCTURE — a layer present in "
+            f"{affected} and absent elsewhere. Do not assume (a): a fringe of a "
+            f"definite thickness in one state alone is the signature of (b). A "
+            f"structural hypothesis for this should be scoped to the affected "
+            f"state(s) rather than applied to every state."
+        )
+    return "\n".join(lines)
+
+
 def _format_boundary_hits(boundary_hits: list | None) -> str:
     """Format boundary-hit info for LLM prompts."""
     if not boundary_hits:
@@ -495,21 +617,50 @@ def _format_complexity_assessment(
 
 
 def _format_per_file_chi2(per_file_results: list | None) -> str:
-    """Format per-file χ² breakdown for LLM prompts."""
+    """Format the per-file χ² breakdown for LLM prompts.
+
+    Two different co-refinements land here and they mean opposite things, so
+    the trailing note is chosen from the data rather than hardcoded: several
+    files of ONE sample (spliced Q-segments, every structural parameter tied)
+    versus several physical STATES (separate probes, only the tie set shared).
+    Describing a multi-state fit as "Q-range segments ... all structural
+    parameters are shared" told the evaluator the states could not differ.
+    ``PerFileFitResult["state"]`` is what separates them, so it is also
+    rendered — a bare file label leaves the evaluator unable to say which
+    state fits badly.
+    """
     if not per_file_results:
         return "  (single-file fit — not applicable)"
+
+    state_names = {pf.get("state") for pf in per_file_results if pf.get("state")}
+    multi_state = len(state_names) > 1
 
     lines = []
     for pf in per_file_results:
         chi2 = pf.get("chi_squared", float("inf"))
-        lines.append(f"  - **{pf.get('label', '?')}**: χ² = {chi2:.3f}")
+        label = pf.get("label", "?")
+        st = pf.get("state")
+        name = f"[{st}] {label}" if st else label
+        lines.append(f"  - **{name}**: χ² = {chi2:.3f}")
     lines.append("")
-    lines.append(
-        "  The data was fit jointly across multiple Q-range segments. "
-        "All structural parameters are shared; each file has its own "
-        "intensity normalization. If one segment fits much worse than "
-        "the others, focus suggestions on the Q-range where the fit is poor."
-    )
+    if multi_state:
+        lines.append(
+            "  These files belong to different physical STATES of the sample "
+            "(solvent contrast, anneal step, applied potential, …), each with "
+            "its own probe, ambient and intensity. Only the structural "
+            "parameters in the model's tie set are shared across states; the "
+            "rest vary per state, and a state may even carry its own layer "
+            "stack. If one STATE fits much worse than the others, that is "
+            "evidence about that state — its untied parameters, or a "
+            "structural difference from the other states — not about a Q-range."
+        )
+    else:
+        lines.append(
+            "  The data was fit jointly across multiple Q-range segments. "
+            "All structural parameters are shared; each file has its own "
+            "intensity normalization. If one segment fits much worse than "
+            "the others, focus suggestions on the Q-range where the fit is poor."
+        )
     return "\n".join(lines)
 
 
@@ -548,6 +699,14 @@ def _format_structural_hypotheses(hypotheses: list | None) -> str:
             f"  - #{h.get('id', '?')} [{status}{iter_str}] **{h.get('title', '?')}** "
             f"(source: {h.get('skill_source', '?')})"
         )
+        # Scope is identity, not decoration: #3 "add an oxide" and #3 "add an
+        # oxide to the air state only" are different proposals, and the
+        # evaluator picks one by id.
+        scope = h.get("states")
+        if scope:
+            lines.append(
+                "      applies to state(s): " + ", ".join(f"`{n}`" for n in scope)
+            )
         if h.get("change"):
             lines.append(f"      change: {h['change']}")
         if h.get("rationale"):
@@ -635,6 +794,7 @@ def format_fit_evaluation_prompt(
     per_file_results: list | None = None,
     fit_history: list | None = None,
     structural_hypotheses: list | None = None,
+    per_state_residual_analysis: Dict[str, Any] | None = None,
 ) -> str:
     """
     Format the fit evaluation prompt.
@@ -650,6 +810,10 @@ def format_fit_evaluation_prompt(
         chi2_max: χ² acceptance threshold (from ``CHI2_MAX`` env var)
         chi2_min: χ² acceptance floor (from ``CHI2_MIN``); ``0`` renders no floor
         user_criteria: Formatted user-defined evaluation criteria
+        per_state_residual_analysis: Per-state fringe analyses for a
+            multi-state co-refinement. When given it replaces
+            *residual_analysis* in the rendered section, which is otherwise
+            unset for those runs (see :func:`_format_residual_section`).
 
     Returns:
         Formatted prompt string
@@ -695,7 +859,9 @@ def format_fit_evaluation_prompt(
         chi2_max=chi2_max,
         chi2_floor=_format_chi2_floor(chi2_min),
         user_criteria=user_criteria,
-        residual_analysis=_format_residual_analysis(residual_analysis),
+        residual_analysis=_format_residual_section(
+            residual_analysis, per_state_residual_analysis
+        ),
         boundary_hits=_format_boundary_hits(boundary_hits),
         complexity_assessment=_format_complexity_assessment(
             bic=bic,
@@ -733,6 +899,9 @@ evaluator's concerns. Reconsider the list in light of that evidence and the
 {current_model_json}
 ```
 
+## Measurement States (co-refinement)
+{states_section}
+
 ## χ² / BIC Trajectory (iterations in order)
 {trajectory}
 
@@ -760,6 +929,17 @@ Following the `structural-hypothesis-ranking` skill:
    Do NOT duplicate an existing hypothesis. Return an empty list if nothing new
    is warranted.
 
+   When more than one state is listed above, set `states` to scope a hypothesis
+   to the states it applies to (`[]` or omitted = every state, the shared
+   template). Evidence that is confined to a subset of states — residual
+   fringes in one state only, a boundary hit on one state's untied parameter —
+   supports a hypothesis scoped to that subset: the states may genuinely differ
+   in structure (a layer present in some and absent in others), which is a
+   change the shared template cannot express. Evidence present in every state
+   belongs in the template, unscoped. A scoped and an unscoped version of the
+   same edit are two distinct hypotheses; propose the one the evidence supports,
+   not both.
+
 2. Re-rank ALL live hypotheses — the existing `pending`/`tried` ones plus your
    new ones — by current expected value, best first. Do NOT resurrect or list
    `rejected` hypotheses. Reference existing hypotheses by their integer `id`;
@@ -775,7 +955,8 @@ Respond with ONLY a JSON object:
       "title": "Add SEI layer on Li",
       "rationale": "sei-layer-analysis: residual fringes at ~40 Å in a cycled cell imply a solid-electrolyte interphase",
       "change": "insert a 30-60 Å SEI layer (SLD 0.5-2.0) between Li and electrolyte, roughness 5-20 Å",
-      "skill_source": "sei-layer-analysis"
+      "skill_source": "sei-layer-analysis",
+      "states": []
     }}
   ],
   "ranking": ["new1", 3, 1, 2]
@@ -797,6 +978,8 @@ def format_hypothesis_revision_prompt(
     residual_analysis: Dict[str, Any] | None = None,
     boundary_hits: list | None = None,
     concerns: list | None = None,
+    per_state_residual_analysis: Dict[str, Any] | None = None,
+    state_names: list | None = None,
 ) -> str:
     """Format the prompt that asks the LLM to propose new hypotheses and re-rank.
 
@@ -822,10 +1005,13 @@ def format_hypothesis_revision_prompt(
         sample_description=sample_description or "(not provided)",
         current_model_json=current_model_json,
         trajectory=_format_trajectory(fit_history, chi_squared, bic),
-        residual_analysis=_format_residual_analysis(residual_analysis),
+        residual_analysis=_format_residual_section(
+            residual_analysis, per_state_residual_analysis
+        ),
         boundary_hits=_format_boundary_hits(boundary_hits),
         concerns=concerns_str,
         structural_hypotheses=_format_structural_hypotheses(structural_hypotheses),
+        states_section=_format_states_section(state_names),
     )
 
 
@@ -1085,7 +1271,8 @@ You must output a COMPLETE, valid JSON object matching this schema:
     "enabled": <true/false>,
     "min": <min background, default 0.0>,
     "max": <max background, default 1e-5>
-  }}
+  }},
+  "tie_rationale": "<why the cross-state ties changed, or stayed; see rule 12b. Omit for a single-state model or when no state-scoped change was made>"
 }}
 ```
 
@@ -1128,10 +1315,46 @@ Rules:
     complete `layers` array (and `substrate` if it differs) inside its entry of
     `states`, e.g. `{{"name": "H2O", ..., "layers": [<that state's full stack>]}}`.
     Leave the other states without a `layers` key so they keep inheriting the
-    template. Removing a layer from ONE state means editing that state's
-    `layers`, NOT the top-level template (which would change every state). Ties
-    referencing a layer absent from a state simply don't apply there — you need
-    not edit `shared_parameters`/`unshared_parameters` for a structural removal.
+    template. This works in BOTH directions:
+    - REMOVING a layer from one state: give that state a `layers` array equal
+      to the template minus that layer.
+    - ADDING a layer to one state only: give that state a `layers` array equal
+      to the template PLUS the new layer, at the right position. Do NOT add it
+      to the top-level template and then strip it from every other state, and
+      do NOT add it to the template when only one state needs it — either way
+      changes states the evidence did not implicate.
+    Edit the state's own `layers`, NOT the top-level template (which would
+    change every state). A layer that exists in only ONE state is fit
+    independently there, as it must be: there is nothing in another state to
+    tie it to.
+12b. RECONSIDER THE TIES WHENEVER YOU MAKE A STATE-SCOPED STRUCTURAL CHANGE.
+    Mechanically nothing breaks — a tie naming a layer a state does not have is
+    simply not applied there, so no edit is REQUIRED. But the ties on the
+    layers ADJACENT to your change may now be tying quantities that are no
+    longer the same quantity, which is a modelling error that χ² will happily
+    hide. Check both of these and act:
+    - INTERFACE SEMANTICS. `<layer>.interface` is the roughness of that
+      layer's boundary with whatever sits ON TOP of it. Inserting a layer in
+      one state only changes what that boundary IS there (Cu/CuO in one state,
+      Cu/ambient in the other). Tying it forces one number onto two physically
+      different interfaces. Untie the interface of the layer directly beneath
+      the inserted (or removed) layer — add `"<layer>.interface"` to
+      `unshared_parameters` — unless you can say why the two interfaces should
+      still be identical.
+    - CONVERSION / CONSUMPTION. If the new layer FORMS OUT OF the layer below
+      it (a native oxide consuming the metal, an SEI consuming lithium,
+      solvent swelling a dry film), that layer's thickness and/or SLD is no
+      longer the same in both states either — untie `<layer>.thickness` (and
+      `.material.rho` if the material itself is altered) too. If the new layer
+      is merely DEPOSITED ON TOP, leave them tied.
+    Do NOT untie more than this. Every untied parameter is one more free
+    parameter in every state, paid for in BIC, and the whole point of a
+    co-refinement is the parameters that ARE shared.
+    Whenever you change `shared_parameters`/`unshared_parameters`, or make a
+    change scoped to a subset of states, you MUST also return a top-level
+    `"tie_rationale"`: one or two plain sentences naming which ties you changed
+    (or deliberately left alone) and the physical reason. This is recorded in
+    the run transcript so a scientist can audit the decision.
 13. REWIND FOR REINTERPRETATION HYPOTHESES. Some hypotheses REINTERPRET an
     existing material rather than add structure — most importantly "the ambient
     solvent/electrolyte is actually deuterated" (its SLD is ~0 in the current
@@ -1268,8 +1491,9 @@ def format_model_refinement_prompt_json(
             features=features_str,
             data_file=data_file,
             user_constraints=user_constraints,
-            residual_analysis=_format_residual_analysis(
-                fit_result.get("residual_analysis")
+            residual_analysis=_format_residual_section(
+                fit_result.get("residual_analysis"),
+                fit_result.get("per_state_residual_analysis"),
             ),
             skill_context=skill_context or "(no additional domain knowledge)",
             structural_hypotheses=_format_structural_hypotheses(structural_hypotheses),

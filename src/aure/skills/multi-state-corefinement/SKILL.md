@@ -3,14 +3,15 @@ name: multi-state-corefinement
 description: >
   Cross-state co-refinement of neutron reflectometry data — when one sample is
   measured in two or more physical states (solvent contrast, anneal temperature,
-  swelling step, applied potential, etc.) and the structural model is shared
-  across states. Activated automatically whenever the workflow state has
+  swelling step, applied potential, etc.) and one structural model describes
+  all of them. Activated automatically whenever the workflow state has
   ``len(states) > 1``. Covers when to use it, the default tied parameter set,
-  how to choose ``shared_parameters`` versus ``unshared_parameters``, and common
+  how to choose ``shared_parameters`` versus ``unshared_parameters``, when the
+  states differ in structure rather than only in parameter values, and common
   experimental patterns.
 metadata:
   author: aure
-  version: "1.0"
+  version: "1.1"
 ---
 
 ## When this skill applies
@@ -119,6 +120,46 @@ any LLM proposal.
 | Swelling polymer series | Substrate, dry interlayer | Swelling layer thickness, mixed-SLD |
 | Electrochemistry (Li-ion) | Substrate, electrode, SEI scaffold | Mobile-species layer thickness/SLD |
 
+## Sample ≠ structure: when the states differ in the LAYER STACK
+
+Untying a parameter lets a layer take a different *value* per state. It cannot
+express a layer that is **present in some states and absent in others** — and
+that is a real and common situation, not an exotic one:
+
+- a native oxide in air that is **reduced away** under applied potential;
+- an SEI that **forms** only after cycling, absent in the pristine state;
+- a **swollen / solvated** layer that exists only in the solvent state and has
+  no counterpart in the dry one;
+- an adsorbed or **contrast-matched-out** layer visible in one contrast only.
+
+Forcing such a case onto one shared stack has a characteristic signature: the
+missing layer is either absorbed into a neighbouring layer's roughness, or its
+thickness in the state that lacks it is driven to a bound near zero, and the
+residual keeps a fringe. The remedy is a **per-state structure**: give that
+state its own complete `layers` array (and `substrate` if it differs) inside
+its `states` entry; states without a `layers` key keep inheriting the shared
+template.
+
+```yaml
+states:
+  - name: air            # inherits the template: Si / SiO2 / Cu / CuO
+    data_files: [/data/REFL_12345_combined_data_auto.txt]
+  - name: reduced        # its own stack — the CuO is gone
+    data_files: [/data/REFL_12350_combined_data_auto.txt]
+    layers:
+      - {name: SiO2, sld: 3.47, thickness: 15, roughness: 3}
+      - {name: Cu, sld: 6.55, thickness: 300, roughness: 8}
+```
+
+Ties naming a layer that a state does not have simply do not apply there — no
+edit to `shared_parameters` / `unshared_parameters` is needed for a structural
+difference. A layer present in only ONE state is fit independently there;
+there is nothing to tie it to.
+
+This is a **structural** claim and costs parameters, so treat it as a
+hypothesis to be earned, not a default. Prefer the shared template until the
+evidence points at a specific state, and let the χ²/BIC guardrail judge it.
+
 ## What the workflow does
 
 1. **Intake** groups data files by state, validates per-state set_ids,
@@ -147,6 +188,16 @@ any LLM proposal.
 - Per-state residual fringe analysis lives on
   `latest_fit["per_state_residual_analysis"]`, keyed by state name.
 
-If only one state shows residual fringes, the issue is almost always in
-its **untied** parameters (per-state ambient, mixed SLD, or per-state
-layer thickness for a swelling/annealing layer).
+If only one state shows residual fringes, the evidence is about **that
+state**, and there are two candidate explanations — check them in this order:
+
+1. Its **untied parameters** (per-state ambient SLD, mixed SLD, or a
+   per-state thickness for a swelling/annealing layer) are off. This is the
+   cheaper explanation and usually the right one.
+2. That state genuinely differs in **structure** — a layer present there and
+   absent elsewhere, or the reverse. Reach for this when the residual fringe
+   has a definite thickness that no untied parameter can absorb, when a
+   thickness in the *other* states is pinned at a bound near zero, or when the
+   sample description implies the states should differ (see *Sample ≠
+   structure* above). Scope the hypothesis to the affected state(s) rather
+   than changing the shared template.

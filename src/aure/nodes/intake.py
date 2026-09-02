@@ -27,6 +27,7 @@ from ..state import ReflectivityState, Message, LLMCallRecord
 from ..tools.data_tools import load_reflectivity_data, validate_reflectivity_data
 from ..llm import llm_available, get_llm, invoke_with_timeout
 from ..skills import SkillRegistry, select_skills, load_skill_context
+from .hypotheses import normalize_hypothesis_states
 from .prompts import format_sample_parse_prompt, format_structural_hypothesis_prompt
 
 logger = logging.getLogger(__name__)
@@ -438,6 +439,7 @@ def generate_structural_hypotheses_with_llm(
     skill_context: str,
     hypothesis: str | None = None,
     run_titles: list[Dict[str, str]] | None = None,
+    state_names: list[str] | None = None,
 ) -> list[Dict[str, Any]]:
     """Ask the LLM for a ranked list of candidate structural changes.
 
@@ -456,6 +458,12 @@ def generate_structural_hypotheses_with_llm(
     evaluation's regression guardrail, instead of silently poisoning every
     iteration — the same treatment the user's own hypothesis gets.
 
+    ``state_names`` lists the run's measurement states, letting a hypothesis be
+    *scoped* to a subset of them (``states``) — the "sample != structure" case
+    where a layer is present in some states and absent in others. Without it
+    the prompt sees one flattened stack and such a change cannot be proposed at
+    all. Scopes are validated against these names; unknown ones are dropped.
+
     Returns an empty list if the LLM is unavailable or returns nothing
     parseable. Never raises.
     """
@@ -470,6 +478,7 @@ def generate_structural_hypotheses_with_llm(
         skill_context=skill_context,
         hypothesis=hypothesis,
         run_titles=run_titles,
+        state_names=state_names,
     )
     llm = get_llm(temperature=0)
     try:
@@ -517,6 +526,7 @@ def generate_structural_hypotheses_with_llm(
             "change": str(item.get("change", "")).strip(),
             "skill_source": skill_source,
             "origin": origin,
+            "states": normalize_hypothesis_states(item.get("states"), state_names),
             "status": "pending",
             "tried_in_iteration": None,
             "created_in_iteration": None,
@@ -900,6 +910,11 @@ def intake_node(state: ReflectivityState) -> Dict[str, Any]:
                     skill_context=skill_context_full,
                     hypothesis=state.get("hypothesis"),
                     run_titles=observed_titles if use_run_title else None,
+                    state_names=[
+                        st.get("name")
+                        for st in (state.get("states") or [])
+                        if st.get("name")
+                    ],
                 )
                 updates["structural_hypotheses"] = hypotheses
                 updates["llm_calls"].append(

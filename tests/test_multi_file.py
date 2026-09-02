@@ -321,7 +321,10 @@ class TestPromptMultiFile:
         )
         assert "segment-1" in prompt
         assert "segment-2" in prompt
-        assert "Per-File Fit Quality" in prompt
+        assert "Per-File / Per-State Fit Quality" in prompt
+        # No PerFileFitResult carries a state -> the multi-file (spliced
+        # Q-segments) wording, not the multi-state one.
+        assert "Q-range segments" in prompt
 
     def test_evaluation_prompt_single_file_shows_not_applicable(self):
         from aure.nodes.prompts import format_fit_evaluation_prompt
