@@ -148,8 +148,9 @@ class DatasetInfo(TypedDict, total=False):
     """Information about one data file in a multi-file co-refinement.
 
     ``file`` and ``label`` are the only fields required at construction time
-    (e.g. from the CLI/web layer).  ``dq_is_fwhm`` and ``theta`` are
-    populated later during the intake node and are therefore optional here.
+    (e.g. from the CLI/web layer).  ``dq_is_fwhm``, ``theta`` and
+    ``run_title`` are populated later during the intake node and are
+    therefore optional here.
 
     ``intensity`` is an optional per-probe override applied by
     :func:`~aure.nodes.model_builder.build_states_problem`. It takes
@@ -162,6 +163,7 @@ class DatasetInfo(TypedDict, total=False):
     label: str  # Short human-readable label (e.g. "low-Q", "file1")
     dq_is_fwhm: bool  # Whether dQ column is FWHM (True) or 1-sigma (False)
     theta: float  # Incident angle in degrees (half of TwoTheta from header)
+    run_title: str  # Free-form operator title from the header, verbatim; "" if absent
     intensity: dict  # Per-probe intensity override: {value/init, min, max, fixed}
 
 
@@ -290,7 +292,9 @@ class StructuralHypothesis(TypedDict, total=False):
     * **evaluation** may, when fit evidence warrants, append *new* entries
       (``origin="evaluation"``) and re-rank the list.
     * **intake** seeds the list, including the user's hypothesis as
-      ``origin="user"`` entries ranked at the top.
+      ``origin="user"`` entries ranked at the top, and — when
+      ``USE_RUN_TITLE`` is enabled — the data file's run title as
+      ``origin="header"`` entries ranked just below them.
 
     Identity fields (``id``/``title``/``rationale``/``change``/``skill_source``/
     ``origin``) are immutable once created; only ``status``/``tried_in_iteration``/
@@ -312,8 +316,9 @@ class StructuralHypothesis(TypedDict, total=False):
         was derived from the user's stated hypothesis.
     origin : str
         Provenance of the entry. One of: 'user' (from the user's hypothesis),
-        'skill' (enumerated at intake from the active skills), 'evaluation'
-        (proposed mid-run from fit evidence).
+        'header' (from the data file's free-form run title, only when
+        ``USE_RUN_TITLE`` is enabled), 'skill' (enumerated at intake from the
+        active skills), 'evaluation' (proposed mid-run from fit evidence).
     status : str
         One of: 'pending', 'tried', 'confirmed', 'rejected'.
     tried_in_iteration : int | None

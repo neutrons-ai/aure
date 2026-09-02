@@ -152,6 +152,9 @@ parameter-only refinement fails to reach the χ² acceptance threshold.
 ## User's Stated Hypothesis
 {user_hypothesis}
 
+## Run Title from the Data File Header (weak evidence)
+{run_titles}
+
 ## Task
 
 Follow the `structural-hypothesis-ranking` skill. Enumerate plausible
@@ -162,6 +165,21 @@ If the user stated a hypothesis or a tentative ("may be", "expected",
 hypotheses and rank it at the TOP of the list (highest expected value),
 reformatted into the standard fields below, with `skill_source` set to
 "user". Reword it to align with the workflow but preserve the user's intent.
+
+The run title above, when present, is free-form text typed by the instrument
+operator at measurement time. It is WEAK evidence: it may be stale,
+abbreviated, copied from a previous run, or simply wrong. Treat it only as a
+source of candidate hypotheses — never as a correction to the Sample
+Description or the Baseline Parsed Model above, and never as grounds for a
+change the data could not distinguish. If it merely restates what the
+description already says, produce no hypothesis from it.
+
+When the title does point at something the description omits — an isotope
+("d8", "d-THF", "D2O"), a material, or a layer — emit that as a hypothesis
+with `skill_source` set to "header", and quote the exact substring you relied
+on in the `rationale` (e.g. `header: "d8-THF" implies a deuterated solvent`)
+so a reader can check the inference against the file. Rank header-derived
+hypotheses below any user hypothesis but above the skill-derived ones.
 
 Hypotheses may also be *reinterpretations* — not every hypothesis adds or
 removes a layer. A reinterpretation re-labels an EXISTING material's SLD/isotope
@@ -206,11 +224,34 @@ Output ONLY the JSON array, no markdown fences, no other text.
 """
 
 
+_NO_RUN_TITLES = "(none available — infer nothing from the file name)"
+
+
+def _format_run_titles(run_titles: list | None) -> str:
+    """Render per-state run titles for the hypothesis prompt.
+
+    Renders an explicit "none" when the feature is off or no header carried a
+    title, so the model is never left guessing whether the section was omitted
+    or genuinely absent — and is told not to substitute the file name for it.
+    """
+    lines = []
+    for entry in run_titles or []:
+        if not isinstance(entry, dict):
+            continue
+        state = str(entry.get("state") or "").strip()
+        title = str(entry.get("title") or "").strip()
+        if not title:
+            continue
+        lines.append(f'- {state}: "{title}"' if state else f'- "{title}"')
+    return "\n".join(lines) or _NO_RUN_TITLES
+
+
 def format_structural_hypothesis_prompt(
     sample_description: str,
     parsed_sample: dict,
     skill_context: str,
     hypothesis: str | None = None,
+    run_titles: list | None = None,
 ) -> str:
     """Format the prompt that asks the LLM to produce ranked structural
     hypotheses from the parsed sample and active skill bodies.
@@ -221,7 +262,10 @@ def format_structural_hypothesis_prompt(
 
     The user's stated ``hypothesis`` (if any) is surfaced as its own section
     so the LLM turns it into one or more top-ranked candidate changes rather
-    than baking it into the baseline.
+    than baking it into the baseline. ``run_titles`` — the data files'
+    free-form header titles, passed only when ``USE_RUN_TITLE`` is enabled —
+    gets the same treatment one trust level down, and is explicitly framed as
+    weak evidence that may not override the description.
     """
     sub = parsed_sample.get("substrate", {}) or {}
     amb = parsed_sample.get("ambient", {}) or {}
@@ -241,6 +285,7 @@ def format_structural_hypothesis_prompt(
         ambient=f"{amb.get('name', '?')} (SLD {amb.get('sld', '?')})",
         back_reflection=parsed_sample.get("back_reflection", False),
         user_hypothesis=(hypothesis or "").strip() or "(none stated)",
+        run_titles=_format_run_titles(run_titles),
     )
 
 

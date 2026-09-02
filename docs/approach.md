@@ -151,7 +151,7 @@ flowchart LR
 
 ### 4.1 Intake
 
-The **intake** node does three jobs:
+The **intake** node does four jobs:
 
 1. **Load the data file** from disk and validate it (finite $Q$ and $R$,
    positive errors, sensible ranges).
@@ -165,7 +165,30 @@ The **intake** node does three jobs:
    states are *present*; tentative or "expected" layers (*"there may be an
    oxide on top"*) are deliberately **kept out of the baseline** and instead
    become high-priority entries in the hypothesis list below.
-3. **Generate a ranked list of structural hypotheses** (see §6). This is a
+3. **Record the run title** from the file header, when it has one. Reduced
+   REF_L files carry a line like
+   `# Run title: CuPt_d8-THF_FullQ-218386-1.` — free-form text typed by the
+   instrument operator, which often names the sample stack and the solvent
+   isotope. Extraction is a plain regex, so it cannot invent anything, and
+   the value is stored verbatim on every dataset and lands in every
+   checkpoint.
+
+   Whether that text may *influence* the analysis is a separate, opt-in
+   decision (`USE_RUN_TITLE`, off by default). The two are kept apart
+   because the title is weak evidence: it may be stale, abbreviated, copied
+   from a previous run, or simply wrong. Recording it unconditionally is
+   what lets a corpus of past runs answer *"would the title have helped?"*
+   before the default is ever changed. When the flag **is** on, the title
+   does not correct the parsed description — it seeds hypotheses (job 4)
+   tagged `origin="header"`, so a wrong title costs one refinement
+   iteration and is then rejected by the regression guardrail, instead of
+   silently distorting every iteration. Co-refinement is both where the
+   title is worth most (`d8` vs `h8` names the contrast the description
+   often omits) and where a wrong one does most damage (it can mislabel
+   which state is which, corrupting the cross-state ties) — which is the
+   main reason the default is off.
+
+4. **Generate a ranked list of structural hypotheses** (see §6). This is a
    second LLM call, guided by an always-on skill called
    [`structural-hypothesis-ranking`](../src/aure/skills/structural-hypothesis-ranking/SKILL.md).
    The output is a list of candidate structural changes that the refinement
@@ -174,6 +197,10 @@ The **intake** node does three jobs:
    user's own hypothesis (the `-h` flag) is folded into this list as one or
    more **top-ranked** entries tagged `origin="user"`, reworded to fit the
    hypothesis shape; skill-enumerated entries are tagged `origin="skill"`.
+   Entries derived from the run title are tagged `origin="header"` and rank
+   between the two — a title describes *this* measurement, so it outranks
+   the skills' general priors, but it was not typed for this analysis, so it
+   yields to the user's own hypothesis.
 
 The result of intake is stored as `parsed_sample`, the initial
 `current_model`, and `structural_hypotheses` in the workflow state.

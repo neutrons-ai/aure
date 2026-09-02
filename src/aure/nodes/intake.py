@@ -4,12 +4,21 @@ INTAKE node: Load data and parse sample description.
 This is the first node in the workflow. It:
 1. Loads and validates the reflectivity data file
 2. Inspects file headers to determine dQ convention (FWHM vs 1-sigma)
-3. Parses the sample description using an LLM
-4. Populates the initial state for analysis
+3. Records the header's free-form run title (deterministically, always)
+4. Parses the sample description using an LLM
+5. Populates the initial state for analysis
+
+Header handling deliberately separates *extraction* from *interpretation*.
+Extraction is a regex and cannot hallucinate, so it always runs and the value
+is always checkpointed. Interpretation — letting the operator's free-form run
+title influence the analysis — is gated behind ``USE_RUN_TITLE`` and, when on,
+enters only as ranked *hypotheses* the refinement loop can reject, never as a
+correction to the user's sample description. See :func:`_use_run_title_enabled`.
 """
 
 import json
 import logging
+import os
 import re
 from datetime import datetime, timezone
 from typing import Dict, Any
@@ -102,6 +111,124 @@ def _parse_theta_from_header(file_path: str) -> float:
         return two_theta / 2.0
     except (ValueError, IndexError):
         return 0.0
+
+
+# Header label spellings that carry the operator's free-form run title, e.g.
+# ``# Run title: CuPt_d8-THF_FullQ-218386-1.``. Matched against comment lines
+# only, case-insensitively.
+_RUN_TITLE_RE = re.compile(r"^#\s*(?:run\s+)?title\s*:\s*(.+?)\s*$", re.IGNORECASE)
+
+#: Longest run title retained. A pathological header line must not be able to
+#: dominate a downstream prompt.
+_MAX_RUN_TITLE_LEN = 200
+
+
+def _parse_run_title_from_header(file_path: str) -> str:
+    """Return the free-form run title from a data file header, or ``""``.
+
+    Deterministic by design — no LLM. The title is text typed by the
+    instrument operator at measurement time, so it may be stale, abbreviated,
+    copied from a previous run, or simply wrong. This function therefore only
+    records *what the file says*; whether that text is allowed to influence the
+    analysis is a separate decision, gated by :func:`_use_run_title_enabled`.
+
+    The value is kept verbatim apart from surrounding whitespace (trailing
+    punctuation included) because it is provenance, not data — normalizing it
+    would make the checkpoint disagree with the file. The first matching
+    comment line wins. Returns ``""`` when no title line is present, which is
+    the common case outside REF_L.
+    """
+    header = _read_file_header(file_path)
+    if not header:
+        return ""
+    for line in header.split("\n"):
+        if not line.strip():
+            continue
+        if not line.startswith("#"):
+            break  # reached the data block; no title in the header
+        m = _RUN_TITLE_RE.match(line)
+        if m:
+            return m.group(1)[:_MAX_RUN_TITLE_LEN]
+    return ""
+
+
+def _use_run_title_enabled() -> bool:
+    """Whether the header's run title may influence the analysis (default off).
+
+    Opt-in via the ``USE_RUN_TITLE`` env var. Extraction is unconditional — see
+    :func:`_parse_run_title_from_header` — so the title is recorded in the
+    checkpoint either way; this flag governs only whether it is *interpreted*,
+    by seeding ``origin="header"`` structural hypotheses.
+
+    Off by default for two reasons: turning it on changes results for every
+    existing run (breaking comparability with the reference fits in
+    ``validation/``), and a wrong title in a multi-state co-refinement can
+    mislabel which state is which contrast, which corrupts the cross-state
+    parameter ties rather than merely adding a bad layer.
+    """
+    return os.environ.get("USE_RUN_TITLE", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _reconcile_run_titles(datasets: list[dict]) -> tuple[str, str | None]:
+    """Collapse one state's per-file run titles into a single title.
+
+    Files sharing a state describe one physical measurement, so they should
+    carry one title. Disagreement means something upstream is mislabeled, so
+    the caller is handed a warning to surface instead of a silently merged
+    value, and *no* title is returned: picking one of two contradictory labels
+    is exactly the failure this feature is gated to avoid.
+
+    Returns ``(title, warning)``, where ``title`` is ``""`` when the titles are
+    absent or ambiguous and ``warning`` is ``None`` unless they conflict.
+    """
+    titles = [
+        t for t in (str(ds.get("run_title") or "").strip() for ds in datasets) if t
+    ]
+    unique = list(dict.fromkeys(titles))
+    if not unique:
+        return "", None
+    if len(unique) == 1:
+        return unique[0], None
+    return "", (
+        "data files carry different run titles ("
+        + "; ".join(repr(t) for t in unique)
+        + ") — ignoring them; files sharing a state should describe one "
+        "measurement, so this suggests a mislabeled file"
+    )
+
+
+def _run_titles_for_prompt(
+    states: list[dict],
+    data_files: list[dict],
+    data_file: str,
+) -> list[Dict[str, str]]:
+    """Per-state run titles as ``[{"state": name, "title": text}, ...]``.
+
+    Empty and ambiguous titles are dropped. Falls back to the flat file list,
+    then to the primary ``data_file``, so a programmatic single-file call that
+    predates the states-only setup shape still yields its title.
+    """
+    out: list[Dict[str, str]] = []
+    if states:
+        for st in states:
+            title, _ = _reconcile_run_titles(st.get("data_files") or [])
+            if title:
+                out.append({"state": str(st.get("name") or ""), "title": title})
+        return out
+    if data_files:
+        title, _ = _reconcile_run_titles(data_files)
+        if title:
+            out.append({"state": "", "title": title})
+        return out
+    title = _parse_run_title_from_header(data_file) if data_file else ""
+    if title:
+        out.append({"state": "", "title": title})
+    return out
 
 
 _HEADER_METADATA_PROMPT = """\
@@ -310,6 +437,7 @@ def generate_structural_hypotheses_with_llm(
     parsed_sample: Dict[str, Any],
     skill_context: str,
     hypothesis: str | None = None,
+    run_titles: list[Dict[str, str]] | None = None,
 ) -> list[Dict[str, Any]]:
     """Ask the LLM for a ranked list of candidate structural changes.
 
@@ -319,6 +447,14 @@ def generate_structural_hypotheses_with_llm(
     ``hypothesis`` is folded in as one or more high-priority entries
     (``origin="user"``) ranked above the skill-derived ones. Each entry is
     stamped with a sequential ``id`` and ``status: "pending"``.
+
+    ``run_titles`` (only ever non-empty when ``USE_RUN_TITLE`` is enabled)
+    supplies the data files' free-form header titles as a *weak* extra source,
+    yielding ``origin="header"`` entries ranked between the user's and the
+    skills'. They enter as hypotheses rather than as baseline structure so a
+    wrong title costs one refinement iteration and is then rejected by
+    evaluation's regression guardrail, instead of silently poisoning every
+    iteration — the same treatment the user's own hypothesis gets.
 
     Returns an empty list if the LLM is unavailable or returns nothing
     parseable. Never raises.
@@ -333,6 +469,7 @@ def generate_structural_hypotheses_with_llm(
         parsed_sample=parsed_sample,
         skill_context=skill_context,
         hypothesis=hypothesis,
+        run_titles=run_titles,
     )
     llm = get_llm(temperature=0)
     try:
@@ -367,7 +504,13 @@ def generate_structural_hypotheses_with_llm(
         if not isinstance(item, dict):
             continue
         skill_source = str(item.get("skill_source", "")).strip()
-        origin = "user" if skill_source.lower() == "user" else "skill"
+        lowered = skill_source.lower()
+        if lowered == "user":
+            origin = "user"
+        elif lowered == "header":
+            origin = "header"
+        else:
+            origin = "skill"
         h = {
             "title": str(item.get("title", "")).strip(),
             "rationale": str(item.get("rationale", "")).strip(),
@@ -382,18 +525,37 @@ def generate_structural_hypotheses_with_llm(
         if h["title"]:
             parsed_items.append(h)
 
-    # User-derived hypotheses outrank skill-derived ones; preserve the LLM's
-    # relative order within each group, then assign stable ids in rank order.
+    if not run_titles:
+        # No title was supplied (feature off, or no header carried one), so a
+        # "header"-sourced entry has no evidence behind it and must not enter
+        # the list — the flag has to actually gate the behaviour even when the
+        # model volunteers the label on its own.
+        dropped = [h for h in parsed_items if h["origin"] == "header"]
+        if dropped:
+            logger.debug(
+                "[INTAKE] Dropped %d header-sourced hypotheses (no run title)",
+                len(dropped),
+            )
+        parsed_items = [h for h in parsed_items if h["origin"] != "header"]
+
+    # Rank user > header > skill: a hypothesis the user typed for this run
+    # outranks the operator's free-form title, which in turn describes *this*
+    # measurement and so outranks the skills' generic domain priors. Preserve
+    # the LLM's relative order within each group, then assign stable ids in
+    # rank order.
     user_items = [h for h in parsed_items if h["origin"] == "user"]
-    skill_items = [h for h in parsed_items if h["origin"] != "user"]
+    header_items = [h for h in parsed_items if h["origin"] == "header"]
+    skill_items = [h for h in parsed_items if h["origin"] not in ("user", "header")]
     hypotheses = [
-        {"id": i, **h} for i, h in enumerate(user_items + skill_items, start=1)
+        {"id": i, **h}
+        for i, h in enumerate(user_items + header_items + skill_items, start=1)
     ]
 
     logger.info(
-        "[INTAKE] Generated %d structural hypotheses (%d from user)",
+        "[INTAKE] Generated %d structural hypotheses (%d from user, %d from header)",
         len(hypotheses),
         len(user_items),
+        len(header_items),
     )
     return hypotheses
 
@@ -451,6 +613,9 @@ def _enrich_dataset(ds: dict) -> dict:
     enriched.setdefault("theta", meta["theta"])
     enriched.setdefault("dq_is_fwhm", meta["dq_is_fwhm"])
     enriched.setdefault("num_segments", meta.get("num_segments", 0))
+    # Deterministic, unconditional, and independent of the LLM header call --
+    # recorded even when USE_RUN_TITLE is off (see _parse_run_title_from_header).
+    enriched.setdefault("run_title", _parse_run_title_from_header(ds["file"]))
     return enriched
 
 
@@ -540,6 +705,15 @@ def intake_node(state: ReflectivityState) -> Dict[str, Any]:
                         f"{sorted(set_ids)} — each state must contain files "
                         f"from a single REF_L set."
                     )
+                _, title_warning = _reconcile_run_titles(enriched_files)
+                if title_warning:
+                    updates["messages"].append(
+                        Message(
+                            role="system",
+                            content=f"State {st.get('name')!r}: {title_warning}.",
+                            timestamp=None,
+                        )
+                    )
                 new_state = dict(st)
                 new_state["data_files"] = enriched_files
                 enriched_states.append(new_state)
@@ -628,6 +802,37 @@ def intake_node(state: ReflectivityState) -> Dict[str, Any]:
     primary_meta = parse_file_header(state["data_file"])
     updates["dq_is_fwhm"] = primary_meta["dq_is_fwhm"]
 
+    # ========== 2b. Record the header's run title ==========
+    # Extraction is unconditional; only interpretation is gated. Recording the
+    # title even when it goes unused is what lets a corpus of past runs answer
+    # "would the title have helped?" before USE_RUN_TITLE is ever made the
+    # default — see docs/approach.md.
+    observed_titles = _run_titles_for_prompt(
+        updates.get("states") or [],
+        updates.get("data_files") or [],
+        state.get("data_file", ""),
+    )
+    use_run_title = _use_run_title_enabled()
+    if observed_titles:
+        rendered = ", ".join(
+            f"{t['state']}: {t['title']!r}" if t["state"] else repr(t["title"])
+            for t in observed_titles
+        )
+        updates["messages"].append(
+            Message(
+                role="system",
+                content=(
+                    f"Run title from file header ({rendered}) — "
+                    + (
+                        "seeding structural hypotheses (USE_RUN_TITLE is on)."
+                        if use_run_title
+                        else "recorded only, not used (USE_RUN_TITLE is off)."
+                    )
+                ),
+                timestamp=None,
+            )
+        )
+
     # ========== 3. Parse Sample Description ==========
     if state["sample_description"]:
         # Select and load skills based on sample description
@@ -694,6 +899,7 @@ def intake_node(state: ReflectivityState) -> Dict[str, Any]:
                     parsed_sample=parsed,
                     skill_context=skill_context_full,
                     hypothesis=state.get("hypothesis"),
+                    run_titles=observed_titles if use_run_title else None,
                 )
                 updates["structural_hypotheses"] = hypotheses
                 updates["llm_calls"].append(
