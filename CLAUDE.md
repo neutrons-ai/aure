@@ -59,6 +59,8 @@ The historical design generated Python refl1d scripts; the current design stores
 
 ### Reparametrization: `derived_parameters` ([nodes/expressions.py](src/aure/nodes/expressions.py), `model_builder.apply_derived_parameters`)
 
+User-facing guide: [docs/derived-parameters.md](docs/derived-parameters.md).
+
 A `ModelDefinition` may declare `derived_parameters`: each entry adds one **free** parameter and derives raw ones from it through `assign` (`"<layer>.<attr>" -> expression`), so the fit explores a *combination* — a surface excess `(ρ−ρ_ambient)·t`, a volume fraction — instead of coordinates the data does not resolve. `keep_physical` entries become bumps `Constraint` objects guarding the derived value, which has no bounds of its own. Expressions are evaluated by a whitelisted-AST evaluator (`expressions.evaluate`), **never** `eval` — these strings can come from a config file or an LLM. Nothing does algebra: the inverse is written out in `assign`.
 
 Consequences that are easy to get wrong:
