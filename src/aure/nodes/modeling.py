@@ -290,6 +290,22 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
                 )
             if "background" not in new_model and current_model.get("background"):
                 new_model["background"] = current_model["background"]
+            # A reparametrization is the user's/analysis's structural decision,
+            # not a per-iteration one. The refine LLM re-emits the whole model
+            # and does not know about this block, so without an explicit
+            # carry-over it would be dropped on the first refinement — the fit
+            # would silently revert to the raw coordinates, and the run would
+            # look like it simply changed its mind. Config wins if it declared
+            # any; otherwise the previous model's block is authoritative.
+            cfg_derived = (state.get("user_config") or {}).get("derived_parameters")
+            if cfg_derived:
+                new_model["derived_parameters"] = copy.deepcopy(cfg_derived)
+            elif current_model.get("derived_parameters"):
+                new_model["derived_parameters"] = copy.deepcopy(
+                    current_model["derived_parameters"]
+                )
+            else:
+                new_model.pop("derived_parameters", None)
             # Multi-state co-refinement: carry over states + tie spec from
             # the previous model when the LLM omitted them. If the user
             # supplied ties in the config they win, regardless of the LLM.
@@ -823,9 +839,31 @@ def _build_initial_model(state: ReflectivityState) -> Dict[str, Any]:
                         state["user_config"] = uc
                         updates["user_config"] = uc
             _attach_state_metadata(model_def, state)
+
+            # Reparametrization (derived_parameters) comes from the user config
+            # only — nothing proposes one on its own. Validated against the
+            # model that was just built, so a typo in a layer name or an
+            # expression is an error here rather than a crash mid-fit or, worse,
+            # a quietly different model.
         except ValueError as exc:
             updates["error"] = f"Multi-state model setup failed: {exc}"
             return updates
+
+        cfg_derived = (state.get("user_config") or {}).get("derived_parameters")
+        if cfg_derived:
+            try:
+                model_def["derived_parameters"] = copy.deepcopy(cfg_derived)
+                from .model_builder import validate_derived_parameters
+
+                validate_derived_parameters(model_def)
+            except ValueError as exc:
+                updates["error"] = f"Reparametrization (derived_parameters): {exc}"
+                return updates
+            logger.info(
+                "[MODELING] Reparametrized with %d derived parameter(s): %s",
+                len(cfg_derived),
+                ", ".join(str(d.get("name")) for d in cfg_derived),
+            )
 
         # Snapshot the clean intake model as the rewind point. When a later
         # refinement realizes a *reinterpretation* hypothesis (e.g. "the

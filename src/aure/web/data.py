@@ -885,6 +885,7 @@ def _compute_from_model(
         apply_bounds,
         apply_parameters,
         build_problem,
+        data_chisq,
     )
 
     if not isinstance(model, dict):
@@ -925,7 +926,7 @@ def _compute_from_model(
             result["Q_fit"] = None
             result["R_fit"] = None
         try:
-            chi2 = float(problem.chisq())
+            chi2 = float(data_chisq(problem))
             result["chi_squared"] = chi2 if math.isfinite(chi2) else None
         except Exception:
             result["chi_squared"] = None
@@ -950,6 +951,7 @@ def _compute_multi_file_simulation(
         apply_bounds,
         apply_parameters,
         build_multi_problem,
+        data_chisq,
     )
 
     definition = dict(model)
@@ -990,7 +992,7 @@ def _compute_multi_file_simulation(
 
     # Aggregate chi²
     try:
-        chi2 = float(problem.chisq())
+        chi2 = float(data_chisq(problem))
         result["chi_squared"] = chi2 if math.isfinite(chi2) else None
     except Exception:
         result["chi_squared"] = None
@@ -1055,6 +1057,7 @@ def _compute_states_simulation(
         apply_bounds,
         apply_parameters,
         build_states_problem,
+        data_chisq,
     )
 
     definition = _with_angle_theta(model)
@@ -1113,7 +1116,7 @@ def _compute_states_simulation(
             per_file.append(pf)
 
     try:
-        chi2 = float(problem.chisq())
+        chi2 = float(data_chisq(problem))
         chi_squared = chi2 if math.isfinite(chi2) else None
     except Exception:
         chi_squared = None

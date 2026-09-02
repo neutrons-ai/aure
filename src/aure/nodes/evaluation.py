@@ -355,7 +355,59 @@ def _count_free_params(model: dict) -> int:
     intensity = model.get("intensity", {})
     if not intensity.get("fixed", False):
         n += 1
+
+    n += _derived_param_delta(model)
     return n
+
+
+def _derived_param_delta(model: dict) -> int:
+    """How a reparametrization changes the free-parameter count.
+
+    Each declaration adds one free parameter; each raw parameter it assigns
+    stops being free. Replacing an SLD with a surface excess is therefore
+    parameter-neutral, while a two-for-one (solvation: one derived SLD from a
+    volume fraction and a dry SLD) costs one — and BIC has to see the
+    difference, since the whole argument for a reparametrization is that it
+    buys fit without buying complexity.
+
+    Only the slots the count above actually charged for are refunded, so an
+    assignment to something it never counted (an ``air`` ambient) cannot drive
+    the total negative. Multi-state runs prefer the problem-derived
+    ``_n_free_params``, which needs none of this; this is the single-state and
+    checkpoint-replay path.
+    """
+    derived = model.get("derived_parameters") or []
+    if not derived:
+        return 0
+
+    from .expressions import canonical_name
+
+    counted: set[str] = set()
+    for layer in model.get("layers") or []:
+        name = layer.get("name") if isinstance(layer, dict) else None
+        if name:
+            counted.update(
+                {f"{name}.thickness", f"{name}.material.rho", f"{name}.interface"}
+            )
+    substrate = model.get("substrate") or {}
+    if substrate.get("roughness_max") is not None:
+        counted.add(f"{substrate.get('name')}.interface")
+        counted.add("substrate.interface")
+    ambient = model.get("ambient") or {}
+    if ambient.get("name", "").lower() != "air" and ambient.get("sld", 0) != 0:
+        counted.add(f"{ambient.get('name')}.material.rho")
+        counted.add("ambient.material.rho")
+
+    delta = len(derived)
+    for spec in derived:
+        if not isinstance(spec, dict):
+            continue
+        for target in (spec.get("assign") or {}):
+            key = canonical_name(str(target))
+            if key in counted:
+                counted.discard(key)
+                delta -= 1
+    return delta
 
 
 def _compute_bic(chi2: float, n_data: int, n_params: int) -> float:

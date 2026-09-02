@@ -11,6 +11,9 @@ An optional YAML file (``--config config.yaml``) lets the user inject:
   (each grouping data files that share one physical sample).
 * **shared_parameters** / **unshared_parameters** – whitelist or
   blacklist of layer attributes tied across states. Mutually exclusive.
+* **derived_parameters** – reparametrization: fit a combination of raw
+  parameters (a surface excess, a volume fraction) and derive a raw one
+  from it. See ``aure.state.DerivedParameter``.
 
 See ``aure_config.example.yaml`` in the repository root for the full schema.
 """
@@ -35,6 +38,7 @@ class UserConfig(TypedDict, total=False):
     shared_parameters: List[str]
     unshared_parameters: List[str]
     distinct_sample: bool  # co-refined states are distinct physical samples
+    derived_parameters: List[dict]  # reparametrization (DerivedParameter-shaped)
 
 
 _EMPTY: UserConfig = {
@@ -45,6 +49,7 @@ _EMPTY: UserConfig = {
     "shared_parameters": [],
     "unshared_parameters": [],
     "distinct_sample": False,
+    "derived_parameters": [],
 }
 
 
@@ -99,6 +104,9 @@ def load_user_config(path: Optional[str | Path] = None) -> UserConfig:
 
     cfg["shared_parameters"] = _as_str_list(raw.get("shared_parameters"))
     cfg["unshared_parameters"] = _as_str_list(raw.get("unshared_parameters"))
+    cfg["derived_parameters"] = _parse_derived_parameters(
+        raw.get("derived_parameters")
+    )
     if cfg["shared_parameters"] and cfg["unshared_parameters"]:
         raise ConfigError(
             "shared_parameters and unshared_parameters are mutually exclusive; "
@@ -409,6 +417,73 @@ def states_from_config(cfg: Optional[UserConfig]) -> List[dict]:
         return []
     states = cfg.get("states") or []
     return [dict(s) for s in states]
+
+
+def _parse_derived_parameters(raw: Any) -> List[dict]:
+    """Shape-check the ``derived_parameters:`` block.
+
+    Only the shape is checked here — whether the names and expressions resolve
+    against the model is checked in the modeling node, which is the first point
+    that knows the layer stack. What is caught here is what would otherwise
+    produce a confusing failure much later: a scalar where a list belongs, a
+    missing ``name``, a range that is not a range.
+    """
+    if not raw:
+        return []
+    if not isinstance(raw, list):
+        raise ConfigError("`derived_parameters:` must be a list of mappings.")
+    out: List[dict] = []
+    seen: set[str] = set()
+    for i, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            raise ConfigError(
+                f"derived_parameters[{i}] must be a mapping, got "
+                f"{type(entry).__name__}."
+            )
+        name = entry.get("name")
+        if not name or not isinstance(name, str):
+            raise ConfigError(f"derived_parameters[{i}] is missing a non-empty `name`.")
+        if name in seen:
+            raise ConfigError(f"Duplicate derived parameter name: {name!r}.")
+        seen.add(name)
+        free = entry.get("free") or {}
+        if not isinstance(free, dict):
+            raise ConfigError(f"derived_parameters[{name}].free must be a mapping.")
+        for key in ("min", "max"):
+            if key not in free:
+                raise ConfigError(
+                    f"derived_parameters[{name}].free is missing `{key}` — a "
+                    f"derived parameter has no bounds of its own to fall back on."
+                )
+        try:
+            lo, hi = float(free["min"]), float(free["max"])
+        except (TypeError, ValueError) as exc:
+            raise ConfigError(
+                f"derived_parameters[{name}].free min/max must be numbers."
+            ) from exc
+        if lo >= hi:
+            raise ConfigError(f"derived_parameters[{name}]: free.min must be < max.")
+        assign = entry.get("assign") or {}
+        if not isinstance(assign, dict):
+            raise ConfigError(
+                f"derived_parameters[{name}].assign must be a mapping of "
+                f'"<layer>.<attr>" to an expression.'
+            )
+        guards = entry.get("keep_physical") or []
+        if isinstance(guards, str):
+            guards = [guards]
+        if not isinstance(guards, list):
+            raise ConfigError(
+                f"derived_parameters[{name}].keep_physical must be a list."
+            )
+        spec: dict = {"name": name, "free": dict(free), "assign": dict(assign)}
+        if guards:
+            spec["keep_physical"] = [str(g) for g in guards]
+        for opt in ("source", "tied", "states"):
+            if opt in entry:
+                spec[opt] = entry[opt]
+        out.append(spec)
+    return out
 
 
 def _as_str_list(value: Any) -> List[str]:

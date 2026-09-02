@@ -854,8 +854,9 @@ def extract_fit_result_from_problem(
     Used by both ``aure evaluate`` and ``aure import-refl1d``.
     """
     from .nodes.fitting import _read_profile_dat
+    from .nodes.model_builder import data_chisq
 
-    chi_squared = float(problem.chisq())
+    chi_squared = float(data_chisq(problem))
 
     experiments = list(problem.models)
     is_multi = len(experiments) > 1

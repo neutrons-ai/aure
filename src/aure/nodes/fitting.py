@@ -22,6 +22,7 @@ from .model_builder import (
     build_problem,
     build_multi_problem,
     build_states_problem,
+    data_chisq,
     needs_states_problem,
 )
 from .evaluation import _count_free_params, _compute_bic, _get_chi2_min
@@ -345,7 +346,7 @@ def _enumerate_thin_layer_modes(model: dict, state: ReflectivityState) -> dict:
     working = copy.deepcopy(model)
     # Baseline χ² for the current seeds.
     try:
-        best_chi2 = build_problem(working).chisq()
+        best_chi2 = data_chisq(build_problem(working))
     except Exception as e:
         logger.warning(f"[FITTING] Mode enumeration: baseline build failed: {e}")
         return model
@@ -372,7 +373,7 @@ def _enumerate_thin_layer_modes(model: dict, state: ReflectivityState) -> dict:
             try:
                 problem = build_problem(trial)
                 bumps_fit(problem, method="amoeba", steps=1000)
-                c2 = float(problem.chisq())
+                c2 = float(data_chisq(problem))
             except Exception as e:
                 logger.debug(f"[FITTING]   {name} seed ρ={seed:.2f} failed: {e}")
                 continue
@@ -688,7 +689,7 @@ def _extract_bumps_results(
     warnings.filterwarnings("ignore", category=UserWarning, module="bumps")
 
     # Get chi-squared (bumps uses chisq method on problem)
-    chi_squared = problem.chisq()
+    chi_squared = data_chisq(problem)
 
     # Compute theory curve at fitted parameter values
     Q_fit = []
@@ -797,7 +798,7 @@ def _extract_multi_bumps_results(
     warnings.filterwarnings("ignore", category=UserWarning, module="bumps")
 
     # Aggregate chi-squared
-    chi_squared = problem.chisq()
+    chi_squared = data_chisq(problem)
 
     # Extract parameters.  Structural params are shared (single Parameter
     # object across experiments) but per-probe params (intensity,
@@ -956,7 +957,7 @@ def _extract_states_bumps_results(
 
     warnings.filterwarnings("ignore", category=UserWarning, module="bumps")
 
-    chi_squared = problem.chisq()
+    chi_squared = data_chisq(problem)
 
     # Deduplicated free parameter count: bumps usually deduplicates by
     # identity already, but a defensive id()-keyed dedup keeps us safe

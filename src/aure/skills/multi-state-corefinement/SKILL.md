@@ -160,6 +160,37 @@ This is a **structural** claim and costs parameters, so treat it as a
 hypothesis to be earned, not a default. Prefer the shared template until the
 evidence points at a specific state, and let the χ²/BIC guardrail judge it.
 
+## When the invariant is not a layer attribute
+
+`shared_parameters` ties layer attributes to each other. Some genuinely
+state-invariant quantities are not layer attributes, and tying the attribute is
+then simply wrong. Solvent contrast is the standard case: a solvated film's
+SLD is `phi * rho_dry + (1 - phi) * rho_solvent`, so it **differs in every
+contrast** — the invariants are `phi` and `rho_dry`. Tying `film.material.rho`
+across contrasts asserts something false; untying it throws the coupling away.
+
+Declare the invariant with `derived_parameters` instead. It is tied across
+states by default, and its `assign` is re-evaluated in each state's own
+namespace, so each state's SLD follows from *its* solvent:
+
+```yaml
+derived_parameters:
+  - name: phi
+    free: {init: 0.30, min: 0.05, max: 1.0}
+    assign:
+      film.rho: "phi * rho_dry + (1 - phi) * solvent.rho"
+    keep_physical: ["film.rho > -1.0", "film.rho < 6.5"]
+  - name: rho_dry
+    free: {init: 2.0, min: 0.5, max: 4.0}
+```
+
+`film.rho` stops being a fitted parameter and is excluded from cross-state
+tying automatically — no `shared_parameters` / `unshared_parameters` edit is
+needed. Reach for this when a per-state SLD is pinned at a bound, when
+untying an SLD across contrasts leaves the states effectively uncoupled, or
+whenever the quantity the experiment is actually about (an adsorbed amount, a
+swelling ratio, a coverage) is a combination rather than a coordinate.
+
 ## What the workflow does
 
 1. **Intake** groups data files by state, validates per-state set_ids,

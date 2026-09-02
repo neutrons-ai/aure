@@ -2240,6 +2240,8 @@ def plot_results(
 
             from bumps.serialize import deserialize
 
+            from .nodes.model_builder import data_chisq
+
             with open(problem_file) as f:
                 problem = deserialize(_json.load(f))
 
@@ -2261,7 +2263,7 @@ def plot_results(
 
             chi2 = None
             try:
-                chi2 = float(problem.chisq())
+                chi2 = float(data_chisq(problem))
             except Exception:
                 pass
 

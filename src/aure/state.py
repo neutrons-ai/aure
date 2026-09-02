@@ -8,7 +8,7 @@ The state tracks all information needed throughout the analysis:
 - Conversation with user
 """
 
-from typing import TypedDict, List, Optional, Dict
+from typing import Any, TypedDict, List, Optional, Dict
 
 
 class LayerInfo(TypedDict):
@@ -112,9 +112,81 @@ class ModelDefinition(TypedDict, total=False):
     # change structure between states, and distinct samples can share one.
     distinct_sample: bool
 
+    # ---- Reparametrization ----
+    # Fit a combination of raw parameters instead of the parameters themselves
+    # (see DerivedParameter). Each entry adds one free parameter and removes
+    # the raw ones it assigns, so the free-parameter count is not the layer
+    # slot count once this is non-empty.
+    derived_parameters: List["DerivedParameter"]
+
     # ---- Post-fit snapshots (populated after fitting) ----
     fitted_parameters: dict  # {param_name: value}
     fitted_uncertainties: dict  # {param_name: uncertainty}
+
+
+class DerivedParameter(TypedDict, total=False):
+    """A reparametrization: fit a *combination* of raw parameters directly.
+
+    The data constrains some combinations far better than the parameters
+    themselves — a thin layer's ``Δρ·t`` is pinned while ``Δρ`` and ``t``
+    individually are not — and what a scientist knows independently is usually
+    a combination too (a surface excess from QCM-D, a volume fraction). Fitting
+    the raw parameters and then constraining them fights that geometry; fitting
+    the combination works with it, and turns prior knowledge into an ordinary
+    range on an ordinary parameter.
+
+    So a derived parameter declares a NEW free parameter and makes one raw
+    parameter depend on it, rather than declaring an implicit constraint
+    ``f(θ) ≈ c`` that something would have to solve. The inverse is written out
+    in ``assign``; nothing here does algebra.
+
+    Example — fit the surface excess and let the layer's SLD follow::
+
+        {"name": "Gamma_SEI",
+         "free": {"init": -420, "min": -600, "max": -250},
+         "assign": {"SEI.rho": "dTHF.rho + Gamma_SEI / SEI.thickness"},
+         "keep_physical": ["SEI.rho > 0", "SEI.rho < 6.4"]}
+
+    Fields
+    ------
+    name : str
+        The new free parameter's name. Must be unique and must not collide with
+        a layer/material name.
+    free : dict
+        ``{init, min, max}`` for the new parameter. The prior is uniform over
+        ``[min, max]``, which on a well-chosen combination is usually the whole
+        point: the reparametrization puts the flat prior on the axis the
+        knowledge is actually about.
+    assign : dict[str, str]
+        ``"<layer>.<attr>" -> expression``. Each named raw parameter STOPS being
+        free and becomes the expression's value. ``<attr>`` is ``thickness``,
+        ``interface``, or ``rho`` (``material.rho`` is accepted too).
+    keep_physical : list[str]
+        Ordering comparisons (``"SEI.rho > 0"``) turned into bumps constraints.
+        A derived parameter has no bounds of its own — its value follows from
+        others — so without these it can wander somewhere impossible.
+    source : str
+        Provenance of the reparametrization / its range. Required in practice:
+        a constraint that moves the answer has to be auditable.
+    tied : bool
+        Multi-state only, default True: ONE free parameter shared across the
+        states, with ``assign`` re-evaluated in each state's own namespace. That
+        is exactly solvent-contrast variation — the excess is invariant while
+        each state's ambient, and therefore each state's derived SLD, differs.
+        ``False`` gives each state its own copy, named ``"<state> <name>"``.
+    states : list[str]
+        Multi-state only: apply only in these states (empty = all). In a state
+        it does not apply to, the ``assign`` targets stay ordinary free
+        parameters.
+    """
+
+    name: str
+    free: Dict[str, Any]
+    assign: Dict[str, str]
+    keep_physical: List[str]
+    source: str
+    tied: bool
+    states: List[str]
 
 
 class ExtractedFeatures(TypedDict):

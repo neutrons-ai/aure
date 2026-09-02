@@ -134,6 +134,66 @@ states:
 # # untied parameter is paid for in every state.
 
 # --------------------------------------------------------------------------
+# Reparametrization: derived_parameters (optional)
+# --------------------------------------------------------------------------
+# Fit a COMBINATION of raw parameters instead of the parameters themselves.
+# Reflectivity pins some combinations far better than the coordinates they are
+# written in — a thin layer's (rho_layer - rho_ambient) * thickness is
+# determined while the SLD and the thickness separately are not — and what an
+# independent measurement gives you (a surface excess from QCM-D, a volume
+# fraction) is usually a combination too. Fitting the combination puts the
+# range on the axis the knowledge is actually about, and removes the ridge the
+# optimizer would otherwise have to crawl along.
+#
+# Each entry declares one new FREE parameter and derives raw ones from it via
+# `assign`. Write the inverse yourself — nothing here does algebra. A raw
+# parameter named in `assign` stops being free (so a one-for-one swap costs no
+# BIC), and `keep_physical` guards the derived value, which has no bounds of
+# its own.
+#
+# derived_parameters:
+#   # Surface excess: fit Gamma, let the layer SLD follow.
+#   - name: Gamma_SEI
+#     free: {init: -420, min: -600, max: -250}   # 1e-6 A^-2 * A
+#     assign:
+#       SEI.rho: "dTHF.rho + Gamma_SEI / SEI.thickness"
+#     keep_physical: ["SEI.rho > -1.0", "SEI.rho < 6.4"]
+#     source: "QCM-D, 1.2 mg/m^2"
+#
+# Multi-state note. A declaration is TIED across states by default: ONE free
+# parameter, with `assign` re-evaluated in each state's own namespace. That is
+# how solvent-contrast variation actually works — the invariant is the
+# solvated film's composition, NOT its SLD, which differs in every contrast.
+# `shared_parameters` cannot say this, because the invariant is not a layer
+# attribute. (Note that (rho - rho_solvent)*t is contrast-invariant only for a
+# non-exchanging adsorbate; for a SOLVATED layer the invariants are the volume
+# fraction and the dry SLD, as below.)
+#
+# derived_parameters:
+#   - name: phi                                   # volume fraction, shared
+#     free: {init: 0.30, min: 0.05, max: 1.0}
+#     assign:
+#       film.rho: "phi * rho_dry + (1 - phi) * solvent.rho"
+#     keep_physical: ["film.rho > -1.0", "film.rho < 6.5"]
+#   - name: rho_dry                               # auxiliary: free, used above
+#     free: {init: 2.0, min: 0.5, max: 4.0}
+#
+#   # Optional per-entry keys:
+#   #   tied: false        # one copy per state ("<state> phi") instead of one shared
+#   #   states: [dTHF]     # apply only in these states (default: all)
+#
+# Expressions accept numbers, `<layer>.<attr>` names (`thickness`, `interface`,
+# `rho`, and `substrate`/`ambient` as aliases), unary minus and + - * / ** .
+# Nothing else — no calls, no indexing. `keep_physical` entries are single
+# comparisons (< <= > >=); write two entries rather than chaining.
+#
+# Two limits worth knowing: a model using derived_parameters cannot be exported
+# with `aure prepare` / problem.json (bumps serialization does not round-trip
+# expression parameters, and AuRE refuses rather than exporting a different
+# model), and the reported chi^2 remains the DATA term only — constraint
+# penalties are minimized but never counted as goodness of fit.
+
+# --------------------------------------------------------------------------
 # Refinement controls (optional)
 # --------------------------------------------------------------------------
 # max_refinements: 5          # default 5

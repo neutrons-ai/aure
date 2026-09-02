@@ -57,6 +57,20 @@ Routing lives in `nodes/routing.py` (`route_after_*`, pure functions). After the
 
 The historical design generated Python refl1d scripts; the current design stores models as `ModelDefinition` dicts (see `state.py`) and builds refl1d `Experiment`/`FitProblem` objects on-the-fly in [nodes/model_builder.py](src/aure/nodes/model_builder.py). When extending model semantics, change the dict schema + builder together — don't reintroduce script-string round-tripping.
 
+### Reparametrization: `derived_parameters` ([nodes/expressions.py](src/aure/nodes/expressions.py), `model_builder.apply_derived_parameters`)
+
+A `ModelDefinition` may declare `derived_parameters`: each entry adds one **free** parameter and derives raw ones from it through `assign` (`"<layer>.<attr>" -> expression`), so the fit explores a *combination* — a surface excess `(ρ−ρ_ambient)·t`, a volume fraction — instead of coordinates the data does not resolve. `keep_physical` entries become bumps `Constraint` objects guarding the derived value, which has no bounds of its own. Expressions are evaluated by a whitelisted-AST evaluator (`expressions.evaluate`), **never** `eval` — these strings can come from a config file or an LLM. Nothing does algebra: the inverse is written out in `assign`.
+
+Consequences that are easy to get wrong:
+
+- A raw parameter named in `assign` leaves the free set (bumps discovers parameters by traversal, and an expression is not one), so **`_count_free_params` adjusts** via `_derived_param_delta`: a one-for-one swap is BIC-neutral, solvation (two free, one derived) costs one.
+- **Reported χ² is the data term only** (`model_builder.data_chisq`). `FitProblem.chisq()` scales `pmodel + pparameter + pconstraints`, and bumps returns `pmodel = 0.0` when a constraint fails — so a violated guard would report χ² = 0, reading as a perfect fit *and* landing under the acceptance floor. `data_chisq` returns `inf` for infeasible instead. Every surface that reports χ² uses it (fitting, cli, web, refl1d import).
+- **Multi-state**: a declaration is *tied* by default — one parameter object across states, `assign` re-evaluated per state — which is what solvent contrast actually needs (the invariant is composition, not SLD, and it is not a layer attribute, so `shared_parameters` cannot express it). `tied: false` gives one copy per state; `states: [...]` scopes it. A slot owned by a reparametrization is excluded from tie aliasing **at both ends**, and the renaming pass treats it as untied so two states falling back to a free parameter cannot collide on one name.
+- `save_problem_json` **refuses** a model with `derived_parameters`: bumps serialization does not round-trip expression parameters (the same limitation `roughness_tie` re-applies around), so the export would silently be a different model.
+- The refine LLM does not know about the block, so `modeling` carries it over explicitly (config wins) — otherwise the first refinement would drop it and quietly revert to raw coordinates.
+
+Declared in the setup/user config as a top-level `derived_parameters:` list; shape-checked in `config._parse_derived_parameters`, resolved against the built model by `model_builder.validate_derived_parameters`. Fully optional — absent means today's behaviour exactly.
+
 ### Co-refinement (multi-file and multi-state)
 
 Two distinct co-refinement modes share the same workflow:
