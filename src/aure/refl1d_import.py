@@ -172,6 +172,10 @@ def _extract_set_id(file_path: str) -> Optional[str]:
 # --------------------------------------------------------------------------
 
 
+#: refl1d stores a 1-sigma resolution; this file declares FWHM.
+_SIGMA_TO_FWHM = 2.3548200450309493
+
+
 def _write_probe_to_dat(probe, out_path: Path) -> None:
     """Dump a deserialised probe back to the 4-column ``Q R dR dQ`` format.
 
@@ -194,7 +198,14 @@ def _write_probe_to_dat(probe, out_path: Path) -> None:
         # No resolution: write zeros so the column structure is preserved.
         dQ = np.zeros_like(Q)
     else:
-        dQ = np.asarray(dQ, dtype=float)
+        # refl1d's ``probe.dQ`` is the 1-sigma resolution, but this file is
+        # written as (and declared to be) FWHM — the header below says so, and
+        # every recovered DatasetInfo records ``dq_is_fwhm: True``. Writing
+        # sigma under that label made the reload divide by 2.3548 a second
+        # time, so an imported run fitted with a resolution 2.35x too narrow.
+        # Nothing reported it: the numbers stayed plausible and only the
+        # smearing was wrong.
+        dQ = np.asarray(dQ, dtype=float) * _SIGMA_TO_FWHM
 
     if len(Q) == 0:
         raise ValueError(
@@ -536,6 +547,11 @@ def _state_data_files(
         ds: DatasetInfo = {
             "file": str(out_path.resolve()),
             "label": label,
+            # TODO: the per-state ambient's sld_min/sld_max are not recovered,
+            # so a rebuilt model refits the ambient over the multiplicative
+            # defaults rather than the range the original fit allowed. It does
+            # not change chi-squared (a uniform prior contributes nothing inside
+            # its box) but it does change what a resumed fit may explore.
             "dq_is_fwhm": True,  # we always write dQ as FWHM
         }
         files.append(ds)

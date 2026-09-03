@@ -1055,3 +1055,47 @@ def test_a_malformed_err_json_does_not_break_the_import(tmp_path):
     (tmp_path / "model-err.json").write_text("{ truncated")
 
     assert _read_uncertainties(str(tmp_path)) == {}
+
+
+def test_imported_probe_keeps_its_resolution(tmp_path, two_files):
+    """The dumped file is declared FWHM, but refl1d's ``probe.dQ`` is 1-sigma.
+
+    Writing sigma under the FWHM label made the reload convert a second time,
+    so every imported run fitted with a resolution 2.35x too narrow. Nothing
+    reported it — the numbers stayed plausible and only the smearing was wrong
+    — and the round-trip test above could not see it while both sides of its
+    chi-squared comparison were infinite.
+    """
+    import numpy as np
+
+    from aure.nodes.model_builder import build_states_problem
+    from aure.refl1d_import import import_refl1d
+
+    definition = _two_state_definition(two_files)
+    original, by_state_before, _ = build_states_problem(definition)
+
+    src = _save_problem_to(tmp_path, definition)
+    out = tmp_path / "imported"
+    import_refl1d(str(src), str(out), state_names=["D2O", "H2O"])
+    model = json.loads((out / "final_state.json").read_text())["state"]["current_model"]
+    _rebuilt, by_state_after, _ = build_states_problem(model)
+
+    for state in ("D2O", "H2O"):
+        before = np.asarray(by_state_before[state][0].probe.dQ, dtype=float)
+        after = np.asarray(by_state_after[state][0].probe.dQ, dtype=float)
+        assert after == pytest.approx(before, rel=1e-9), (
+            f"{state}: resolution changed on round-trip by a factor "
+            f"{float(after[0] / before[0]):.4f}"
+        )
+
+
+def test_round_trip_chi2_comparison_is_not_vacuous(tmp_path, two_files):
+    """Guard the guard: the chi-squared round-trip assertion above is only
+    meaningful if the problem is actually evaluable. It passed for a long time
+    with `inf == inf`, because a layer whose declared roughness sat below the
+    default 5 A interface floor was built outside its own bounds."""
+    from aure.nodes.model_builder import build_states_problem
+
+    problem, _by_state, _ = build_states_problem(_two_state_definition(two_files))
+    assert not problem._nllf_components()[3], "problem is infeasible at its start"
+    assert np.isfinite(problem.chisq())

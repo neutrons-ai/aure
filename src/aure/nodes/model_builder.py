@@ -232,6 +232,58 @@ def _outer_roughness_max(layers_info: list) -> float:
     return _OUTER_ROUGHNESS_MAX_DEFAULT
 
 
+#: Lower bound applied to a layer interface when the model declares none.
+#: Never allowed to exceed the layer's own declared roughness — see
+#: :func:`_ranged`.
+_ROUGHNESS_MIN_DEFAULT = 5.0
+
+
+def _ranged(param, value, lo, hi, *, label: str, declared_lo: bool = True) -> None:
+    """Set a parameter's value and range, keeping the value inside the range.
+
+    A parameter built outside its own bounds makes the whole problem
+    infeasible: bumps short-circuits, the model is never evaluated, and the fit
+    reports `inf` before it starts. Nothing in the model JSON looks wrong, so
+    the cause is invisible from the outside.
+
+    Two ways that happens, handled differently because the intent differs:
+
+    * A **built-in default** conflicts with a value the model explicitly
+      declared — a layer given ``roughness: 3.0`` against the 5 Å interface
+      floor. The declared value is the statement of intent, so the default
+      yields to it silently; a default that overrides what the user wrote is
+      not a default.
+    * A **declared bound** excludes the declared value. That is the model
+      contradicting itself, so the value is clamped into the range and the
+      contradiction is logged rather than passed to the optimizer.
+    """
+    if lo > hi:
+        logger.warning("[BUILDER] %s: min %g > max %g — swapping", label, lo, hi)
+        lo, hi = hi, lo
+    if value < lo:
+        if declared_lo:
+            logger.warning(
+                "[BUILDER] %s: starting value %g is below its declared minimum "
+                "%g — clamped to the bound",
+                label,
+                value,
+                lo,
+            )
+            value = lo
+        else:
+            lo = value  # a default must not contradict a declared value
+    elif value > hi:
+        logger.warning(
+            "[BUILDER] %s: starting value %g is above its maximum %g — clamped",
+            label,
+            value,
+            hi,
+        )
+        value = hi
+    param.value = value
+    param.range(lo, hi)
+
+
 def _build_sample(definition: dict):
     """Build a refl1d sample stack with parameter ranges from a ModelDefinition.
 
@@ -285,10 +337,22 @@ def _build_sample(definition: dict):
         and ambient_info.get("sld", 0) != 0
     ):
         amb_sld = ambient_info["sld"]
+        # TODO(bug): the multiplicative defaults invert for a NEGATIVE ambient
+        # SLD — H2O (-0.56) yields min=-0.448 > max=-0.672. Fixing the defaults
+        # is a behaviour change for every run with a negative ambient (H2O is
+        # one of the two canonical contrast-variation media), so it is left for
+        # its own change; `_ranged` swaps the bounds so the fit is at least not
+        # built backwards.
         amb_min = ambient_info.get("sld_min", max(amb_sld * 0.8, -1.0))
         amb_max = ambient_info.get("sld_max", amb_sld * 1.2)
         amb_idx = 0 if back_reflection else len(layers_info) + 1
-        sample[amb_idx].material.rho.range(amb_min, amb_max)
+        _ranged(
+            sample[amb_idx].material.rho,
+            amb_sld,
+            amb_min,
+            amb_max,
+            label=f"{ambient_info.get('name', 'ambient')} rho",
+        )
 
     for i, layer in enumerate(layers_info):
         if back_reflection:
@@ -298,11 +362,23 @@ def _build_sample(definition: dict):
 
         t_min = layer.get("thickness_min", layer["thickness"] * 0.5)
         t_max = layer.get("thickness_max", layer["thickness"] * 2.0)
-        sample[idx].thickness.range(t_min, t_max)
+        _ranged(
+            sample[idx].thickness,
+            layer["thickness"],
+            t_min,
+            t_max,
+            label=f"{layer['name']} thickness",
+        )
 
         sld_min = layer.get("sld_min", layer["sld"] - 2.5)
         sld_max = layer.get("sld_max", layer["sld"] + 2.5)
-        sample[idx].material.rho.range(sld_min, sld_max)
+        _ranged(
+            sample[idx].material.rho,
+            layer["sld"],
+            sld_min,
+            sld_max,
+            label=f"{layer['name']} rho",
+        )
 
         tie = layer.get("roughness_tie")
         if tie:
@@ -319,9 +395,17 @@ def _build_sample(definition: dict):
             frac.range(f_min, f_max)
             sample[idx].interface = frac * sample[idx].thickness
         else:
-            r_min = layer.get("roughness_min", 5.0)
+            declared_r_min = "roughness_min" in layer
+            r_min = layer.get("roughness_min", _ROUGHNESS_MIN_DEFAULT)
             r_max = layer.get("roughness_max", 30.0)
-            sample[idx].interface.range(r_min, r_max)
+            _ranged(
+                sample[idx].interface,
+                layer["roughness"],
+                r_min,
+                r_max,
+                label=f"{layer['name']} interface",
+                declared_lo=declared_r_min,
+            )
 
     if back_reflection:
         sample[0].interface.range(0, _outer_roughness_max(layers_info))
@@ -957,6 +1041,12 @@ def build_multi_problem(definition: dict, data_files: list[dict]):
 _DEFAULT_TIED_LAYER_ATTRS = ("thickness", "material.rho", "interface")
 _DEFAULT_TIED_SUBSTRATE_ATTRS = ("interface",)
 
+#: Every attribute a tie spec may name, after canonicalization. Anything else
+#: would reach refl1d as a bare ``getattr`` on a Slab.
+_TIEABLE_ATTRS = frozenset(_DEFAULT_TIED_LAYER_ATTRS) | frozenset(
+    _DEFAULT_TIED_SUBSTRATE_ATTRS
+)
+
 # refl1d's auto-generated parameter names use these short attr labels.
 _ATTR_DISPLAY = {
     "thickness": "thickness",
@@ -1121,11 +1211,35 @@ def _resolve_tied_set(definition: dict) -> list[tuple[str, str]]:
         default.append((sub_name, attr))
 
     def _split(spec: str) -> tuple[str, str]:
+        """Split ``"<layer>.<attr>"``, canonicalizing and checking the attribute.
+
+        The attribute is canonicalized with the same rule the reparametrization
+        expressions use, so ``Cu.rho`` / ``Cu.sld`` / ``Cu.material.rho`` all name
+        one parameter. Two schemas that can sit side by side in the same file
+        must not spell the same quantity differently: with
+        ``derived_parameters`` writing ``SEI.rho`` a few lines above, a tie spec
+        of ``Cu.rho`` is the natural thing to write, and it used to pass the
+        layer-name check and then reach refl1d as ``getattr(slab, "rho")`` —
+        `'Slab' object has no attribute 'rho'`, thrown from inside the builder
+        long after the mistake.
+
+        An attribute that is not tie-able at all is rejected here rather than
+        deep in the build, so the modeling node's fallback (carry the previous
+        tie spec) can catch it instead of the run ending.
+        """
+        from .expressions import canonical_name
+
         if "." not in spec:
             raise ValueError(
                 f"Parameter spec {spec!r} must be of the form '<layer>.<attr>'"
             )
-        layer_name, attr = spec.split(".", 1)
+        layer_name, attr = canonical_name(spec).split(".", 1)
+        if attr not in _TIEABLE_ATTRS:
+            raise ValueError(
+                f"Parameter spec {spec!r} names an attribute that cannot be tied; "
+                f"expected one of {sorted(_TIEABLE_ATTRS)} "
+                f"(`rho`/`sld` are accepted as synonyms for `material.rho`)"
+            )
         return layer_name, attr
 
     valid_layers = _valid_layer_names(definition)
@@ -1468,10 +1582,17 @@ def build_states_problem(definition: dict):
                 targets.append((layer["name"], attr))
         for attr in _DEFAULT_TIED_SUBSTRATE_ATTRS:
             targets.append((sub_name, attr))
-        # Ambient SLD: always untied by default but rename for uniqueness.
+        # Ambient SLD and its interface: always untied by default, so both need
+        # a state prefix. The interface is easy to forget because it is a fitted
+        # parameter only in BACK REFLECTION — there the ambient is sample[0] and
+        # carries the outer interface — but when it is one, leaving it unnamed
+        # gives every state a parameter called "<ambient> interface". Same name,
+        # different objects: they collide in the fitted-parameter dict and in
+        # every other place keyed by name.
         amb_name = (eff.get("ambient") or {}).get("name")
         if amb_name:
             targets.append((amb_name, "material.rho"))
+            targets.append((amb_name, "interface"))
 
         freed = untied_by_derivation.get(state_idx, set())
         derived_slots = (

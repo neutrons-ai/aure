@@ -545,3 +545,52 @@ def test_the_skill_is_installed_and_loadable():
     assert "functional-constraints" in registry.skill_names
     body = load_skill_context(["functional-constraints"], registry)
     assert "derived_parameters" in body and "contrast" in body.lower()
+
+
+# ----------------------------------------------------------------------
+# Tie specs and reparametrization expressions must spell an SLD the same way
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("spelling", ["Cu.rho", "Cu.sld", "Cu.material.rho"])
+def test_tie_spec_accepts_every_sld_spelling(data_file, spelling):
+    """`derived_parameters` writes `SEI.rho`; a tie spec a few lines away used
+    to require `Cu.material.rho` and passed anything else through to
+    `getattr(slab, "rho")` — 'Slab' object has no attribute 'rho', raised from
+    inside the builder long after the mistake was made."""
+    from aure.nodes.model_builder import _resolve_tied_set
+
+    defn = _two_state(data_file, [])
+    defn["shared_parameters"] = [spelling.replace("Cu", "film")]
+    assert _resolve_tied_set(defn) == [("film", "material.rho")]
+
+
+def test_tie_spec_with_the_short_sld_spelling_builds(data_file):
+    defn = _two_state(data_file, [])
+    defn["shared_parameters"] = ["film.thickness", "film.rho", "film.interface"]
+    problem, _exps, _ = build_states_problem(defn)  # must not raise
+    names = {str(p.name) for p in problem._parameters}
+    assert "film rho" in names  # tied -> one unprefixed parameter
+    assert not any(n.endswith("film rho") and n != "film rho" for n in names)
+
+
+def test_untieable_attribute_is_rejected_before_it_reaches_refl1d(data_file):
+    """Rejecting here rather than in the builder is what lets the modeling
+    node fall back to the previous tie spec instead of ending the run."""
+    from aure.nodes.model_builder import _resolve_tied_set
+
+    defn = _two_state(data_file, [])
+    defn["shared_parameters"] = ["film.density"]
+    with pytest.raises(ValueError, match="cannot be tied"):
+        _resolve_tied_set(defn)
+
+
+def test_reparametrized_layer_survives_a_tie_spec_in_the_short_spelling(data_file):
+    """The reported failure: a refinement emitted `SiO2.rho`-style ties beside
+    a `derived_parameters` block and the fit died on iteration 1."""
+    defn = _two_state(data_file, _SOLVATION)
+    defn["shared_parameters"] = ["film.thickness", "film.rho", "film.interface"]
+    problem, _exps, _ = build_states_problem(defn)
+    names = {str(p.name) for p in problem._parameters}
+    assert {"phi", "rho_dry"} <= names
+    assert "film rho" not in names  # derived, so the tie does not apply

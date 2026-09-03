@@ -22,6 +22,11 @@ class LayerInfo(TypedDict):
     thickness_min: Optional[float]
     thickness_max: Optional[float]
     roughness: float
+    # Lower bound on the interface. Omitted, a 5 Å floor applies — but only
+    # where it does not contradict `roughness` itself, since a default that
+    # overrides a declared value is not a default. Set it explicitly (``0``
+    # works) for an interface known to be chemically sharp.
+    roughness_min: Optional[float]
     roughness_max: Optional[float]
     # Optional: tie this layer's interface roughness to its own thickness as
     # sigma = fraction * thickness, fitting `fraction` instead of `roughness`.
