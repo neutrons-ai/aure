@@ -145,6 +145,16 @@ states:
 # range on the axis the knowledge is actually about, and removes the ridge the
 # optimizer would otherwise have to crawl along.
 #
+# OFF BY DEFAULT. A reparametrized model asks more of the LLM than a plain
+# layer stack (derived attributes are not fit parameters, and the layers they
+# reference must not be refined away), so the feature — config key, prompt rule
+# and skill — stays out of the way until asked for. Enable with
+# `allow_derived_parameters: true` here, or ALLOW_DERIVED_PARAMETERS=1 in the
+# environment; the config key wins. Declaring the block without enabling it is
+# a hard error rather than a silent skip.
+#
+# allow_derived_parameters: true
+#
 # Each entry declares one new FREE parameter and derives raw ones from it via
 # `assign`. Write the inverse yourself — nothing here does algebra. A raw
 # parameter named in `assign` stops being free (so a one-for-one swap costs no

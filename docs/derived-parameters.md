@@ -6,11 +6,12 @@ run. If you are launching AuRE with a data file and a sentence of English and
 you want to say *"the surface excess is about 1.2 mg/m²"* or *"the film is 30%
 polymer by volume"*, this is where that goes.
 
-> **TL;DR** — Add a top-level `derived_parameters:` block to a setup YAML and
-> pass it with `aure analyze -c setup.yaml`. Each entry makes one **combination**
-> a free fit parameter and derives a raw parameter from it. There is no CLI flag
-> and no constraints-only side-file: the block lives in a setup YAML, which
-> means your data file has to move into that file's `states:` block too.
+> **TL;DR** — Set `allow_derived_parameters: true` and add a top-level
+> `derived_parameters:` block to a setup YAML, then pass it with
+> `aure analyze -c setup.yaml`. Each entry makes one **combination** a free fit
+> parameter and derives a raw parameter from it. There is no CLI flag and no
+> constraints-only side-file: the block lives in a setup YAML, which means your
+> data file has to move into that file's `states:` block too.
 
 ---
 
@@ -34,7 +35,47 @@ Reparametrizing fixes both at once. Fit the excess; derive the SLD from it. The
 ridge is gone from the sampling geometry, and an ordinary `min`/`max` range on
 the excess means exactly what you wrote.
 
-## 2. The shape of a declaration
+## 2. Turning it on
+
+**Reparametrization is off by default.** It asks more of the model driving the
+run than a plain layer stack does — derived layer attributes are not fit
+parameters, their numbers are computed rather than fitted, and the layers they
+reference must not be refined away. A model that does not hold all of that in
+mind will "correct" a derived SLD or refine the layer away, and the run
+degrades in a way that is hard to read from the outside. So the whole feature —
+the config key, the refinement prompt rule, the `functional-constraints` skill
+— stays out of the way until it is asked for.
+
+Enable it per run in the setup file:
+
+```yaml
+allow_derived_parameters: true
+```
+
+or in the environment, for a whole session:
+
+```console
+$ export ALLOW_DERIVED_PARAMETERS=1
+```
+
+The config key wins when both are set. Declaring `derived_parameters` without
+enabling the feature is a **hard error**, not a silent skip — ignoring the
+block would fit a model measurably different from the one described, with
+nothing in the report to say why:
+
+```console
+$ aure analyze -c sei.yaml
+  Setup error: sei.yaml: derived_parameters (Gamma_SEI) are declared, but
+  reparametrization is off by default because it asks more of the model than a
+  plain layer stack does. Enable it with `allow_derived_parameters: true` in
+  this file, or ALLOW_DERIVED_PARAMETERS=1 in the environment.
+```
+
+With the flag off, nothing about this feature reaches any prompt: the
+refinement rule is rendered only for a model that actually carries a block, and
+the skill is stripped from the active set even if the selector picks it.
+
+## 3. The shape of a declaration
 
 ```yaml
 derived_parameters:
@@ -76,7 +117,7 @@ are run through a whitelisted AST walker
 ([`nodes/expressions.py`](../src/aure/nodes/expressions.py)), never `eval`,
 because they can arrive from a config file you did not write.
 
-## 3. How you actually launch it
+## 4. How you actually launch it
 
 **There is no `--derived-parameter` flag.** The block lives in a setup YAML, so
 the question "how does someone running `aure analyze data.txt "..." -h "..."`
@@ -95,6 +136,8 @@ So the smallest working version of the "one dataset + a sentence" workflow is:
 
 ```yaml
 # sei.yaml
+allow_derived_parameters: true
+
 sample_description: |
   Lithium metal on copper, measured in deuterated THF electrolyte after
   cycling. An SEI layer is present on the lithium.
@@ -128,7 +171,7 @@ $ aure analyze -c sei.yaml -h "the SEI is thinner than the QCM-D excess implies"
 `--extra-data` is refused when the setup declares `states:` — put every file in
 the states block.
 
-## 4. The layer has to exist first
+## 5. The layer has to exist first
 
 `assign` names layers of the **baseline model**, which for a text-driven run is
 whatever the intake LLM parsed out of `sample_description`. Two consequences,
@@ -155,10 +198,22 @@ excess, the layer must be part of the model you start from, not one the
 refinement loop might add later. This is a real limitation, not a subtlety of
 phrasing: today you cannot say "*if* an SEI is added, constrain it this way".
 
-Likewise, a refinement that removes a referenced layer will fail the next build
-with an error naming the parameters that do exist.
+A refinement that removes a referenced layer is handled differently, because
+there the mistake is the workflow's rather than yours: the affected declaration
+is **dropped** and the run continues, exactly as a cross-state tie whose layer
+disappeared is pruned. The transcript records it —
 
-## 5. Multi-state: the case this was built for
+```
+Dropped reparametrization 'Gamma_SEI': assignment target 'SEI.rho' names no
+layer — the structural change removed what it was written against
+```
+
+— and an auxiliary parameter left with nothing referencing it goes with it. The
+refinement prompt tells the model not to remove such a layer in the first place
+(rule 14, rendered only for models that have a block), so this is the backstop
+rather than the expected path. You lose the constraint, not the run.
+
+## 6. Multi-state: the case this was built for
 
 In a co-refinement, a declaration is **tied across states by default** — one
 free parameter for the whole problem, with `assign` re-evaluated in each state's
@@ -215,7 +270,7 @@ ends, so no `shared_parameters` / `unshared_parameters` edit is needed. Use
 > the volume-fraction form above. Getting this backwards produces a model that
 > fits one contrast and fights the other.
 
-## 6. What it changes about the run
+## 7. What it changes about the run
 
 - **Free-parameter count / BIC.** A one-for-one swap (excess for SLD) is
   BIC-neutral; solvation (two free, one derived) costs one parameter. Handled
@@ -241,7 +296,7 @@ ends, so no `shared_parameters` / `unshared_parameters` edit is needed. Use
   loading a YAML there and exporting it again **drops the block**. Edit these
   files by hand, or keep the authoritative copy outside the UI.
 
-## 7. Where the pieces live
+## 8. Where the pieces live
 
 | Piece | Location |
 |-------|----------|

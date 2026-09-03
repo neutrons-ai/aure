@@ -256,6 +256,41 @@ _NO_STATES = (
 )
 
 
+_DERIVED_PARAMETERS_RULE = """\
+14. REPARAMETRIZED PARAMETERS (`derived_parameters`). If the model carries a
+    top-level `derived_parameters` block, the model has been REPARAMETRIZED:
+    each entry makes a combination of parameters free (a surface excess, a
+    volume fraction) and DERIVES a raw one from it. Consequences:
+    - A layer attribute named in an entry's `assign` is NOT a fit parameter.
+      Its number in `layers` is computed from the expression, not fitted. Do
+      not "correct" it, do not widen its bounds to make it move, and do not
+      read it being stuck as a fit problem — it is supposed to follow.
+    - DO NOT remove or rename any layer an entry references. That is the one
+      structural edit forbidden here. If the evidence really points at removing
+      such a layer, do something else this iteration and say why in `issues`.
+    - The block is the scientist's declaration, carried over verbatim
+      regardless of what you emit. Do not add, edit or delete entries — an
+      added one is discarded, so emitting it only wastes the iteration. If you
+      believe a reparametrization would help (see the `functional-constraints`
+      skill for when it would), SAY SO in your reasoning so it reaches the
+      person running the analysis; do not try to install it yourself.
+"""
+
+
+def _format_derived_parameters_rule(model: dict | None) -> str:
+    """Render the reparametrization rule only for a model that has one.
+
+    Reparametrization is off by default, so for almost every run this would be
+    instructions about a feature the model will never meet — prompt weight that
+    buys nothing and gives a smaller model one more thing to misapply. Keyed
+    off the model rather than the flag: what matters to the refiner is whether
+    the JSON in front of it actually contains the block.
+    """
+    if not isinstance(model, dict) or not model.get("derived_parameters"):
+        return ""
+    return _DERIVED_PARAMETERS_RULE
+
+
 def _format_states_section(state_names: list | None) -> str:
     """Render the run's measurement states for the hypothesis prompts.
 
@@ -1371,6 +1406,7 @@ Rules:
     simpler (lower-BIC) one. For ordinary ADDITIVE hypotheses (a genuinely
     missing layer), keep editing the Current Model as usual.
 
+{derived_parameters_rule}
 {user_constraints}
 
 IMPORTANT: If user feedback is provided below, it takes absolute priority over
@@ -1500,6 +1536,7 @@ def format_model_refinement_prompt_json(
             baseline_model_section=_format_baseline_model_section(
                 baseline_model, current_model
             ),
+            derived_parameters_rule=_format_derived_parameters_rule(current_model),
             next_action=next_action or "parameter_tweak",
             proposed_hypothesis_id=(
                 proposed_hypothesis_id if proposed_hypothesis_id is not None else "null"

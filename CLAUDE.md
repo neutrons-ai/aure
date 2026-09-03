@@ -59,7 +59,7 @@ The historical design generated Python refl1d scripts; the current design stores
 
 ### Reparametrization: `derived_parameters` ([nodes/expressions.py](src/aure/nodes/expressions.py), `model_builder.apply_derived_parameters`)
 
-User-facing guide: [docs/derived-parameters.md](docs/derived-parameters.md).
+User-facing guide: [docs/derived-parameters.md](docs/derived-parameters.md). **Off by default** — gated by `allow_derived_parameters` / `ALLOW_DERIVED_PARAMETERS` (`config.derived_parameters_enabled`), because a reparametrized model asks more of the LLM than a plain stack. Declaring the block without the gate is a hard error; with the gate off the refinement rule and the `functional-constraints` skill never reach a prompt.
 
 A `ModelDefinition` may declare `derived_parameters`: each entry adds one **free** parameter and derives raw ones from it through `assign` (`"<layer>.<attr>" -> expression`), so the fit explores a *combination* — a surface excess `(ρ−ρ_ambient)·t`, a volume fraction — instead of coordinates the data does not resolve. `keep_physical` entries become bumps `Constraint` objects guarding the derived value, which has no bounds of its own. Expressions are evaluated by a whitelisted-AST evaluator (`expressions.evaluate`), **never** `eval` — these strings can come from a config file or an LLM. Nothing does algebra: the inverse is written out in `assign`.
 
@@ -70,6 +70,7 @@ Consequences that are easy to get wrong:
 - **Multi-state**: a declaration is *tied* by default — one parameter object across states, `assign` re-evaluated per state — which is what solvent contrast actually needs (the invariant is composition, not SLD, and it is not a layer attribute, so `shared_parameters` cannot express it). `tied: false` gives one copy per state; `states: [...]` scopes it. A slot owned by a reparametrization is excluded from tie aliasing **at both ends**, and the renaming pass treats it as untied so two states falling back to a free parameter cannot collide on one name.
 - `save_problem_json` **refuses** a model with `derived_parameters`: bumps serialization does not round-trip expression parameters (the same limitation `roughness_tie` re-applies around), so the export would silently be a different model.
 - The refine LLM does not know about the block, so `modeling` carries it over explicitly (config wins) — otherwise the first refinement would drop it and quietly revert to raw coordinates.
+- A structural edit that removes a referenced layer **prunes** the declaration (`prune_derived_parameters`, mirroring `prune_tie_specs`) instead of failing the build — with the drop recorded in the transcript. Auxiliary declarations left unreferenced are pruned with it.
 
 Declared in the setup/user config as a top-level `derived_parameters:` list; shape-checked in `config._parse_derived_parameters`, resolved against the built model by `model_builder.validate_derived_parameters`. Fully optional — absent means today's behaviour exactly.
 

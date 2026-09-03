@@ -211,6 +211,7 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
         # Tie specs dropped automatically because their layer is gone; those
         # need no explanation from the model (see below).
         pruned_specs: list[str] = []
+        pruned_derived: list[str] = []
 
         # Load skill context
         registry = SkillRegistry()
@@ -388,10 +389,27 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
 
                 dropped = prune_tie_specs(new_model)
                 if dropped:
+                    pruned_specs = list(dropped)
                     logger.info(
                         "[MODELING] Dropped tie spec(s) for removed layer(s): %s",
                         dropped,
                     )
+
+            # Same reconciliation for reparametrizations: a structural edit can
+            # remove the layer a derived parameter is written against. The
+            # refine LLM is told not to do that (rule 14) but may anyway.
+            # Dropping the declaration costs one modelling choice; letting the
+            # build raise would end the run and forfeit every remaining
+            # refinement iteration over it.
+            from .model_builder import prune_derived_parameters
+
+            pruned_derived = prune_derived_parameters(new_model)
+            if pruned_derived:
+                logger.warning(
+                    "[MODELING] Dropped derived parameter(s) invalidated by the "
+                    "structural change: %s",
+                    "; ".join(pruned_derived),
+                )
             updates["llm_calls"].append(
                 LLMCallRecord(
                     node="modeling",
@@ -459,6 +477,11 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
             changes.append(
                 "Dropped tie spec(s) for removed layer(s): "
                 + ", ".join(sorted(pruned_specs))
+            )
+        for note in pruned_derived:
+            changes.append(
+                f"Dropped reparametrization {note} — the structural change "
+                f"removed what it was written against"
             )
         # A tie the pruner removed is already accounted for; anything else that
         # moved is a judgement the model made and owes a reason for.

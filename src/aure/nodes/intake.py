@@ -433,6 +433,27 @@ def _fix_llm_json(text: str) -> str:
 _HYPOTHESIS_TEXT_FIELDS = ("title", "rationale", "change", "skill_source")
 
 
+_FUNCTIONAL_CONSTRAINTS_SKILL = "functional-constraints"
+
+
+def _gate_functional_constraints_skill(
+    active_skills: list[str], user_config: Dict[str, Any] | None
+) -> list[str]:
+    """Add or remove ``functional-constraints`` according to the opt-in gate."""
+    from ..config import derived_parameters_enabled
+
+    cfg = user_config or {}
+    enabled = bool(cfg.get("derived_parameters")) or derived_parameters_enabled(
+        cfg.get("allow_derived_parameters")
+    )
+    selected = set(active_skills)
+    if enabled:
+        selected.add(_FUNCTIONAL_CONSTRAINTS_SKILL)
+    else:
+        selected.discard(_FUNCTIONAL_CONSTRAINTS_SKILL)
+    return sorted(selected)
+
+
 def generate_structural_hypotheses_with_llm(
     sample_description: str,
     parsed_sample: Dict[str, Any],
@@ -877,6 +898,15 @@ def intake_node(state: ReflectivityState) -> Dict[str, Any]:
                 active_skills = sorted(
                     set(active_skills) | {"multi-state-corefinement"}
                 )
+            # Reparametrization is opt-in, so its skill follows the gate rather
+            # than the LLM's judgement — included when the feature is on (the
+            # model then needs to know how a derived parameter behaves and how
+            # to recommend one), and stripped when it is off even if the
+            # selector picked it out of the catalog, so a run that cannot use
+            # the feature is never told about it.
+            active_skills = _gate_functional_constraints_skill(
+                active_skills, state.get("user_config")
+            )
             updates["active_skills"] = active_skills
             updates["llm_calls"].append(
                 LLMCallRecord(

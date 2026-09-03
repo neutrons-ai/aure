@@ -32,7 +32,8 @@ class TestSkillRegistry:
         assert "structural-hypothesis-ranking" in names
         assert "multi-state-corefinement" in names
         assert "thin-layer-degeneracy" in names
-        assert len(names) == 8
+        assert "functional-constraints" in names
+        assert len(names) == 9
 
     def test_metadata_parsed_correctly(self):
         registry = SkillRegistry()
@@ -45,7 +46,7 @@ class TestSkillRegistry:
     def test_all_metadata_returns_list(self):
         registry = SkillRegistry()
         all_meta = registry.all_metadata()
-        assert len(all_meta) == 8
+        assert len(all_meta) == 9
         assert all(isinstance(m, SkillMetadata) for m in all_meta)
 
     def test_load_body(self):

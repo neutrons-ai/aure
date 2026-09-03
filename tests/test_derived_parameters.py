@@ -411,3 +411,137 @@ def test_config_layer_shape_checks():
     )
     assert parsed[0]["keep_physical"] == ["film.rho > 0"]  # scalar accepted
     assert parsed[0]["source"] == "QCM-D"
+
+
+# ----------------------------------------------------------------------
+# A structural edit that invalidates a declaration prunes it, not the run
+# ----------------------------------------------------------------------
+
+
+def test_build_prunes_a_declaration_whose_layer_was_removed(data_file):
+    """A refinement can remove the layer a reparametrization is written
+    against. Raising would end the run and forfeit every remaining iteration
+    over an edit the model was never told was forbidden."""
+    defn = _single_state(data_file, derived_parameters=_EXCESS)
+    defn["layers"] = [
+        {"name": "Ti", "sld": -1.9, "thickness": 50.0, "roughness": 5.0,
+         "roughness_max": 20.0}
+    ]
+    problem = build_problem(defn)  # must not raise
+    names = {str(p.name) for p in problem._parameters}
+    assert "G" not in names
+    assert "Ti rho" in names
+
+
+def test_build_does_not_mutate_the_callers_definition(data_file):
+    defn = _single_state(data_file, derived_parameters=_EXCESS)
+    defn["layers"] = []
+    build_problem(defn)
+    assert len(defn["derived_parameters"]) == 1
+
+
+def test_pruning_cascades_to_orphaned_auxiliaries(data_file):
+    from aure.nodes.model_builder import surviving_derived_parameters
+
+    defn = _two_state(data_file, _SOLVATION)
+    defn["layers"] = []  # the film is gone; phi has nothing to assign
+    kept, notes = surviving_derived_parameters(defn)
+    assert kept == []
+    assert any("names no layer" in n for n in notes)
+    assert any("unreferenced" in n for n in notes)
+
+
+def test_prune_reports_what_it_dropped(data_file):
+    from aure.nodes.model_builder import prune_derived_parameters
+
+    defn = _single_state(data_file, derived_parameters=_EXCESS)
+    defn["layers"] = []
+    notes = prune_derived_parameters(defn)
+    assert notes and "'G'" in notes[0]
+    assert defn["derived_parameters"] == []  # pruned in place, like tie specs
+
+
+def test_a_still_valid_declaration_is_untouched_by_pruning(data_file):
+    from aure.nodes.model_builder import prune_derived_parameters
+
+    defn = _single_state(data_file, derived_parameters=_EXCESS)
+    assert prune_derived_parameters(defn) == []
+    assert len(defn["derived_parameters"]) == 1
+
+
+# ----------------------------------------------------------------------
+# The opt-in gate
+# ----------------------------------------------------------------------
+
+
+def test_feature_is_off_by_default(monkeypatch):
+    from aure.config import derived_parameters_enabled
+
+    monkeypatch.delenv("ALLOW_DERIVED_PARAMETERS", raising=False)
+    assert derived_parameters_enabled() is False
+    assert derived_parameters_enabled(None) is False
+
+
+@pytest.mark.parametrize("value", ["1", "true", "yes", "ON"])
+def test_env_var_enables_it(monkeypatch, value):
+    from aure.config import derived_parameters_enabled
+
+    monkeypatch.setenv("ALLOW_DERIVED_PARAMETERS", value)
+    assert derived_parameters_enabled() is True
+
+
+def test_explicit_config_key_wins_over_the_env(monkeypatch):
+    from aure.config import derived_parameters_enabled
+
+    monkeypatch.setenv("ALLOW_DERIVED_PARAMETERS", "1")
+    assert derived_parameters_enabled(False) is False
+
+
+def test_declaring_without_the_gate_is_refused_not_ignored():
+    """Ignoring the block would fit a model measurably different from the one
+    described, with nothing in the report to say why."""
+    from aure.config import check_derived_parameters_allowed
+
+    cfg = {"derived_parameters": [{"name": "phi"}], "allow_derived_parameters": False}
+    with pytest.raises(ConfigError, match="allow_derived_parameters"):
+        check_derived_parameters_allowed(cfg, source="setup.yaml")
+    cfg["allow_derived_parameters"] = True
+    check_derived_parameters_allowed(cfg, source="setup.yaml")  # must not raise
+
+
+def test_refinement_prompt_carries_the_rule_only_when_the_model_has_a_block():
+    from aure.nodes.prompts import format_model_refinement_prompt_json
+
+    base = dict(sample_description="x", fit_result={"chi_squared": 1.0}, features={})
+    model = {"substrate": {"sld": 1}, "layers": [], "ambient": {"sld": 0}}
+    plain = format_model_refinement_prompt_json(current_model=model, **base)
+    reparam = format_model_refinement_prompt_json(
+        current_model={**model, "derived_parameters": [{"name": "G"}]}, **base
+    )
+    assert "REPARAMETRIZED PARAMETERS" not in plain
+    assert "REPARAMETRIZED PARAMETERS" in reparam
+
+
+def test_skill_activation_follows_the_gate():
+    from aure.nodes.intake import _gate_functional_constraints_skill as gate
+
+    assert gate(["neutron-reflectometry"], {}) == ["neutron-reflectometry"]
+    # stripped even if the selector picked it out of the catalog
+    assert gate(["functional-constraints", "neutron-reflectometry"], {}) == [
+        "neutron-reflectometry"
+    ]
+    assert "functional-constraints" in gate(
+        ["neutron-reflectometry"], {"derived_parameters": [{"name": "G"}]}
+    )
+    assert "functional-constraints" in gate(
+        ["neutron-reflectometry"], {"allow_derived_parameters": True}
+    )
+
+
+def test_the_skill_is_installed_and_loadable():
+    from aure.skills import SkillRegistry, load_skill_context
+
+    registry = SkillRegistry()
+    assert "functional-constraints" in registry.skill_names
+    body = load_skill_context(["functional-constraints"], registry)
+    assert "derived_parameters" in body and "contrast" in body.lower()

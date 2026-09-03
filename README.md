@@ -30,7 +30,8 @@ sample description to a fitted
   directly. In a co-refinement the combination is shared across states while
   each state's SLD follows from its own solvent — the relationship contrast
   variation actually assumes, which a tie between layer attributes cannot
-  state. See [docs/derived-parameters.md](docs/derived-parameters.md).
+  state. Off by default (`allow_derived_parameters:`) — see
+  [docs/derived-parameters.md](docs/derived-parameters.md).
 - **Deterministic stop when the fit is good enough** — a finite χ² inside the
   run's acceptance window (`chi2_min:` ≤ χ² ≤ `chi2_max:`) ends the refinement
   loop in code rather than at the evaluator LLM's discretion, and the structural

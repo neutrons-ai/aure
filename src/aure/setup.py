@@ -32,6 +32,8 @@ from .config import (
     _as_str_list,
     _parse_derived_parameters,
     _parse_states,
+    check_derived_parameters_allowed,
+    derived_parameters_enabled,
 )
 
 logger = logging.getLogger(__name__)
@@ -65,6 +67,7 @@ class SetupConfig(TypedDict, total=False):
     unshared_parameters: List[str]
     distinct_sample: bool  # co-refined states are distinct physical samples
     derived_parameters: List[dict]  # reparametrization (DerivedParameter-shaped)
+    allow_derived_parameters: bool  # opt-in gate for the above (default False)
 
     # LLM-side rules
     evaluation_criteria: List[str]
@@ -119,6 +122,7 @@ _KNOWN_TOP_LEVEL = {
     "unshared_parameters",
     "distinct_sample",
     "derived_parameters",
+    "allow_derived_parameters",
     "evaluation_criteria",
     "model_constraints",
     "command",
@@ -363,6 +367,10 @@ def _setup_from_dict(
     out["shared_parameters"] = shared
     out["unshared_parameters"] = unshared
     out["derived_parameters"] = _parse_derived_parameters(raw.get("derived_parameters"))
+    out["allow_derived_parameters"] = derived_parameters_enabled(
+        raw.get("allow_derived_parameters")
+    )
+    check_derived_parameters_allowed(out, source=source)
 
     if raw.get("distinct_sample") is not None:
         out["distinct_sample"] = bool(raw["distinct_sample"])
@@ -431,6 +439,7 @@ _DUMP_ORDER: tuple[str, ...] = (
     "unshared_parameters",
     "distinct_sample",
     "derived_parameters",
+    "allow_derived_parameters",
     "evaluation_criteria",
     "model_constraints",
     "states",
@@ -542,6 +551,7 @@ def setup_to_user_config(setup: SetupConfig) -> dict:
         "unshared_parameters",
         "distinct_sample",
         "derived_parameters",
+        "allow_derived_parameters",
         "sample_description",
         "model_name",
     ):

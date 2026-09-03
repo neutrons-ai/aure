@@ -420,6 +420,118 @@ def _derived_assigned_slots(definition: dict, state_name: str) -> set:
     return slots
 
 
+def _unrealizable_reason(
+    definition: dict, spec: dict, declared: set
+) -> str | None:
+    """Why *spec* cannot be built against this structure, or None if it can.
+
+    Name-based, so it works before a sample exists — the same check serves the
+    post-refinement prune and the defensive skip inside the builder.
+
+    A declaration is kept only if EVERY part of it resolves: each assignment
+    target, each name any expression mentions, and each guard. Keeping a
+    declaration whose ``keep_physical`` guard has gone stale would be the worst
+    outcome of the three — the reparametrization would still steer the fit
+    while the check that made it safe had quietly stopped applying.
+    """
+    from .expressions import ExpressionError, referenced_names
+
+    valid = _valid_layer_names(definition) | declared
+    for target in (spec.get("assign") or {}):
+        if str(target).split(".", 1)[0] not in valid:
+            return f"assignment target {target!r} names no layer"
+    texts = list((spec.get("assign") or {}).values())
+    texts += list(spec.get("keep_physical") or [])
+    for text in texts:
+        try:
+            refs = referenced_names(str(text))
+        except ExpressionError as exc:
+            return f"expression {text!r} is invalid ({exc})"
+        for ref in refs:
+            if ref.split(".", 1)[0] not in valid:
+                return f"expression {text!r} references missing {ref!r}"
+    return None
+
+
+def surviving_derived_parameters(definition: dict) -> tuple[list, list[str]]:
+    """Split ``derived_parameters`` into what still applies and what does not.
+
+    Returns ``(kept, notes)``. A declaration is dropped when the structure has
+    moved out from under it — most often because a refinement removed the layer
+    it reparametrizes. That is a structural edit invalidating a modelling
+    choice, exactly like a tie whose layer is gone, and
+    :func:`prune_tie_specs` already establishes the answer: drop it and say so.
+    Raising instead would end the run, discarding the remaining refinement
+    budget over a change the model had no way to know was forbidden.
+
+    Auxiliary declarations (free, no ``assign``, reaching the model only
+    through another entry's expression) are dropped alongside whatever
+    referenced them — otherwise a free parameter the data cannot see would be
+    left wandering its full range and charged to BIC. Applied to a fixed point,
+    since one auxiliary may feed another.
+    """
+    from .expressions import ExpressionError, referenced_names
+
+    specs = [
+        s
+        for s in (definition.get("derived_parameters") or [])
+        if isinstance(s, dict)
+    ]
+    if not specs:
+        return [], []
+
+    notes: list[str] = []
+    declared = {str(s.get("name")) for s in specs if s.get("name")}
+    kept = []
+    for spec in specs:
+        reason = _unrealizable_reason(definition, spec, declared)
+        if reason is None:
+            kept.append(spec)
+        else:
+            notes.append(f"{spec.get('name')!r}: {reason}")
+
+    # Fixed point: an auxiliary left with no referent goes too.
+    while True:
+        referenced: set = set()
+        for spec in kept:
+            for text in list((spec.get("assign") or {}).values()) + list(
+                spec.get("keep_physical") or []
+            ):
+                try:
+                    referenced |= referenced_names(str(text))
+                except ExpressionError:
+                    continue
+        orphans = [
+            spec
+            for spec in kept
+            if not (spec.get("assign") or {})
+            and str(spec.get("name")) not in referenced
+        ]
+        if not orphans:
+            break
+        for spec in orphans:
+            kept.remove(spec)
+            notes.append(
+                f"{spec.get('name')!r}: auxiliary parameter left unreferenced"
+            )
+    return kept, notes
+
+
+def prune_derived_parameters(definition: dict) -> list[str]:
+    """Drop declarations invalidated by a structural edit, in place.
+
+    Returns human-readable notes for the dropped ones (empty when nothing was
+    dropped), for the caller to log and put in the run transcript. The mirror
+    of :func:`prune_tie_specs`, and called from the same place.
+    """
+    if not definition.get("derived_parameters"):
+        return []
+    kept, notes = surviving_derived_parameters(definition)
+    if notes:
+        definition["derived_parameters"] = kept
+    return notes
+
+
 def apply_derived_parameters(
     definition: dict,
     sample,
@@ -453,6 +565,22 @@ def apply_derived_parameters(
     from .expressions import evaluate_constraint
 
     specs = _derived_specs(definition, state_name)
+    if not specs:
+        return []
+    # Defensive: any entry point may hand us a definition whose structure has
+    # moved (a checkpoint replayed after a refinement, a hand-edited model). A
+    # reparametrization that no longer describes this model is dropped, not
+    # fatal — see :func:`surviving_derived_parameters`.
+    realizable, notes = surviving_derived_parameters(
+        {**definition, "derived_parameters": specs}
+    )
+    for note in notes:
+        logger.warning(
+            "[BUILDER] Dropped derived parameter %s%s",
+            note,
+            f" (state {state_name})" if state_name else "",
+        )
+    specs = realizable
     if not specs:
         return []
 
