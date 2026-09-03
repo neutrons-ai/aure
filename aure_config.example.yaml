@@ -123,6 +123,14 @@ states:
 #   - Ti.material.rho
 #   - Ti.interface
 # # unshared_parameters: [CuOx.thickness]
+#
+# # Sample IDENTITY, not physics (default false). Co-refined states are usually
+# # ONE sample under several conditions (one electrode in D2O then H2O), so they
+# # share a downstream sample_id. Set true when the states are genuinely
+# # different samples that merely share a fitting strategy. Orthogonal to the
+# # per-state structure above: one sample can change structure between states,
+# # and distinct samples can share one.
+# distinct_sample: false
 # #
 # # When one state carries its own stack (above), reconsider the ties on the
 # # layers ADJACENT to the difference. `<layer>.interface` is the roughness of

@@ -22,7 +22,7 @@ The longest-form design rationale lives in [docs/approach.md](docs/approach.md) 
 
 - Tests: `pytest tests/` (config in `pyproject.toml` adds `--cov=aure` and an html coverage report). Single test: `pytest tests/test_workflow.py::test_name -v`.
 - Lint/format: ruff is wired via pre-commit (`ruff-check --fix --ignore=E741,E402` then `ruff-format`). Install hooks with `pre-commit install`; run on demand with `pre-commit run --all-files`. Other hooks: yamllint, taplo (TOML), gitleaks.
-- CLI entry point: `aure …` (defined in `[project.scripts]` → `aure.cli:main`). Top-level commands: `analyze`, `batch`, `resume`, `checkpoints`, `inspect-checkpoint`, `evaluate`, `import-refl1d`, `plot-results`, `extract-features`, `lookup-sld`, `list-materials`, `mcp-server`, `serve` / `interactive`, `check-llm`. Full reference is in [README.md](README.md).
+- CLI entry point: `aure …` (defined in `[project.scripts]` → `aure.cli:main`). Top-level commands: `analyze`, `prepare`, `batch`, `resume`, `checkpoints`, `inspect-checkpoint`, `evaluate`, `import-refl1d`, `plot-results`, `extract-features`, `lookup-sld`, `list-materials`, `mcp-server`, `serve` / `interactive`, `check-llm`. Full reference is in [README.md](README.md).
 - Validation harness (separate package): `python -m validation.cli compare|chi2|diagnose` — compares fitted runs against reference models. See [validation/](validation/).
 
 ## Architecture

@@ -55,7 +55,12 @@ sample description to a fitted
   several physical conditions (solvent contrast, anneal step, swelling
   series, applied potential, ...), declare a `states:` block in your
   config and AuRE will tie the structural parameters across states
-  while keeping per-state ambient SLD and intensity independent. See
+  while keeping per-state ambient SLD and intensity independent. A state may
+  also differ in **structure**, not just in parameter values — an oxide present
+  in air and reduced away under potential — by carrying its own `layers:`;
+  states that do not, inherit the shared template. Residual analysis, boundary
+  hits and χ² are reported per state, and a structural hypothesis can be scoped
+  to the states it applies to. See
   [Multi-state co-refinement](#multi-state-co-refinement) below and the
   bundled `multi-state-corefinement` skill for a reproducible end-to-end
   example and configuration guidance.
@@ -137,6 +142,16 @@ or resume a run from any point.
 > how each LLM prompt is assembled, per node, live alongside it:
 > [intake](docs/intake-llm.svg), [modeling](docs/modeling-llm.svg), and
 > [evaluation](docs/evaluation-llm.svg).
+
+### Documentation
+
+| Document | What it covers |
+|----------|----------------|
+| **[docs/approach.md](docs/approach.md)** | The narrative introduction: reflectometry and LLM primers, the workflow node by node, Agent Skills, the ranked-hypothesis refinement loop, co-refinement and reparametrization, and how to read a run's output. Start here. |
+| **[architecture.md](architecture.md)** | The design decisions and the invariants not to break. Read before changing the workflow. |
+| **[docs/finalization.md](docs/finalization.md)** | What happens after the loop stops: how the reported model is selected, the optional uncertainty polish, and the artifacts a run writes. |
+| **[docs/derived-parameters.md](docs/derived-parameters.md)** | Reparametrization — declaring a functional relationship between fit parameters, and what it changes about a run. |
+| **[CLAUDE.md](CLAUDE.md)** | Orientation for coding agents working in this repository. |
 
 ## Installation
 
@@ -263,6 +278,38 @@ Single-Q-segment co-refinement: declare one state with multiple files.
 Multi-state: declare multiple states. The default tied set
 (when neither `shared_parameters` nor `unshared_parameters` is supplied) ties
 thickness, SLD, and interface for every layer plus the substrate interface.
+
+#### When the states differ in structure
+
+Untying a parameter lets a layer take a different *value* per state. It cannot
+express a layer that is **present in some states and absent in others** — a
+native oxide in air that is reduced away under potential, an SEI that forms only
+after cycling, a swollen layer with no dry counterpart. For that, give the
+deviating state its own complete stack; states without a `layers:` key keep
+inheriting the shared one:
+
+```yaml
+states:
+  - name: air                      # inherits the template
+    data_files: [REFL_1001_combined_data_auto.txt]
+  - name: reduced                  # its own stack — the oxide is gone
+    data_files: [REFL_1002_combined_data_auto.txt]
+    layers:
+      - {name: SiO2, sld: 3.47, thickness: 15, roughness: 3}
+      - {name: Cu,   sld: 6.55, thickness: 300, roughness: 8}
+```
+
+A tie naming a layer a state does not have simply does not apply there, so no
+`shared_parameters` / `unshared_parameters` edit is needed. AuRE can also infer
+the difference from the sample description, or propose it mid-run as a
+hypothesis scoped to the affected states.
+
+> **Reparametrization.** When the quantity you actually know is a *combination*
+> — a surface excess, a solvated layer's volume fraction — fit the combination
+> instead, with a `derived_parameters:` block. In a contrast series the
+> combination is shared across states while each state's SLD follows from its own
+> solvent, which no tie between layer attributes can express. Off by default; see
+> [docs/derived-parameters.md](docs/derived-parameters.md).
 
 #### χ² acceptance window
 

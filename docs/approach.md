@@ -66,13 +66,18 @@ solve the structural problem for you.
 ## 2. What AuRE is
 
 AuRE is an *agent* that solves both problems together for a given dataset.
-It takes two inputs from the scientist:
+Its two essential inputs are:
 
 - the reflectivity data file, and
 - a plain-English description of the sample (e.g. *"100 nm polystyrene on
   silicon in air"*, or *"50 nm copper on 5 nm Ti on Si in D2O"*),
 
-and it produces a fitted Refl1D model. Internally, it runs a loop that
+and it produces a fitted Refl1D model. A run may say more than that — a
+hypothesis to test (`-h`), several files or several measured states, which
+parameters are held in common across them, and which combinations of parameters
+to fit instead of the parameters themselves — all through a setup YAML (§7).
+None of it is required, and a run with nothing but a file and a sentence is the
+normal case. Internally, it runs a loop that
 alternates between **deciding what the model should look like** (a task
 historically done by the scientist) and **running the optimizer to fit its
 parameters** (a task done by Refl1D). Between iterations it evaluates the
@@ -153,8 +158,10 @@ flowchart LR
 
 The **intake** node does four jobs:
 
-1. **Load the data file** from disk and validate it (finite $Q$ and $R$,
-   positive errors, sensible ranges).
+1. **Load the data** from disk and validate it (finite $Q$ and $R$, positive
+   errors, sensible ranges). A run may have one file or many, grouped into
+   measurement *states* (§7); intake loads and validates each of them, and
+   rejects an ambiguous grouping rather than guessing at one.
 2. **Parse the sample description** with an LLM call. The response is a
    structured JSON object: substrate, list of layers (each with a starting
    thickness, SLD, roughness, and initial bounds), ambient medium, and any
@@ -239,9 +246,19 @@ The modeling prompt contains:
   `parameter_tweak` or `structural_change` — and, if the latter, a
   `proposed_hypothesis_id` pointing into the hypothesis list).
 
+On the **first** iteration the node also settles the parts of the model that are
+not the layer stack: it attaches the measurement states, resolves which
+parameters are tied across them (the user's configuration wins; otherwise it can
+derive the answer from the description), works out any per-state structural
+differences, and validates a reparametrization if one was declared (§7).
+
 The response is a complete JSON model definition. The node validates it,
 preserves immutable fields (like the data-file path), and writes it back
-into the state. If the LLM output is invalid JSON, the node falls back to
+into the state. Fields the LLM knows nothing about — the states block, the tie
+specification, a reparametrization — are **carried over explicitly** rather than
+taken from the response, because a model that re-emits the whole definition each
+iteration would otherwise drop them and silently revert the run to a simpler
+problem than the one that was asked for. If the LLM output is invalid JSON, the node falls back to
 simply widening all the bounds and trying again — a safety net that
 prevents a malformed response from derailing the run.
 
@@ -279,7 +296,12 @@ numbering is topical, not chronological — `evaluation_node` runs 1 → 2 → 4
 2. **Residual-fringe analysis.** A small Fourier analysis of the
    residuals; if it shows a clear oscillation at a characteristic
    thickness, that thickness is reported to the LLM as a likely "missing
-   layer" hint.
+   layer" hint. In a multi-state co-refinement there is no meaningful
+   *aggregate* residual — the states have separate probes and possibly
+   different structures — so each state is analysed on its own, and the report
+   names which states carry fringes. That asymmetry is the diagnostic: fringes
+   everywhere point at the shared model, fringes in a subset point at that
+   subset (§7.3).
 3. **SLD-profile artifact detection.** A χ²-optimal fit can still produce a
    *physically impossible* SLD profile — most often when a roughness's
    error-function tail reaches across a thin layer and the profile dips below
@@ -463,11 +485,19 @@ The skills currently shipped:
 | `polymer-films` | Samples with polymers, PS, PMMA, etc. | Polymer SLDs, typical roughness, glass-transition effects |
 | `sei-layer-analysis` | Battery / electrolyte samples | Solid-electrolyte interphase layer conventions |
 | `solvent-contrast-matching` | Samples in D₂O, H₂O, deuterated solvents | Solvent SLDs, contrast matching, isotope-confusion traps |
+| `multi-state-corefinement` | More than one state in the run | Which parameters to tie across states and why, the common experimental patterns, and when the states differ in *structure* rather than in values (§7.2–7.3) |
+| `functional-constraints` | Reparametrization enabled for the run | When fitting a combination beats fitting the coordinates, the two canonical forms, and how to behave around a model that already has one (§7.4) |
 
 Skill activation is itself an LLM decision. At the start of a run, the
 model is given the list of available skills and the user's sample
 description, and asked which ones apply. Always-on skills are added
-automatically regardless of the LLM's answer. When the selector LLM is
+automatically regardless of the LLM's answer, and a few activations are
+decided by code rather than judgement: `solvent-contrast-matching` is forced in
+for any liquid ambient (a solvent may be deuterated and the description simply
+not say so), `multi-state-corefinement` whenever the run has more than one
+state, and `functional-constraints` strictly according to the reparametrization
+gate — added when it is on, and removed even if the selector picked it when it
+is off, so a run that cannot use the feature is never told about it. When the selector LLM is
 unavailable or returns an empty list, the always-on skills alone remain.
 
 Skill selection is **not** frozen at intake. When the evaluation node
@@ -565,6 +595,7 @@ copper example above, that list would contain an entry like:
   "change": "insert a 10–30 Å CuO layer (SLD 4.5–5.5) between Cu and D2O, σ 3–15 Å",
   "skill_source": "metal-oxide-interfaces",
   "origin": "skill",
+  "states": [],
   "status": "pending",
   "tried_in_iteration": null,
   "created_in_iteration": null,
@@ -605,6 +636,14 @@ if the evaluator picked one, realise it in the model and stamp its status
 as `tried`; otherwise leave the list unchanged."* *Which* entry is realised
 and *how* the list is ranked are LLM decisions; the **membership** of the
 list, however, is protected by code (§6.5).
+
+`states` scopes a hypothesis to a subset of a co-refinement's measurement
+states, and is empty for the ordinary case of a change that applies to the
+whole model. It exists because *"add an oxide"* and *"add an oxide in the
+in-air state only"* are different claims that have to be accepted or rejected on
+their own evidence — see §7.3. Like the rest of the identity fields it is
+immutable once created: the refinement step cannot silently re-scope an
+existing entry any more than it can rename one.
 
 This makes the loop *explicit and auditable*. After a run you can open
 the final checkpoint and see exactly which hypotheses were considered,
@@ -788,25 +827,125 @@ choice to the modeling step.
 
 ---
 
-## 7. Reading the output of a run
+## 7. Beyond one file and one stack
 
-When you run `aure analyze` with `-o ./output`, AuRE writes one
-checkpoint file per completed node, as well as a final `state.json` with
-the full workflow state. The files you will typically want to inspect are:
+Everything so far describes the simple case: one data file, one layer stack,
+fitted in the coordinates the stack is written in. Real experiments routinely
+break each of those assumptions, and AuRE has a mechanism for each. They are
+independent — you can use any one without the others.
 
-- **`intake_result.json`** — parsed sample and **the full ranked
-  hypothesis list**. Inspecting this file after an unsuccessful run tells
-  you whether the structural problem was even in the candidate list.
-- **`analysis_result.json`** — the data-derived physics features.
-- **`modeling_iter*.json`** — the model that was sent to the fitter at
-  each iteration.
-- **`fitting_iter*.json`** — the best-fit parameters and χ² per iteration.
-- **`evaluation_iter*.json`** — the LLM's judgement, including
-  `next_action` and `proposed_hypothesis_id`; plus the updated
-  `structural_hypotheses` with statuses. On iterations where the revision
-  step fired (§6.5), this also shows any newly-added `origin="evaluation"`
-  hypotheses, the re-ranked order, and any skills that were activated from
-  the observed artifacts.
+### 7.1 Several files of one sample
+
+Spliced $Q$-segments, or several incident angles of the same measurement, are
+*the same physical sample*. They share one Refl1D `Sample`, so every layer
+parameter is automatically the same object across files; only the per-file
+intensity normalisation (and optionally a shared resolution/alignment
+correction) varies. Declare them as several `data_files` inside one state.
+
+### 7.2 Several physical states
+
+A *state* is one physical condition of the sample: in D₂O versus H₂O, before
+versus after annealing, at one applied potential versus another. Each state has
+its own data, its own ambient medium and its own intensity, and they are fitted
+**together** so that what the states have in common is determined by all of the
+data at once.
+
+Which parameters are held in common is a first-class input, not a guess:
+`shared_parameters` names a whitelist, `unshared_parameters` a blacklist, and
+the default ties each layer's thickness, SLD and interface plus the substrate
+interface. The gain is real — a contrast series determines a buried structure
+that no single contrast can — and so is the risk of asserting a commonality the
+physics does not have, which is why the choice is written down rather than
+inferred.
+
+### 7.3 When the states differ in structure ("sample ≠ structure")
+
+Untying a parameter lets a layer take a different *value* in each state. It
+cannot express a layer that is **present in some states and absent in others** —
+an oxide in air that is reduced away under potential, an SEI that forms only
+after cycling, a swollen layer with no dry counterpart. That is a common
+situation, not an exotic one.
+
+So a state may carry its own complete `layers` (and `substrate`); states that do
+not, inherit the model-level template. A tie naming a layer a state does not
+have simply does not apply there. The difference can be stated up front in the
+setup file, derived from the sample description at modeling time, or proposed
+mid-run as a **scoped hypothesis** (§6.3) — and because it is a structural
+claim that costs parameters, it is judged by the same χ²/BIC regression
+guardrail as any other.
+
+The evidence for it is per-state. Residual-fringe analysis runs separately on
+each state, and fringes in a *subset* of states are the signature to look for:
+either that subset's untied parameters are wrong, or the states genuinely differ
+in structure. Both readings are put to the evaluator, along with which states
+are affected.
+
+### 7.4 Fitting a combination instead of a coordinate
+
+Reflectivity does not determine the parameters a model is written in; it
+determines certain **combinations** of them. A thin layer's
+$(\rho_\text{layer} - \rho_\text{ambient}) \cdot t$ is pinned tightly while the
+SLD and the thickness separately are not — the degeneracy ridge of §6.8. What an
+independent measurement gives you has the same shape: QCM-D yields an adsorbed
+amount, not an SLD; a known density plus a swelling measurement yields a volume
+fraction, not a thickness.
+
+A **reparametrization** (`derived_parameters:`) makes the combination a free
+parameter and derives the raw one from it. The ridge disappears from the
+geometry the optimizer explores, and an ordinary range on the combination means
+what it says. In a co-refinement the combination is shared across states while
+each state's SLD follows from its *own* solvent — which is what contrast
+variation actually assumes, and which no tie between layer attributes can state,
+because the invariant is not a layer attribute.
+
+This is **off by default** (`allow_derived_parameters:`): a reparametrized model
+asks more of the LLM than a plain stack, since derived attributes are not fit
+parameters and the layers they reference must not be refined away. Declarations
+come from the setup file; the workflow does not write its own. Full reference:
+**[derived-parameters.md](derived-parameters.md)**.
+
+---
+
+## 8. Reading the output of a run
+
+When you run `aure analyze` with `-o ./output`, AuRE writes one checkpoint per
+completed node, numbered in the order they ran:
+
+```
+output/
+├── run_info.json                     # run metadata + the checkpoint index
+├── checkpoints/
+│   ├── 001_intake.json
+│   ├── 002_analysis.json
+│   ├── 003_modeling.json
+│   ├── 004_fitting_iter1.json        # fitting/evaluation/refinement carry
+│   ├── 005_evaluation_iter1.json     #   the iteration number
+│   └── ...
+├── refl1d_output/                    # refl1d's own output (problem.json, …)
+└── final_state.json                  # the complete final workflow state
+```
+
+Each checkpoint holds the whole workflow state as of that node, so the
+interesting part is which node most recently wrote the field you care about:
+
+- **`001_intake.json`** — the parsed sample and **the full ranked hypothesis
+  list**. Inspecting this after an unsuccessful run tells you whether the
+  structural problem was even in the candidate list.
+- **`002_analysis.json`** — the data-derived physics features.
+- **`003_modeling.json`** and later modeling checkpoints — the model that was
+  sent to the fitter at each iteration.
+- **`*_fitting_iter*.json`** — the best-fit parameters and χ² per iteration.
+- **`*_evaluation_iter*.json`** — the LLM's judgement, including `next_action`
+  and `proposed_hypothesis_id`; plus the updated `structural_hypotheses` with
+  statuses. On iterations where the revision step fired (§6.5), this also shows
+  any newly-added `origin="evaluation"` hypotheses, the re-ranked order, and any
+  skills that were activated from the observed artifacts.
+- **`final_state.json`** — the reported model, its χ², and `final_selection`
+  recording *why* that iteration was chosen over the others
+  ([finalization.md](finalization.md)).
+
+`aure checkpoints ./output` lists them and `aure inspect-checkpoint` dumps one,
+so none of this requires reading JSON by hand.
 
 For multi-state co-refinement runs (`states:` block in the user config),
 each fit iteration also produces a per-state `profile.dat` under
@@ -824,7 +963,7 @@ the history interactively.
 
 ---
 
-## 8. Extending AuRE with new skills
+## 9. Extending AuRE with new skills
 
 Adding a new piece of domain knowledge is usually a five-minute task:
 
@@ -850,7 +989,7 @@ or in code, not in a skill).
 
 ---
 
-## 9. Further reading
+## 10. Further reading
 
 - **Reflectometry physics**:
   [Jens Als-Nielsen & Des McMorrow, *Elements of Modern X-ray Physics*](https://www.wiley.com/en-us/Elements+of+Modern+X+ray+Physics%2C+2nd+Edition-p-9781119970156),

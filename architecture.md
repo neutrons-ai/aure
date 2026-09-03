@@ -33,8 +33,18 @@ three ways: a **web UI** (Flask, `web/`), a **CLI** (`analyze` / `batch`, `cli.p
   between states (e.g. a surface oxide present in air but gone in electrolyte). `StateDefinition`
   may carry its own complete `layers`/`substrate`; absent ⇒ inherit the model-level template.
 
+- **Reparametrization ("derived parameters")** — *which coordinates the fit explores*, as
+  opposed to which parameters it ties. `ModelDefinition.derived_parameters` makes a
+  **combination** free (a surface excess `(ρ−ρ_ambient)·t`, a solvated layer's volume
+  fraction) and derives a raw parameter from it via an expression. The data determines
+  such combinations far better than the coordinates a model is written in, and an
+  independent measurement usually gives one directly. **Opt-in**
+  (`allow_derived_parameters` / `ALLOW_DERIVED_PARAMETERS`, default off). See
+  **[docs/derived-parameters.md](docs/derived-parameters.md)**.
+
 These are independent: **state** = data grouping; **co-refinement** = how the fit ties
-parameters; **sample identity** = how many physical samples; **structure** = each state's stack.
+parameters; **sample identity** = how many physical samples; **structure** = each state's
+stack; **reparametrization** = the coordinates that stack is fitted in.
 The canonical config shape is `states: [{name, data_files, extra_description, layers?, …}]` plus
 `shared_parameters` / `unshared_parameters` / `distinct_sample` (see `config.py`, `setup.py`,
 `state.py`).
@@ -55,6 +65,12 @@ Flow: the UI "Cross-state parameter ties" panel (or a setup-YAML `shared_paramet
 `model_def` → `model_builder._resolve_tied_set` → `build_states_problem` aliases the tied
 Parameter objects across experiments. **Invariant:** a parameter the user marks unshared must
 NOT be aliased across states.
+
+A parameter a reparametrization *assigns* is not a free parameter, so it is excluded from tie
+aliasing at **both** ends — the state that derives it and the reference state — and the renaming
+pass treats it as untied, or two states falling back to a free parameter would collide on one
+name. Tying a derived slot would hand every state the reference state's expression, resolving
+each state's SLD against the wrong state's ambient.
 
 The default tied set and name-validation run over the **union** of every state's layer names, so
 a layer present in only some states is fine; a tie referencing a layer absent from a given state
@@ -179,6 +195,25 @@ nr-isaac-format `architecture.md` for the store/representation contract.
    marker must stay the check's own positive statement. See
    [docs/approach.md](docs/approach.md) §4.5.
 
+7. **Reported χ² is the DATA term only** (`model_builder.data_chisq`, used by fitting, the
+   CLI, the web layer and the refl1d importer). `FitProblem.chisq()` scales
+   `pmodel + pparameter + pconstraints`, and bumps short-circuits to `pmodel = 0.0` when a
+   prior or constraint fails — so reporting it would file an *infeasible* model as a perfect
+   fit, and a χ² of 0 lands under the acceptance floor as if the error bars were wrong.
+   `data_chisq` returns `inf` for infeasible instead. The penalty still drives the optimizer;
+   it is never reported as goodness of fit. Equal to `chisq()` for any model with plain box
+   bounds and no constraints, which is every model that declares no `derived_parameters`.
+8. **A structural edit that invalidates a `derived_parameters` entry prunes it, never
+   raises** (`prune_derived_parameters`, mirroring `prune_tie_specs`; auxiliary entries left
+   unreferenced are pruned with it, to a fixed point). Raising would end the run and forfeit
+   the remaining refinement budget over an edit the model was told not to make but is not
+   prevented from making. The drop is recorded in the transcript.
+9. **`derived_parameters` come from the user's config only.** `modeling` carries the block
+   across refinements (config wins) and discards any block the LLM emits; the refinement
+   prompt says so. `save_problem_json` **refuses** a model that has one, because bumps
+   serialization does not round-trip expression parameters and the export would silently be a
+   different model.
+
 ## 7. Code map
 
 - `nodes/` — pipeline nodes (intake, analysis, modeling, fitting, evaluation, refinement).
@@ -189,7 +224,10 @@ nr-isaac-format `architecture.md` for the store/representation contract.
 - `workflow/` — `runner.py` (the state-machine orchestrator + terminal
   finalize/final_fit/save; the single execution engine for CLI, web UI, and MCP),
   `checkpoints.py` (run dir + `run_info.json` + `final_state.json`/`problem.json`).
-- `config.py` / `setup.py` / `state.py` — states, ties, and setup-YAML (de)serialization.
+- `config.py` / `setup.py` / `state.py` — states, ties, reparametrization, and setup-YAML
+  (de)serialization; `config.derived_parameters_enabled` is the opt-in gate.
+- `nodes/expressions.py` — whitelisted-AST evaluator for `derived_parameters` expressions.
+  Never `eval`: these strings can come from a config file or an LLM.
 - `refl1d_import.py` / `nodes/model_builder.py` — build the refl1d problem; cross-state tying.
 - `web/` — Flask routes (`routes.py`), `static/setup.js`, templates.
 - `exporters/isaac.py` — the ISAAC export pipeline.
