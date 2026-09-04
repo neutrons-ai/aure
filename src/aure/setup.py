@@ -98,8 +98,6 @@ class SetupConfig(TypedDict, total=False):
     llm_base_url: str
     llm_temperature: float
     llm_timeout: int
-    alcf_cluster: str
-    alcf_access_token: str
 
     # Free-form pass-through (analyzer compat: e.g. plan-data emits
     # `metadata.perform_assembly` / `metadata.notes`). AuRE ignores
@@ -145,8 +143,6 @@ _KNOWN_TOP_LEVEL = {
     "llm_base_url",
     "llm_temperature",
     "llm_timeout",
-    "alcf_cluster",
-    "alcf_access_token",
     "metadata",
 }
 
@@ -344,8 +340,6 @@ def _setup_from_dict(
         "llm_model",
         "llm_api_key",
         "llm_base_url",
-        "alcf_cluster",
-        "alcf_access_token",
     ):
         if raw.get(opt_str):
             out[opt_str] = str(raw[opt_str])  # type: ignore[literal-required]

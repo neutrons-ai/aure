@@ -13,7 +13,6 @@ from typing import Dict, Any
 DEFAULT_MODELS: Dict[str, str] = {
     "openai": "gpt-4o-mini",
     "gemini": "gemini-2.0-flash-lite",
-    "alcf": "gpt-oss-120b",
     "local": "llama3",
 }
 
@@ -28,7 +27,7 @@ def get_llm_config() -> Dict[str, Any]:
     Build an LLM configuration dict from environment variables.
 
     Returns a dict with keys: provider, api_key, model, base_url,
-    temperature, alcf_cluster.
+    temperature.
     """
     provider = os.environ.get("LLM_PROVIDER", "").lower()
 
@@ -49,11 +48,6 @@ def get_llm_config() -> Dict[str, Any]:
         else:
             api_key = os.environ.get("OPENAI_API_KEY")
 
-    # ALCF cluster
-    alcf_cluster = None
-    if provider == "alcf":
-        alcf_cluster = os.environ.get("ALCF_CLUSTER", "sophia").lower()
-
     default_model = DEFAULT_MODELS.get(provider, "gpt-4o-mini")
 
     return {
@@ -62,7 +56,6 @@ def get_llm_config() -> Dict[str, Any]:
         "model": os.environ.get("LLM_MODEL", default_model),
         "base_url": os.environ.get("LLM_BASE_URL"),
         "temperature": float(os.environ.get("LLM_TEMPERATURE", "0.0")),
-        "alcf_cluster": alcf_cluster,
     }
 
 
@@ -73,34 +66,8 @@ def llm_available() -> bool:
 
     if provider == "local":
         return bool(config["base_url"])
-    if provider == "alcf":
-        return _alcf_token_available(config)
     # Cloud providers need an API key
     return bool(config["api_key"])
-
-
-def _alcf_token_available(config: dict) -> bool:
-    """Return ``True`` if an ALCF token can be obtained without user interaction."""
-    import logging
-
-    # Explicit env-var is the fast path
-    if os.environ.get("ALCF_ACCESS_TOKEN"):
-        return True
-    # Try to actually obtain a token (lazy methods may have cached one).
-    # Suppress noisy warnings that get_token emits on each fallback path.
-    try:
-        from .providers import get_token
-
-        alcf_logger = logging.getLogger("aure.llm.providers.alcf")
-        old_level = alcf_logger.level
-        alcf_logger.setLevel(logging.CRITICAL)
-        try:
-            get_token()
-            return True
-        finally:
-            alcf_logger.setLevel(old_level)
-    except Exception:
-        return False
 
 
 def get_llm_info() -> dict:
@@ -113,12 +80,4 @@ def get_llm_info() -> dict:
     }
     if config["provider"] == "local":
         info["base_url"] = config["base_url"]
-    elif config["provider"] == "alcf":
-        info["alcf_cluster"] = config["alcf_cluster"]
-        # Report the effective base URL that will actually be used
-        from .providers.openai_compat import ALCF_CLUSTER_PATHS
-
-        cluster = config.get("alcf_cluster") or "sophia"
-        path = ALCF_CLUSTER_PATHS.get(cluster, "")
-        info["base_url"] = f"https://inference-api.alcf.anl.gov{path}"
     return info

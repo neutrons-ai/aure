@@ -190,7 +190,6 @@ pip install -e "."
 | Extra     | What it adds                                      |
 |-----------|---------------------------------------------------|
 | `export`  | `nr-isaac-format` — ISAAC AI-Ready Data export    |
-| `alcf`    | `globus-sdk` — native Globus auth for ALCF inference endpoints |
 | `dev`     | pytest                                            |
 | `all`     | All of the above                                  |
 
@@ -200,32 +199,34 @@ AuRE reads its LLM settings from environment variables (or a `.env` file in the
 project root).  See [.env.example](.env.example) for every available option.
 
 ```bash
-LLM_PROVIDER=openai          # "openai", "gemini", "alcf", or "local"
+LLM_PROVIDER=openai          # "openai", "gemini", or "local"
 LLM_MODEL=gpt-4o             # model name for your provider
 LLM_API_KEY=sk-...           # API key
 # LLM_BASE_URL=              # only needed for local / openai-compatible
 ```
 
-#### ALCF inference endpoints
+#### Other OpenAI-compatible endpoints
 
-To use the [ALCF inference service](https://docs.alcf.anl.gov/services/inference-endpoints/)
-at Argonne National Laboratory:
+The `local` provider is not limited to localhost — it is the generic
+OpenAI-compatible path. Any endpoint that speaks the OpenAI chat API works by
+setting a base URL and a token, with no provider-specific support needed.
+
+For the [ALCF inference service](https://docs.alcf.anl.gov/services/inference-endpoints/)
+at Argonne, for example:
 
 ```bash
-LLM_PROVIDER=alcf
-ALCF_CLUSTER=sophia           # "sophia" (vLLM) or "metis" (SambaNova)
+LLM_PROVIDER=local
+LLM_BASE_URL=https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1
+LLM_API_KEY=<globus access token>
 LLM_MODEL=gpt-oss-120b        # any model served on the cluster
-# ALCF_ACCESS_TOKEN=...       # Globus token (optional – see below)
 ```
 
-If `ALCF_ACCESS_TOKEN` is not set AuRE will try, in order:
-
-1. **`globus_sdk`** (install with `pip install aure[alcf]`) — reuses cached
-   Globus tokens; no subprocess needed.
-2. **`inference_auth_token.py get_access_token`** — subprocess fallback.
-
-See the [ALCF docs](https://docs.alcf.anl.gov/services/inference-endpoints/#2-authenticate)
-for initial Globus authentication setup.
+Substitute `/resource_server/metis/api/v1` for the Metis (SambaNova) cluster.
+Obtain the token with ALCF's own
+[authentication helper](https://docs.alcf.anl.gov/services/inference-endpoints/#2-authenticate)
+and export it as `LLM_API_KEY`; AuRE does not manage facility credentials, and
+the token expires periodically, so re-export it when a call starts returning
+401.
 
 ## Co-refinement (multi-file fitting)
 
@@ -539,14 +540,13 @@ aure [OPTIONS] COMMAND [ARGS]...
 Check LLM configuration and connectivity.
 
 ```bash
-aure check-llm [--json] [--no-test] [--fix]
+aure check-llm [--json] [--no-test]
 ```
 
 | Option | Description |
 |--------|-------------|
 | `--json` | Output as JSON |
 | `--no-test` | Skip the live connection test |
-| `--fix` | Attempt to fix issues (e.g. download ALCF auth script) |
 
 ### `aure analyze`
 

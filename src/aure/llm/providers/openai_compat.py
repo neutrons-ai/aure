@@ -1,9 +1,13 @@
 """
-OpenAI-compatible provider factories (openai, alcf, local).
+OpenAI-compatible provider factories (openai, local).
 
-All three use :class:`langchain_openai.ChatOpenAI` with different
-base URLs and credential handling.  The shared construction logic lives
-in :func:`create_openai_compatible`.
+Both use :class:`langchain_openai.ChatOpenAI` with different base URLs and
+credential handling. The shared construction logic lives in
+:func:`create_openai_compatible`.
+
+Any OpenAI-compatible endpoint is reachable through the *local* provider by
+setting ``LLM_BASE_URL`` and ``LLM_API_KEY`` — a self-hosted vLLM or Ollama
+server, or a remote facility endpoint. It needs no provider of its own.
 """
 
 from __future__ import annotations
@@ -13,14 +17,8 @@ import os
 from typing import Optional
 
 from ..config import get_llm_timeout
-from .alcf_auth import get_token
 
 logger = logging.getLogger(__name__)
-
-ALCF_CLUSTER_PATHS: dict[str, str] = {
-    "sophia": "/resource_server/sophia/vllm/v1",
-    "metis": "/resource_server/metis/api/v1",
-}
 
 # Transient connection failures are routine against a local server: Ollama
 # evicts an idle model after ~5 min, and AuRE's refl1d fits run far longer than
@@ -56,7 +54,7 @@ def create_openai_compatible(
 ):
     """Create a ``ChatOpenAI`` instance.
 
-    Shared code-path for the *openai*, *alcf*, and *local* providers.
+    Shared code-path for the *openai* and *local* providers.
     """
     from langchain_openai import ChatOpenAI
 
@@ -82,21 +80,6 @@ def create_openai(config: dict, temperature: float):
         )
     return create_openai_compatible(
         config, temperature, api_key=config["api_key"], base_url=config.get("base_url")
-    )
-
-
-def create_alcf(config: dict, temperature: float):
-    cluster = config.get("alcf_cluster") or "sophia"
-    path = ALCF_CLUSTER_PATHS.get(cluster)
-    if path is None:
-        raise ValueError(
-            f"Unknown ALCF cluster '{cluster}'. "
-            f"Supported: {', '.join(sorted(ALCF_CLUSTER_PATHS))}"
-        )
-    base_url = f"https://inference-api.alcf.anl.gov{path}"
-    api_key = get_token()
-    return create_openai_compatible(
-        config, temperature, api_key=api_key, base_url=base_url
     )
 
 

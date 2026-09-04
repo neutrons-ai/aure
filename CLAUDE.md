@@ -14,7 +14,7 @@ The longest-form design rationale lives in [docs/approach.md](docs/approach.md) 
 - Standard dev setup:
   ```bash
   python -m venv .venv && source .venv/bin/activate
-  pip install -e ".[dev]"           # add ,alcf and/or ,export as needed
+  pip install -e ".[dev]"           # add ,export as needed
   ```
 - LLM config is read from environment / `.env` (`LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_TIMEOUT`, `FIT_METHOD`, …). See [.env.example](.env.example) for the full list. Provider dispatch is in [src/aure/llm/providers/](src/aure/llm/providers/); `aure check-llm` validates the live config.
 
@@ -101,10 +101,10 @@ Each skill is a directory containing a `SKILL.md` (Agent Skills spec format). `s
 
 ### LLM layer ([src/aure/llm/](src/aure/llm/))
 
-- `config.py` — reads env vars, returns a normalized config dict; supports `openai`, `gemini`, `alcf`, `local` (OpenAI-compatible).
+- `config.py` — reads env vars, returns a normalized config dict; supports `openai`, `gemini`, `local` (OpenAI-compatible).
 - `providers/` — one module per backend; `get_llm()` dispatches.
 - `timeout.py` — signal-based wrapper (`invoke_with_timeout`, raises `LLMTimeoutError`); the per-call timeout comes from `LLM_TIMEOUT`.
-- ALCF auth: `LLM_PROVIDER=alcf` uses `ALCF_ACCESS_TOKEN`, falling back to `globus_sdk` (if `aure[alcf]` is installed) and then to a subprocess call to ALCF's `inference_auth_token.py`. `aure check-llm --fix` will download and run that helper.
+- Any OpenAI-compatible endpoint (a self-hosted server, or a remote facility inference API) is reached through the `local` provider with `LLM_BASE_URL` + `LLM_API_KEY`. AuRE deliberately carries **no** provider-specific credential code: obtaining and refreshing a facility token is the facility's tooling's job, not AuRE's.
 
 ### Web UI & MCP server
 

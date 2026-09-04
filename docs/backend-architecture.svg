@@ -172,7 +172,7 @@
   <text x="56" y="744" class="nd"><tspan font-weight="700">invoke_with_timeout()</tspan></text>
   <text x="66" y="759" class="nd"><tspan class="mono">timeout.py</tspan> · LLMTimeoutError</text>
   <text x="56" y="782" class="nd"><tspan font-weight="700">providers/</tspan></text>
-  <text x="66" y="797" class="nd">openai_compat · gemini · alcf</text>
+  <text x="66" y="797" class="nd">openai_compat · gemini</text>
   <line x1="56" y1="810" x2="264" y2="810" stroke="#c4b5fd" stroke-dasharray="3 3"/>
   <text x="56" y="828" class="ann">temperature 0 · JSON out</text>
   <text x="56" y="844" class="ann">each call &#8594; LLMCallRecord</text>
