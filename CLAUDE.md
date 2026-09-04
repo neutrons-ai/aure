@@ -10,7 +10,7 @@ The longest-form design rationale lives in [docs/approach.md](docs/approach.md) 
 
 ## Environment & install
 
-- Python ≥ 3.9 (CI runs 3.12). Source layout (`src/aure`), installed editable.
+- Python ≥ 3.10 (CI runs 3.10 and 3.12). Source layout (`src/aure`), installed editable.
 - Standard dev setup:
   ```bash
   python -m venv .venv && source .venv/bin/activate

@@ -156,7 +156,7 @@ or resume a run from any point.
 
 ## Installation
 
-Requires **Python ≥ 3.9** (3.12 is what CI uses). All runtime dependencies ship
+Requires **Python ≥ 3.10** (CI tests 3.10 and 3.12). All runtime dependencies ship
 as pre-built wheels, so no compiler is needed on any platform.
 
 ### macOS / Linux
