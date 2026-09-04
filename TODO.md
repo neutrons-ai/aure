@@ -244,3 +244,72 @@ non-empty and there is only one state, rather than ignoring it silently.
 **Verifying a fix.** Two states that both declare `layers: [Cu, ...]` while the
 template says `copper`, with `shared_parameters: [copper.material.rho]`: the
 run must report that the tie applied to no state. Today it reports nothing.
+
+---
+
+## A single-state setup's `layers` — and every bound in them — is silently discarded
+
+**Where:** [`src/aure/nodes/model_builder.py`](src/aure/nodes/model_builder.py) —
+`needs_states_problem`, which returns True only for `len(states) > 1` or for a
+state carrying `theta_offset` / `sample_broadening` / `background`.
+
+**What is wrong.** A setup file with exactly one state, no nuisance parameters,
+and a fully declared `states[0].layers` does not take the states route. It falls
+through to the description-driven path, which builds the model from
+`parsed_sample` and never reads `states[0].layers`. The declared stack, and with
+it every per-layer bound, is dropped without a warning.
+
+Measured on a real run. The setup declared, for a single state:
+
+```yaml
+states:
+  - name: OCV3_206931
+    layers:
+      - {name: copper, sld: 6.48, sld_min: 6.48, sld_max: 6.48, ...}
+```
+
+The **first** modeling checkpoint (`003_modeling.json`) already reported
+
+```
+copper sld=6.55 window=(6.3, 8.5)
+```
+
+so the value, the pin and the window were all gone before any refinement
+iteration ran. Adding a second state to the same setup honours the identical
+layer block, which is what localises the fault to the routing rather than to the
+layer parsing.
+
+**What it costs.** The setup file is the only surface on which a layer bound can
+be declared at all — there is no top-level `layers:` key (see the roughness-floor
+entry above, which records the same gap from the other side). So for a
+single-curve analysis there is currently **no way to state a known constant**:
+not "this copper is bulk copper at 6.48", not "the solvent SLD is known, fit its
+roughness only" — which is what the expert reference fits themselves do. The
+request is accepted, written into the config, echoed in the run's own setup, and
+then ignored. A user has no way to tell that it did not take effect except by
+reading the exported problem.
+
+It also silently changes what an experiment measures. An arm intended to test
+"does a stated materials constant improve the fit?" instead tests nothing: the
+constant never reaches the model.
+
+**The change.** Take the states route whenever a state declares its own
+`layers` or `substrate`, not only when there are two or more states or a
+nuisance parameter is present — i.e. add that condition to
+`needs_states_problem`. A single-state states problem is already supported (the
+builder handles it; only the routing predicate excludes it), and the tie
+machinery is inert with one state.
+
+Failing that, the honest fallback is to refuse: if a setup declares per-state
+`layers` on a path that cannot honour them, error at load rather than proceed.
+Silently discarding a declared bound is the worst of the three options.
+
+**Aside: the workaround, and why it is not a fix.** Any nuisance parameter flips
+the predicate, so a zero-width `theta_offset: {init: 0, min: 0, max: 0}` forces
+the states route while being numerically inert. It works, and it is what one
+would reach for under time pressure, but it couples an unrelated field to the
+model-building route and would break the moment the predicate changes.
+
+**Verifying a fix.** The setup above, run as-is: the exported `problem.json`
+must show `copper rho` with bounds `(6.48, 6.48)`, and the first modeling
+checkpoint must carry the declared window rather than `(6.3, 8.5)`.
