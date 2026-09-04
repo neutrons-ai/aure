@@ -43,7 +43,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from .nodes.evaluation import _compute_bic, _count_free_params
+from .nodes.evaluation import (
+    BIC_FORMULA,
+    _compute_bic,
+    bic_inputs_for,
+)
+from .nodes.model_builder import bic_inputs
 from .state import (
     AmbientInfo,
     DatasetInfo,
@@ -1556,9 +1561,18 @@ def import_refl1d(
     state["fit_results"] = [fit_result]
     state["current_chi2"] = fit_result["chi_squared"]
     state["best_chi2"] = fit_result["chi_squared"]
-    n_data = sum(len(ds.get("Q") or []) for ds in flat_data_files) or len(Q0)
-    n_params = _count_free_params(definition)
-    state["best_bic"] = _compute_bic(fit_result["chi_squared"], n_data, n_params)
+    # BIC inputs come off the deserialized problem — the same source the fitting
+    # node uses — so an imported fit is scored on exactly the footing as a fit
+    # AuRE ran itself. Falls back to the model dict only if bumps cannot supply
+    # them, in which case `bic_inputs_for` reconstructs the total χ².
+    fit_result.update(bic_inputs(problem))
+    if not fit_result.get("_n_data"):
+        fit_result["_n_data"] = sum(
+            len(ds.get("Q") or []) for ds in flat_data_files
+        ) or len(Q0)
+    chi2_total, n_data, n_params = bic_inputs_for(fit_result, state, definition)
+    state["best_bic"] = _compute_bic(chi2_total, n_data, n_params)
+    state["bic_formula"] = BIC_FORMULA
     fit_result["bic"] = state["best_bic"]
     state["current_node"] = "evaluation"
     state["iteration"] = 1

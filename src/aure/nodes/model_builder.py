@@ -493,7 +493,7 @@ def _derived_assigned_slots(definition: dict, state_name: str) -> set:
     slots: set = set()
     back = definition.get("back_reflection", False)
     for spec in _derived_specs(definition, state_name):
-        for target in (spec.get("assign") or {}):
+        for target in spec.get("assign") or {}:
             canon = canonical_name(str(target))
             layer_name, _, attr_path = canon.partition(".")
             if not attr_path:
@@ -504,9 +504,7 @@ def _derived_assigned_slots(definition: dict, state_name: str) -> set:
     return slots
 
 
-def _unrealizable_reason(
-    definition: dict, spec: dict, declared: set
-) -> str | None:
+def _unrealizable_reason(definition: dict, spec: dict, declared: set) -> str | None:
     """Why *spec* cannot be built against this structure, or None if it can.
 
     Name-based, so it works before a sample exists — the same check serves the
@@ -521,7 +519,7 @@ def _unrealizable_reason(
     from .expressions import ExpressionError, referenced_names
 
     valid = _valid_layer_names(definition) | declared
-    for target in (spec.get("assign") or {}):
+    for target in spec.get("assign") or {}:
         if str(target).split(".", 1)[0] not in valid:
             return f"assignment target {target!r} names no layer"
     texts = list((spec.get("assign") or {}).values())
@@ -557,9 +555,7 @@ def surviving_derived_parameters(definition: dict) -> tuple[list, list[str]]:
     from .expressions import ExpressionError, referenced_names
 
     specs = [
-        s
-        for s in (definition.get("derived_parameters") or [])
-        if isinstance(s, dict)
+        s for s in (definition.get("derived_parameters") or []) if isinstance(s, dict)
     ]
     if not specs:
         return [], []
@@ -595,9 +591,7 @@ def surviving_derived_parameters(definition: dict) -> tuple[list, list[str]]:
             break
         for spec in orphans:
             kept.remove(spec)
-            notes.append(
-                f"{spec.get('name')!r}: auxiliary parameter left unreferenced"
-            )
+            notes.append(f"{spec.get('name')!r}: auxiliary parameter left unreferenced")
     return kept, notes
 
 
@@ -884,6 +878,67 @@ def penalty_nllf(problem) -> float:
         return float(pparameter) + float(pconstraints)
     except Exception:  # pragma: no cover - bumps internal rename
         return 0.0
+
+
+def data_chisq_total(problem) -> float:
+    """The **un-normalized** χ² of the data term: ``Σ((R − R_model)/dR)²``.
+
+    This is what BIC needs. ``data_chisq`` reports the *reduced* χ² — divided by
+    the degrees of freedom — which is the right number to judge fit quality
+    against 1, and the wrong number to put in an information criterion, where
+    the likelihood term must scale with the amount of data.
+
+    bumps defines ``pmodel = ½·Σresiduals²`` for Gaussian independent
+    uncertainties (see ``FitProblem.chisq_str``), so the total is exactly
+    ``2·pmodel``. Deriving it this way deliberately avoids reconstructing it as
+    ``χ²_reduced × dof``: bumps' ``dof`` also folds in prior degrees of freedom
+    (``model_points() + Σ prior.dof − n_params``) and silently degrades to an
+    un-normalized scale when it is non-positive, so the round trip is not an
+    identity.
+
+    Infeasible parameters return ``inf``, matching ``data_chisq`` — see the
+    reasoning there.
+    """
+    try:
+        _pparameter, _pconstraints, pmodel, failing = problem._nllf_components()
+    except Exception:  # pragma: no cover - bumps internal rename
+        # chisq(norm=False) scales the nllf by exactly 2, giving the total χ²
+        # including the penalty terms. Only reachable if bumps renames its
+        # internals, in which case an over-inclusive total beats no BIC at all.
+        logger.debug("[BUILDER] data_chisq_total fell back to chisq(norm=False)")
+        try:
+            return float(problem.chisq(norm=False))
+        except Exception:
+            return float("inf")
+    if failing:
+        return float("inf")
+    return 2.0 * float(pmodel)
+
+
+def bic_inputs(problem) -> dict:
+    """The three quantities BIC needs, read off the problem itself.
+
+    Returns ``{_chi2_total, _n_data, _n_free_params}``. Every fit path stamps
+    these onto its ``FitResult`` so that ``evaluation`` scores a fit from the
+    problem that produced it rather than re-deriving ``n`` and ``k`` from the
+    model dict. Re-deriving them is what let ``fitting`` and ``evaluation``
+    disagree: ``state["Q"]`` holds only the primary data file, so a
+    co-refinement was scored against one file's point count.
+
+    ``model_points()`` and ``getp()`` are the same accessors bumps uses to build
+    its own ``dof``, so ``n`` counts every point of every dataset of every state
+    and ``k`` counts unique free parameters — tied-across-state parameters once,
+    expression-derived ones not at all.
+    """
+    try:
+        return {
+            "_chi2_total": data_chisq_total(problem),
+            "_n_data": int(problem.model_points()),
+            "_n_free_params": len(problem.getp()),
+        }
+    except Exception:  # pragma: no cover - bumps internal rename
+        logger.debug("[BUILDER] bic_inputs unavailable", exc_info=True)
+        return {}
 
 
 def build_problem(definition: dict):
@@ -1406,9 +1461,7 @@ def build_states_problem(definition: dict):
         sample = _build_sample(eff)
         samples.append(sample)
         st_name_for_derived = state.get("name", f"state{state_idx}")
-        derived_slots_by_state.append(
-            _derived_assigned_slots(eff, st_name_for_derived)
-        )
+        derived_slots_by_state.append(_derived_assigned_slots(eff, st_name_for_derived))
 
         # Cross-state parameter aliasing.
         if state_idx > 0:
@@ -1648,9 +1701,7 @@ def build_states_problem(definition: dict):
                 seen_nuisance.add(id(par))
                 par.name = f"{st_name} {nuisance_attr}"
 
-    problem = FitProblem(
-        all_experiments, constraints=derived_constraints or None
-    )
+    problem = FitProblem(all_experiments, constraints=derived_constraints or None)
     return problem, experiments_by_state, sorted_files_by_state
 
 

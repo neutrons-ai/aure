@@ -500,6 +500,12 @@ class ReflectivityState(TypedDict):
     # cannot tell you whether it was — BIC is monotone in χ², so a
     # noise-absorbing fit wins on it for exactly the untrustworthy reason.
     best_bic_chi2: Optional[float]
+    # Which BIC formula `best_bic` was computed under (`evaluation.BIC_FORMULA`).
+    # A run resumed across a change of convention would otherwise compare two
+    # different statistics; the guardrails discard a baseline whose marker does
+    # not match. Absent on checkpoints written before the marker existed, which
+    # is exactly the stale case it is there to catch.
+    bic_formula: Optional[str]
     # Set by the terminal `finalize` node once the refinement loop has stopped.
     # `finalized` makes that node idempotent (the runner also calls it
     # defensively on loop-exit paths that never route through a node);
@@ -625,6 +631,7 @@ def create_initial_state(
         best_bic=None,
         best_bic_model=None,
         best_bic_chi2=None,
+        bic_formula=None,
         finalized=False,
         final_selection=None,
         final_fit=None,
