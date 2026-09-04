@@ -313,3 +313,197 @@ model-building route and would break the moment the predicate changes.
 **Verifying a fix.** The setup above, run as-is: the exported `problem.json`
 must show `copper rho` with bounds `(6.48, 6.48)`, and the first modeling
 checkpoint must carry the declared window rather than `(6.3, 8.5)`.
+
+---
+
+## No layer parameter can be held fixed, and the widener would undo it anyway
+
+**Where:** [`src/aure/nodes/prompts.py`](src/aure/nodes/prompts.py) — the model
+JSON schema in the modeling and refinement prompts, and refinement rule 3.
+
+**What is wrong.** A layer offers `sld_min` / `sld_max` and nothing else. There
+is no `fixed` flag, though one exists for the probe intensity in the same
+schema:
+
+```
+"intensity": { "value": ..., "min": ..., "max": ..., "fixed": <true/false> }
+```
+
+So "this copper is bulk copper at 6.48e-6 Å^-2, do not fit it" has no
+representation. The nearest expression is `sld_min == sld_max`, which the prompt
+never suggests — the schema glosses these as *"minimum SLD if user specifies a
+range, otherwise omit"* — and which refinement rule 3 would then undo:
+
+> 3. If parameters are hitting their bounds, widen those bounds (sld_min/sld_max,
+>    thickness_min/thickness_max).
+
+A fixed parameter sits at its bounds by construction, so the one instruction
+that could hold it is also the one the widener is guaranteed to target.
+
+**What it costs.** The instruction is understood and then lost. Measured on
+`cu_film/Cu_0/201144`, whose description said *"Fix copper metal SLD at
+6.48e-6 Å^-2; do not fit it"* and *"Fix dTHF solvent SLD at 6.2e-6 Å^-2; do not
+fit it"*:
+
+| stage | what happened |
+|---|---|
+| intake | **understood** — both recorded verbatim among 13 constraints, copper's start value set to 6.48 |
+| modeling | value kept, but `SLD ∈ [4.0, 9.0]` proposed for it regardless, with no reasoning offered |
+| builder | window stored as `(3.98, 8.98)`, i.e. `6.48 ± 2.5`, the code default |
+| a later iteration | narrowed to `(6.3, 8.5)` by an unrelated floor in the sample description |
+| fit | landed at **6.581** |
+
+The solvent went the same way: pinned at 6.2 in the description, parsed as
+`Ambient: dTHF (SLD = 6.20)`, fitted to 5.958.
+
+This is not a comprehension failure and it should not be read as one. The
+modeling node behaved reasonably given a schema with no way to say "fixed"; the
+checkpoint is a bare proposal, so there is not even a place for it to record
+that it could not honour a constraint it had just been handed.
+
+**Why it matters beyond one run.** Fixing a known scattering-length density is
+ordinary practice — the calibrated expert reference fits in the validation
+corpus hold the ambient SLD fixed and fit only its roughness. A workflow whose
+premise is that the user knows their system needs a way to accept "I know this
+constant", and today there is none: not in the description (no representation),
+not in a setup file for a single curve (see the single-state entry above), and
+not through the refinement loop (rule 3 widens it back).
+
+**The change.** Three parts, and the third is the one that makes the other two
+stick:
+
+- Add `"fixed": <true/false>` to the layer schema in both prompts, alongside the
+  existing per-parameter bounds, and mention it in the guidance the way the
+  intensity `fixed` flag is mentioned.
+- Honour it in the builder: a fixed parameter is set and not ranged, so it never
+  enters `problem.getp()`.
+- Exempt fixed parameters from rule 3 and from the deterministic bound-widener.
+  A parameter that is fixed is *at* its bounds permanently, so anything keyed on
+  "hitting its bounds" must skip it explicitly.
+
+A narrower alternative — treat `sld_min == sld_max` as a pin and exempt it from
+widening — needs only the last two parts, but leaves the capability undiscoverable
+from the schema, which is how it came to be missed here.
+
+**Verifying a fix.** Run any curve with *"fix the copper SLD at 6.48, do not fit
+it"* in the description: the exported `problem.json` must contain no free
+parameter for that layer's SLD, and the value must still be 6.48 after five
+refinement iterations.
+
+---
+
+## Cross-state ties only work when the setup declares the structure — say so, or fix it
+
+**Where:** [`aure_config.example.yaml`](aure_config.example.yaml) (the
+`shared_parameters` / `unshared_parameters` block), the co-refinement section of
+[`README.md`](README.md), and the tie resolution in
+[`src/aure/nodes/model_builder.py`](src/aure/nodes/model_builder.py).
+
+**What is wrong.** Nothing in the documentation says that a tie is only
+meaningful when the states declare their own `layers`, but that is the case, for
+two compounding reasons.
+
+1. **A tie must name a layer.** Specs are `<layer>.<attr>`; there are no
+   wildcards and no way to say "every layer's SLD" or "the metal film, whatever
+   it is called". The only name-independent targets are the literal aliases
+   `ambient` and `substrate`. So a tie can only be written if the author already
+   knows the layer names — which, on a description-driven run, they do not: the
+   names come from the intake parse and vary run to run (the same electrode
+   yielded `silicon native oxide (SiO2)` in one state and `SiO2 (native oxide)`
+   in another).
+2. **Per-state structure cannot be inferred.** A state with no declared
+   `layers` inherits the model-level stack, so states that genuinely differ
+   collapse to one structure. Measured: two states of one electrode, pristine
+   and post-plating, run with no declared layers, both came out as
+   `silicon native oxide / titanium / copper`; neither surface layer was ever
+   proposed and no refinement iteration differentiated them (χ²_red 3.8 and 1.6,
+   *worse* than either curve fitted alone).
+
+Together these mean co-refinement cannot be used without declaring the
+structure — and declaring the structure supplies the shape of the answer. The
+information co-refinement is meant to add is not separable, through this
+interface, from the information it is meant to help you find. `example.yaml`
+comes close to saying the first half ("give the deviating state its own COMPLETE
+stack") but frames it as an option for a state that differs, not as a
+precondition for ties to mean anything.
+
+**What it costs.** An experiment we ran on this is the clean illustration: a
+co-refined arm scored better than single-curve fitting on every fit-quality row,
+and the result was uninterpretable, because the arm had been handed a declared
+per-state stack that the single-curve arm had to infer. Removing the declaration
+made co-refinement *worse* than not co-refining at all. A user reading the
+current docs would not anticipate either outcome.
+
+**The decision, which is what this entry is really for.** Two honest options,
+and the wrong move is to leave it undocumented and half-working:
+
+- **Bound it loudly.** State in `example.yaml`, the README co-refinement
+  section and the web UI tie panel that cross-state ties require each state to
+  declare its own `layers`, that names must match across states for a tie to
+  apply, and that co-refinement is therefore for the case where the user already
+  knows both structures — contrast variation on a known stack, not structure
+  discovery. Then make the code say so too: refuse, or warn in the transcript,
+  when `shared_`/`unshared_parameters` is non-empty and no state declares
+  `layers` (this pairs with the union/per-state entry above, which already asks
+  for a warning when a tie applies to fewer than two states).
+- **Or make it work without a declared structure.** Two pieces would be needed:
+  ties addressable by something stable — role (`ambient`, `substrate`), position
+  index, or material identity rather than the parsed label; and a modeling node
+  that can propose *different* stacks for different states, which today it
+  cannot do from a standing start. That is a real feature, not a patch, and it
+  should only be built if the use-case survives the review in the next entry.
+
+**Verifying either.** For the bounding option: a setup with
+`shared_parameters` and no declared per-state `layers` must produce a loud
+warning naming every tie that could not be applied. For the fixing option: two
+states of one sample, no declared layers, must end with different stacks where
+the data require it, and a tie expressed by role must hold across them.
+
+---
+
+## Take a step back: enumerate AuRE's use-cases and decide which it should serve
+
+**Not an issue with a decided remedy** — the other entries in this file are, and
+this one deliberately is not. It is a scoping decision that should be made
+deliberately and written down, because several of the entries above are only
+worth fixing if the use-case behind them is one AuRE is meant to serve.
+
+**Why now.** The evidence from the validation work is that AuRE is genuinely
+useful on the case it was built for, and that the further a use-case sits from
+that centre the more the machinery has to be bent to reach it — each bend adding
+a surface that can fail quietly rather than loudly. Three of the entries above
+are of exactly that shape: a bound that cannot be declared, a tie that cannot be
+expressed, a structure that cannot be inferred per state. None of them is hard
+to patch individually. Together they are a signal that capability is being added
+faster than the boundaries are being drawn, and the cost lands on robustness in
+the centre.
+
+**The exercise.** List every use-case the system currently admits — from the
+README, the config schema, the CLI, the web UI and the MCP surface, not from
+memory — and for each one record:
+
+- what it claims to do, and where that claim is made;
+- whether it has ever been run end to end on real data, and where the evidence
+  is;
+- what it depends on that the user must supply, and whether the interface can
+  actually accept it (three of the entries above are failures of exactly this);
+- how it fails when a precondition is missing: loudly, or silently;
+- what it costs to keep — code paths, prompt surface, schema fields,
+  documentation, and the failure modes it introduces into unrelated paths.
+
+Then sort into: **core** (supported, tested, documented, defended);
+**bounded** (works within stated limits, and the limits are enforced in code,
+not just written down); **retired** (removed, with the reason recorded).
+
+A starting inventory, to be checked against the code rather than trusted:
+single-curve steady-state fitting; multi-file fitting of one sample;
+multi-state co-refinement with cross-state ties; per-state structure overrides;
+reparametrization via `derived_parameters`; thin-layer mode enumeration;
+contrast variation; time-resolved series; the batch manifest and plan/job
+surface; the web UI; the MCP tool surface; the skill library.
+
+**The point of the exercise** is to be able to say no. "AuRE does not do this,
+and here is what to use instead" is a stronger position than a feature that
+works when the user already knows the answer. The single-curve case is the one
+with 51 curves of evidence behind it; anything that makes that case less robust
+for the sake of breadth is a bad trade.
