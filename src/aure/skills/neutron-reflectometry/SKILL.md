@@ -124,8 +124,17 @@ For data files representing an individal run/segment, the table in the header wi
 
 ## Roughness Constraints
 
-- Roughness must be ≥ 5 Å (values below are physically unrealistic).
-- Typical roughness range: 5–30 Å.
+- Roughness must be ≥ 5 Å (values below are physically unrealistic). This
+  matches the builder's default `roughness_min`.
+- Typical roughness range: 5–30 Å for a sharp, well-defined interface, which
+  is also the builder's default `roughness_max`.
+- **Do not treat 30 Å as a physical ceiling.** A genuinely diffuse interface —
+  a solvent-swollen SEI, a graded or intermixed boundary — is legitimately
+  rougher: against expert reference fits of Cu-in-THF electrodes the outer
+  roughness exceeded 30 Å in 40 of 51 measured runs, reaching 209 Å. When the
+  sample description or the residuals indicate a diffuse outer interface, set
+  that layer's `roughness_max` explicitly above 30 rather than leaving the
+  default to cap the fit in a systematically wrong basin.
 
 ### Two interpretations of a slab + roughness model
 

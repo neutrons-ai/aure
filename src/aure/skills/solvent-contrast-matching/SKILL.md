@@ -113,11 +113,17 @@ re-propose the same reinterpretation after it has been reverted.
 
 - Multiple measurements of the same sample with different solvent isotope
   compositions constrain the model more tightly.
-- H₂O/D₂O mixtures give intermediate SLD values:
+- H₂O/D₂O mixtures interpolate linearly in volume fraction *f* of D₂O
+  between ρ(H₂O) = −0.56 and ρ(D₂O) = 6.36:
+  `ρ ≈ −0.56 + f · 6.92`
   - 25% D₂O: SLD ≈ 1.17
-  - 50% D₂O (CMSi): SLD ≈ 2.07 (matches silicon)
-  - 75% D₂O: SLD ≈ 4.63
-- "Contrast-matched to silicon" means the solvent SLD ≈ 2.07 (Si SLD).
+  - 38% D₂O: SLD ≈ 2.07 — **this** is the silicon contrast match (CMSi)
+  - 50% D₂O: SLD ≈ 2.91
+  - 75% D₂O: SLD ≈ 4.64
+- "Contrast-matched to silicon" means the solvent SLD ≈ 2.07 (Si SLD), which
+  is reached at ≈ 38 % D₂O by volume — **not** at 50 %. If a description says
+  "CMSi" or "contrast-matched", constrain the ambient SLD near 2.07 rather
+  than inferring a composition, and do not assume a 50/50 mixture.
 - When fitting a contrast series, layer thicknesses and roughnesses should be
   constrained to be the same across contrasts; only SLDs of solvated components change.
 
