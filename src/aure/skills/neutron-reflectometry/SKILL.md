@@ -104,9 +104,14 @@ For data files representing an individal run/segment, the table in the header wi
 
 ## Model Complexity (BIC)
 
-- BIC = n·ln(χ²) + k·ln(n), where n = number of data points, k = free parameters.
+- BIC = χ²_total + k·ln(n), where χ²_total is the **un-normalized** sum
+  Σ((R−R_model)/dR)², n = total data points across every dataset, and
+  k = free parameters. Note this uses the total χ², not the reduced χ²
+  reported elsewhere in the prompt.
 - Lower BIC is better.
-- Each layer adds 3 free parameters (thickness, SLD, roughness).
+- Each layer adds 3 free parameters (thickness, SLD, roughness); a fittable
+  background, θ-offset, sample broadening or solvation fraction each add one
+  more, and parameters tied across states are counted once.
 - Adding a layer must produce a substantial χ² improvement to lower BIC.
 - The workflow auto-reverts a structural change that worsens BIC, so you do
   not need to predict BIC impact perfectly. Propose the top-ranked

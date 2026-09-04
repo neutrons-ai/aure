@@ -643,10 +643,16 @@ def _format_complexity_assessment(
             )
     lines.append("")
     lines.append(
-        "  BIC penalizes unnecessary model parameters. A lower BIC is better. "
-        "Adding a layer (3 extra parameters) must produce a substantial χ² "
-        "improvement to lower BIC. Do NOT suggest adding layers unless the "
-        "BIC would clearly improve."
+        "  BIC penalizes unnecessary model parameters. A lower BIC is better; "
+        "it is computed for you, so do not try to evaluate the formula "
+        "yourself. How much χ² improvement a new parameter has to buy depends "
+        "on how well the model already fits: on a poor fit a small relative χ² "
+        "improvement is a large absolute one and can justify a layer, while on "
+        "an already-good fit it takes proportionally more. Judge the added "
+        "structure on the physical evidence (residual structure, features, the "
+        "hypothesis list) rather than on a fixed χ² threshold — and if BIC does "
+        "regress, the guardrail reverts the change and marks the hypothesis "
+        "rejected."
     )
     return "\n".join(lines)
 
