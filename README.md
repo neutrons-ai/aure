@@ -149,6 +149,7 @@ or resume a run from any point.
 |----------|----------------|
 | **[docs/approach.md](docs/approach.md)** | The narrative introduction: reflectometry and LLM primers, the workflow node by node, Agent Skills, the ranked-hypothesis refinement loop, co-refinement and reparametrization, and how to read a run's output. Start here. |
 | **[architecture.md](architecture.md)** | The design decisions and the invariants not to break. Read before changing the workflow. |
+| **[docs/metrics.md](docs/metrics.md)** | Every number that judges a fit, with the math: χ² (what is and is not in it), the acceptance window, BIC and how `n` and `k` are counted, the regression guardrails, the deterministic feature-extraction formulas, residual-fringe analysis, profile-artifact detection, and final model selection. |
 | **[docs/finalization.md](docs/finalization.md)** | What happens after the loop stops: how the reported model is selected, the optional uncertainty polish, and the artifacts a run writes. |
 | **[docs/derived-parameters.md](docs/derived-parameters.md)** | Reparametrization — declaring a functional relationship between fit parameters, and what it changes about a run. |
 | **[CLAUDE.md](CLAUDE.md)** | Orientation for coding agents working in this repository. |
