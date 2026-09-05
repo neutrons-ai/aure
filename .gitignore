@@ -214,3 +214,6 @@ __marimo__/
 .idea
 .DS_Store
 .claude/settings.json
+
+# Local code-review / audit notes - kept out of the repo deliberately.
+review.md

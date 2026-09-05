@@ -402,7 +402,7 @@ def _derived_param_delta(model: dict) -> int:
     for spec in derived:
         if not isinstance(spec, dict):
             continue
-        for target in (spec.get("assign") or {}):
+        for target in spec.get("assign") or {}:
             key = canonical_name(str(target))
             if key in counted:
                 counted.discard(key)
@@ -410,18 +410,114 @@ def _derived_param_delta(model: dict) -> int:
     return delta
 
 
-def _compute_bic(chi2: float, n_data: int, n_params: int) -> float:
+#: Marker for the BIC convention a stored ``best_bic`` was computed under.
+#: Bumped when the formula changes, so a run resumed across the change discards
+#: its stale baseline instead of comparing two different statistics (see
+#: :func:`bic_baseline_is_stale`).
+BIC_FORMULA = "chi2_total+k_ln_n"
+
+
+def _compute_bic(chi2_total: float, n_data: int, n_params: int) -> float:
     """Compute the Bayesian Information Criterion for a reflectivity fit.
 
-    BIC = n·ln(χ²) + k·ln(n)
+    BIC = χ²_total + k·ln(n)
+
+    This is the standard Gaussian result for **known** variances, which is the
+    case here: the variances are the ``dR`` column of the data file, not
+    something the fit estimates. With ``χ²_total = Σ((R−R_model)/dR)²`` we have
+    ``−2 ln L = χ²_total`` up to a constant that is identical for every model
+    of the same data, so it cancels in any comparison.
+
+    ``χ²_total`` must be the **un-normalized** sum — ``model_builder.
+    data_chisq_total``, not the reduced ``data_chisq`` that every other part of
+    the codebase reports. Passing a reduced χ² here silently flattens the
+    likelihood term by a factor of the degrees of freedom, which is most of the
+    penalty.
 
     Lower BIC indicates a better balance of fit quality and model simplicity.
+    Non-finite χ² (the fit-failed sentinel, or an infeasible constraint) gives
+    ``inf`` so a failed fit can never claim the baseline.
     """
     import math
 
-    if chi2 <= 0 or n_data <= 0:
+    if not math.isfinite(chi2_total) or chi2_total < 0 or n_data <= 0:
         return float("inf")
-    return n_data * math.log(chi2) + n_params * math.log(n_data)
+    return chi2_total + n_params * math.log(n_data)
+
+
+def bic_inputs_for(fit_result: dict, state: dict, model: Any) -> tuple:
+    """Resolve ``(χ²_total, n, k)`` for a fit, preferring what the fit recorded.
+
+    ``fitting`` stamps ``_chi2_total`` / ``_n_data`` / ``_n_free_params`` onto
+    every ``FitResult`` straight from the bumps problem, and those are always
+    right. This function exists for the one case where they are absent: a
+    checkpoint written before they were recorded, replayed by ``resume`` or
+    ``evaluate``.
+
+    In that case ``n`` and ``k`` come from the model dict — with the known
+    caveat that ``state["Q"]`` covers only the primary data file — and the total
+    χ² is reconstructed as ``χ²_reduced × max(n − k, 1)``. That reconstruction is
+    approximate (it ignores prior degrees of freedom) but it is in the right
+    units, which the stored reduced value is not.
+    """
+    recorded_chi2 = fit_result.get("_chi2_total")
+    recorded_n = fit_result.get("_n_data")
+    recorded_k = fit_result.get("_n_free_params")
+    if recorded_chi2 is not None and recorded_n and recorded_k is not None:
+        return float(recorded_chi2), int(recorded_n), int(recorded_k)
+
+    # Legacy checkpoint: derive what we can.
+    n_data = int(recorded_n or 0)
+    if not n_data:
+        n_data = _n_data_from_state(state, model)
+    n_params = int(
+        recorded_k
+        if recorded_k is not None
+        else (_count_free_params(model) if isinstance(model, dict) else 0)
+    )
+    chi2_reduced = fit_result.get("chi_squared", float("inf"))
+    dof = max(n_data - n_params, 1)
+    logger.debug(
+        "[EVALUATION] BIC inputs reconstructed from a legacy fit result "
+        "(n=%d, k=%d, dof=%d)",
+        n_data,
+        n_params,
+        dof,
+    )
+    return float(chi2_reduced) * dof, n_data, n_params
+
+
+def _n_data_from_state(state: dict, model: Any) -> int:
+    """Total data-point count, summed across every dataset of every state.
+
+    ``state["Q"]`` is only the *primary* file, so it is the last resort rather
+    than the default: using it for a co-refinement scored a multi-file fit
+    against one file's point count.
+    """
+    total = 0
+    if isinstance(model, dict):
+        for st in model.get("states") or []:
+            for ds in st.get("data_files") or []:
+                total += len(ds.get("Q") or [])
+    if not total:
+        for ds in state.get("data_files") or []:
+            total += len(ds.get("Q") or [])
+    if not total:
+        total = len(state.get("Q") or [])
+    return total
+
+
+def bic_baseline_is_stale(state: dict) -> bool:
+    """Whether ``state["best_bic"]`` predates the current BIC convention.
+
+    A resumed run can carry a ``best_bic`` computed under the old
+    ``n·ln(χ²) + k·ln(n)`` formula. The two are on entirely different scales, so
+    comparing them would make the regression guardrail fire (or fail to fire)
+    for arithmetic reasons. Treat such a baseline as absent.
+    """
+    if state.get("best_bic") is None:
+        return False
+    return state.get("bic_formula") != BIC_FORMULA
 
 
 def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
@@ -455,16 +551,23 @@ def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
     logger.info(f"[EVALUATION] Current χ² = {chi2:.3f}")
 
     # ========== BIC (Complexity Penalty) ==========
+    # The inputs come off the fit result, which ``fitting`` stamped from the
+    # bumps problem — NOT re-derived from the model dict here. Re-deriving them
+    # is what made this node and ``fitting`` disagree: they wrote and compared
+    # BIC values computed with different n and k on every co-refinement run.
     current_model = state.get("current_model")
-    n_data = len(state.get("Q", []))
-    if isinstance(current_model, dict) and n_data > 0:
-        n_params = _count_free_params(current_model)
-        n_layers = len(current_model.get("layers", []))
-        bic = _compute_bic(chi2, n_data, n_params)
+    chi2_total, n_data, n_params = bic_inputs_for(latest_fit, state, current_model)
+    if n_data > 0:
+        n_layers = (
+            len(current_model.get("layers", []))
+            if isinstance(current_model, dict)
+            else 0
+        )
+        bic = _compute_bic(chi2_total, n_data, n_params)
         latest_fit["bic"] = bic
         logger.info(
-            f"[EVALUATION] BIC = {bic:.1f} (k={n_params}, "
-            f"layers={n_layers}, n={n_data})"
+            f"[EVALUATION] BIC = {bic:.1f} (χ²_total={chi2_total:.1f}, "
+            f"k={n_params}, layers={n_layers}, n={n_data})"
         )
     else:
         n_params = 0
@@ -785,6 +888,17 @@ def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
         # Revert to the best BIC model (the simpler one).
         best_bic_val = state.get("best_bic")
         best_bic_mdl = state.get("best_bic_model")
+        if bic_baseline_is_stale(state):
+            # Resumed across a change of BIC convention. The stored value is on
+            # a different scale, so a comparison would fire (or not) for
+            # arithmetic reasons rather than statistical ones.
+            logger.warning(
+                "[EVALUATION] Ignoring best_bic=%.1f — it predates the current "
+                "BIC convention (%s); this iteration re-establishes the baseline",
+                best_bic_val,
+                BIC_FORMULA,
+            )
+            best_bic_val = None
         bic_reverted = False
         if (
             bic is not None

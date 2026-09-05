@@ -339,12 +339,18 @@ numbering is topical, not chronological — `evaluation_node` runs 1 → 2 → 4
      lower χ² because it gives the fit more freedom. What we actually
      want is a model that is *statistically justified*, measured by the
      Bayesian Information Criterion:
-     $$\mathrm{BIC} = k \ln n + \chi^2$$
-     where $k$ is the number of free parameters and $n$ is the number of
-     data points. If the most recent iteration added parameters and the
-     BIC went up despite χ² going down, the added complexity was not
-     worth it. The node reverts to the best-BIC model and marks the
-     hypothesis that was just tried as `rejected`.
+     $$\mathrm{BIC} = \chi^2_\text{total} + k \ln n$$
+     where $k$ is the number of free parameters, $n$ is the total number of
+     data points, and $\chi^2_\text{total}$ is the **un-normalized** sum
+     $\sum_i ((R_i - R_{\text{model},i})/dR_i)^2$ — not the reduced χ²
+     reported everywhere else. This is the standard Gaussian result for
+     known variances, which is what the `dR` column gives us. See
+     [metrics.md §3](metrics.md#3-bic--complexity-penalty) for how the three
+     quantities are obtained and why the reduced χ² must not be used here.
+     If the most recent iteration added parameters and the BIC went up
+     despite χ² going down, the added complexity was not worth it. The
+     node reverts to the best-BIC model and marks the hypothesis that was
+     just tried as `rejected`.
 
 6. **Clamp acceptance to the χ² acceptance window.** `CHI2_MAX` (or the setup's
    `chi2_max:`) is the run's contract with the user, so a **finite χ² inside the

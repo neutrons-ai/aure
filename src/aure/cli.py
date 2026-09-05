@@ -11,10 +11,7 @@ import contextlib
 import json
 import logging
 import math
-import subprocess
 import sys
-import tempfile
-import urllib.request
 from pathlib import Path
 from typing import Any, Optional
 
@@ -32,64 +29,6 @@ from .llm import (  # noqa: E402
     LLMTimeoutError,
     get_llm_timeout,
 )
-
-
-_ALCF_AUTH_SCRIPT_URL = (
-    "https://raw.githubusercontent.com/argonne-lcf/inference-endpoints/"
-    "refs/heads/main/inference_auth_token.py"
-)
-
-
-def _alcf_authenticate() -> bool:
-    """Download the ALCF auth helper and run ``authenticate``.
-
-    Returns True if the script appeared to succeed.
-    """
-    with tempfile.TemporaryDirectory() as tmp:
-        script = Path(tmp) / "inference_auth_token.py"
-        click.echo()
-        click.echo("    Downloading inference_auth_token.py …", nl=False)
-        try:
-            urllib.request.urlretrieve(_ALCF_AUTH_SCRIPT_URL, script)
-            click.echo(click.style(" done", fg="green"))
-        except Exception as exc:
-            click.echo(click.style(f" failed: {exc}", fg="red"))
-            return False
-
-        click.echo("    Launching Globus authentication (a browser window may open)…")
-        click.echo()
-        result = subprocess.run(
-            [sys.executable, str(script), "authenticate"],
-        )
-        if result.returncode != 0:
-            click.echo()
-            click.echo(
-                click.style("    Authentication script exited with an error.", fg="red")
-            )
-            return False
-
-        click.echo()
-        click.echo(click.style("    ✓ Authentication complete.", fg="green"))
-        click.echo("    You can now obtain a token by running:")
-        click.echo(f"      python {script.name} get_access_token")
-        click.echo("    or set ALCF_ACCESS_TOKEN in your environment.")
-        return True
-
-
-def _show_alcf_auth_hint(*, offer_fix: bool = False) -> None:
-    """Print ALCF authentication instructions, optionally offering to run them."""
-    if offer_fix:
-        if click.confirm(
-            "    Download and run the ALCF auth script now?", default=True
-        ):
-            _alcf_authenticate()
-            return
-
-    click.echo("      # Download the authentication helper script")
-    click.echo(f"      wget {_ALCF_AUTH_SCRIPT_URL}")
-    click.echo()
-    click.echo("      # Authenticate with your Globus account")
-    click.echo("      python inference_auth_token.py authenticate")
 
 
 def _check_llm_status(
@@ -124,7 +63,7 @@ def _check_llm_status(
         if not quiet:
             click.echo("    Testing connection...", nl=False)
         # Suppress noisy provider-level warnings during the test call
-        # (e.g. ALCF globus_sdk fallback messages).
+        # (e.g. provider-level credential or retry warnings).
         _llm_logger = logging.getLogger("aure.llm")
         _old_level = _llm_logger.level
         _llm_logger.setLevel(logging.CRITICAL)
@@ -251,10 +190,7 @@ def cli():
 @cli.command("check-llm")
 @click.option("--json", "output_json", is_flag=True, help="Output as JSON")
 @click.option("--no-test", is_flag=True, help="Skip the live connection test")
-@click.option(
-    "--fix", is_flag=True, help="Attempt to fix issues (e.g. download ALCF auth script)"
-)
-def check_llm(output_json: bool, no_test: bool, fix: bool):
+def check_llm(output_json: bool, no_test: bool):
     """
     Check LLM configuration and connectivity.
 
@@ -262,13 +198,9 @@ def check_llm(output_json: bool, no_test: bool, fix: bool):
     are present, and (unless --no-test) sends a tiny test prompt to
     verify the connection works end-to-end.
 
-    Use --fix to automatically download and run the ALCF authentication
-    helper when the provider is 'alcf' and credentials are missing or
-    expired.
-
     \b
     Environment variables used:
-        LLM_PROVIDER     openai | gemini | alcf | local
+        LLM_PROVIDER     openai | gemini | local
         LLM_MODEL        model name (default depends on provider)
         LLM_API_KEY      API key (or OPENAI_API_KEY / GEMINI_API_KEY)
         LLM_BASE_URL     base URL (required for 'local' provider)
@@ -280,20 +212,13 @@ def check_llm(output_json: bool, no_test: bool, fix: bool):
         aure check-llm
         aure check-llm --json
         aure check-llm --no-test
-        aure check-llm --fix
     """
     from .llm.config import get_llm_config
-    import os
 
     config = get_llm_config()
     info = get_llm_info()
     has_key = bool(config.get("api_key"))
-
-    # For ALCF the credential is an access token, not an API key
-    if config["provider"] == "alcf":
-        has_credential = bool(os.environ.get("ALCF_ACCESS_TOKEN"))
-    else:
-        has_credential = has_key
+    has_credential = has_key
 
     if not output_json:
         click.echo()
@@ -302,19 +227,11 @@ def check_llm(output_json: bool, no_test: bool, fix: bool):
         click.echo()
         click.echo(f"    Provider:    {config['provider'] or '(not set)'}")
         click.echo(f"    Model:       {config['model']}")
-        if config["provider"] == "alcf":
-            has_token = bool(os.environ.get("ALCF_ACCESS_TOKEN"))
-            click.echo(
-                f"    Token:       {'••••' + os.environ['ALCF_ACCESS_TOKEN'][-4:] if has_token else click.style('NOT SET', fg='red')}"
-            )
-            click.echo(f"    ALCF cluster: {config.get('alcf_cluster', 'sophia')}")
-            click.echo(f"    Base URL:    {info.get('base_url', '(unknown)')}")
-        else:
-            click.echo(
-                f"    API key:     {'••••' + config['api_key'][-4:] if has_key else click.style('NOT SET', fg='red')}"
-            )
-            if config.get("base_url"):
-                click.echo(f"    Base URL:    {config['base_url']}")
+        click.echo(
+            f"    API key:     {'••••' + config['api_key'][-4:] if has_key else click.style('NOT SET', fg='red')}"
+        )
+        if config.get("base_url"):
+            click.echo(f"    Base URL:    {config['base_url']}")
         click.echo(f"    Timeout:     {get_llm_timeout()}s")
         click.echo(f"    Temperature: {config['temperature']}")
         click.echo()
@@ -326,22 +243,19 @@ def check_llm(output_json: bool, no_test: bool, fix: bool):
             ok, msg = False, "LLM not available"
             click.echo(click.style("  ✗ LLM not available", fg="red", bold=True))
             click.echo()
-            if config["provider"] == "alcf":
-                click.echo("    Authenticate with ALCF to obtain an access token:")
-                click.echo()
-                _show_alcf_auth_hint(offer_fix=fix)
-                click.echo()
-                click.echo("    Then set the token:")
-                click.echo("      export ALCF_ACCESS_TOKEN=<your-token>")
-            elif config["provider"] in ("openai", "gemini") and not has_key:
+            if config["provider"] in ("openai", "gemini") and not has_key:
                 click.echo("    Set an API key:")
                 click.echo("      export LLM_API_KEY=<your-key>")
                 click.echo("    or add to .env:")
                 click.echo(f"      LLM_PROVIDER={config['provider']}")
                 click.echo("      LLM_API_KEY=<your-key>")
             elif config["provider"] == "local" and not config.get("base_url"):
-                click.echo("    Set a base URL for local provider:")
+                click.echo("    Set a base URL for the local provider:")
                 click.echo("      export LLM_BASE_URL=http://localhost:11434/v1")
+                click.echo("    Any OpenAI-compatible endpoint works here, including a")
+                click.echo(
+                    "    remote facility inference API; set LLM_API_KEY to its token."
+                )
             click.echo()
     elif no_test:
         ok, msg = True, "Credentials present (skipped live test)"
@@ -359,16 +273,6 @@ def check_llm(output_json: bool, no_test: bool, fix: bool):
                 click.echo(click.style(" ✓ Connected", fg="green"))
             else:
                 click.echo(click.style(f" ✗ {msg}", fg="red"))
-                if config["provider"] == "alcf":
-                    click.echo()
-                    click.echo(
-                        click.style(
-                            "    ALCF tokens expire periodically. Re-authenticate:",
-                            fg="yellow",
-                        )
-                    )
-                    click.echo()
-                    _show_alcf_auth_hint(offer_fix=fix)
             click.echo()
 
     if output_json:
@@ -1825,8 +1729,6 @@ def _build_env_overrides(merged: dict) -> dict[str, str]:
         "llm_base_url": "LLM_BASE_URL",
         "llm_temperature": "LLM_TEMPERATURE",
         "llm_timeout": "LLM_TIMEOUT",
-        "alcf_cluster": "ALCF_CLUSTER",
-        "alcf_access_token": "ALCF_ACCESS_TOKEN",
     }
     overrides: dict[str, str] = {}
     for yaml_key, env_key in mapping.items():

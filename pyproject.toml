@@ -7,7 +7,7 @@ name = "aure"
 version = "0.9.0"
 description = "Thin film reflectivity sample builder with neural network foundation model"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 authors = [{ name = "Oak Ridge National Laboratory" }]
 
 dependencies = [
@@ -36,11 +36,10 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "pytest-cov>=4.0"]
-alcf = ["globus-sdk>=3.0"]
 export = [
   "nr-isaac-format @ git+https://github.com/isaac-neutrons/nr-isaac-format.git",
 ]
-all = ["aure[dev,alcf,export]"]
+all = ["aure[dev,export]"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
