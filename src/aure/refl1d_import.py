@@ -33,7 +33,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import shutil
 from collections import OrderedDict
@@ -49,6 +48,7 @@ from .nodes.evaluation import (
     bic_inputs_for,
 )
 from .nodes.model_builder import bic_inputs
+from . import instruments
 from .state import (
     AmbientInfo,
     DatasetInfo,
@@ -141,35 +141,29 @@ def _classify_orientation(stack_materials: list[str]) -> bool:
 
 
 # --------------------------------------------------------------------------
-# State kind heuristic (combined vs partials), borrowed from config
+# State kind, delegated to the instrument registry
 # --------------------------------------------------------------------------
-
-_PARTIAL_RE = re.compile(r"_(\d+)_(\d+)_partial\.txt$", re.IGNORECASE)
-_COMBINED_RE = re.compile(r"_combined_data_auto\.txt$", re.IGNORECASE)
-_PARTIAL_SETID_RE = re.compile(r"REFL_(\d+)_\d+_\d+_partial\.txt$", re.IGNORECASE)
-_COMBINED_SETID_RE = re.compile(r"REFL_(\d+)_combined_data_auto\.txt$", re.IGNORECASE)
 
 
 def _detect_state_kind(file_paths: list[str]) -> str:
-    """Filename-based ``combined`` vs ``partials`` classifier for a state."""
+    """Classify a state's files as ``combined`` or ``partials``.
+
+    Roles come from each file's resolved instrument, by filename only: this
+    runs while reconstructing a state from a deserialised problem, and the
+    data files may still be in the process of being written out.
+
+    Note the asymmetry with ``config._detect_kind``, which is deliberate and
+    predates the registry: this classifier does not raise on a mixed state,
+    it just calls anything that is not wholly partials ``combined``.
+    """
     combined, partials = 0, 0
-    for p in file_paths:
-        name = os.path.basename(p)
-        if _PARTIAL_RE.search(name):
+    for path in file_paths:
+        if instruments.file_role(path) == instruments.PARTIAL:
             partials += 1
         else:
             combined += 1
     return "partials" if partials and not combined else "combined"
 
-
-def _extract_set_id(file_path: str) -> Optional[str]:
-    """Return the REF_L set_id encoded in *file_path* or None."""
-    name = os.path.basename(file_path)
-    for pattern in (_COMBINED_SETID_RE, _PARTIAL_SETID_RE):
-        m = pattern.search(name)
-        if m:
-            return m.group(1)
-    return None
 
 
 # --------------------------------------------------------------------------
@@ -1481,7 +1475,6 @@ def import_refl1d(
     experiments = list(problem.models)
     flat_data_files = flatten_data_files(states_list)
     if setup is not None:
-        from .nodes.intake import _parse_theta_from_header
         from .tools.data_tools import load_reflectivity_data
 
         for ds in flat_data_files:
@@ -1491,14 +1484,15 @@ def import_refl1d(
             ds["R"] = data["R"].tolist()
             dR = data.get("dR")
             ds["dR"] = dR.tolist() if dR is not None else [0.0] * len(ds["Q"])
-            # Deterministic theta extraction from the header; falls back
-            # to 0.0 for combined / multi-segment files (intake-style
-            # behaviour). dq_is_fwhm and num_segments use the same
-            # defaults the intake node falls back to when the LLM is
-            # unavailable.
-            ds["theta"] = _parse_theta_from_header(file_path)
-            ds.setdefault("dq_is_fwhm", True)
-            ds.setdefault("num_segments", 0)
+            # Deterministic header read, per the file's own instrument: theta
+            # falls back to 0.0 for a combined / multi-segment file, and the
+            # dQ convention is the instrument's rather than a global default.
+            # This is the same parse the intake node falls back to when no
+            # LLM is available.
+            meta = instruments.header_metadata(file_path)
+            ds["theta"] = meta["theta"]
+            ds.setdefault("dq_is_fwhm", meta["dq_is_fwhm"])
+            ds.setdefault("num_segments", meta["num_segments"])
     else:
         for ds, exp in zip(flat_data_files, experiments):
             probe = exp.probe

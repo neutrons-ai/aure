@@ -1031,9 +1031,9 @@ def _with_angle_theta(model: dict) -> dict:
             if ds.get("theta"):
                 continue
             try:
-                from aure.nodes.intake import _parse_theta_from_header
+                from aure import instruments
 
-                t = _parse_theta_from_header(ds.get("file", ""))
+                t = instruments.header_metadata(ds.get("file", ""))["theta"]
             except Exception:
                 t = 0.0
             if t and t > 0:

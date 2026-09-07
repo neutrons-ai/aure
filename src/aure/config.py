@@ -22,9 +22,10 @@ See ``aure_config.example.yaml`` in the repository root for the full schema.
 from __future__ import annotations
 
 import logging
-import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TypedDict
+
+from . import instruments
 
 logger = logging.getLogger(__name__)
 
@@ -154,11 +155,10 @@ def _empty_config() -> UserConfig:
 # ------------------------------------------------------------------
 
 
-# Filename heuristics (REF_L convention) — keep loose; intake re-validates
-# from the actual file headers.
-_COMBINED_RE = re.compile(r"_combined_data_auto\.txt$", re.IGNORECASE)
-_PARTIAL_RE = re.compile(r"_(\d+)_(\d+)_partial\.txt$", re.IGNORECASE)
-_PARTIAL_SETID_RE = re.compile(r"REFL_(\d+)_\d+_\d+_partial\.txt$", re.IGNORECASE)
+# File classification is delegated to the instrument registry
+# (:mod:`aure.instruments`) so a facility can add its own conventions without
+# editing this module. The REF_L patterns that used to live here are in
+# ``instruments/ref_l.py``, unchanged.
 
 _NUISANCE_KEYS = ("theta_offset", "sample_broadening")
 
@@ -312,22 +312,28 @@ def _parse_states(
 
 
 def _detect_kind(state_name: str, data_files: List[dict]) -> str:
-    """Heuristically classify a state's files as combined or partials.
+    """Classify a state's files as ``combined`` or ``partials``.
 
-    Mixed kinds within one state raise ConfigError.  Multiple partial
-    files must share a single set_id.  Unknown filenames are tolerated
-    (treated as combined) since intake re-validates from headers.
+    The per-file role comes from the file's resolved instrument
+    (:func:`aure.instruments.file_role`), by filename only — this runs while
+    parsing a setup file, so the data need not be readable yet, and intake
+    re-validates from the actual headers later.
+
+    Mixed roles within one state raise ConfigError. Partial files must share
+    one group key (a REF_L set id, or whatever the instrument uses). A file no
+    instrument claims reports :data:`~aure.instruments.UNKNOWN` and is counted
+    as combined, which is what an unrecognised filename has always done.
     """
     combined = []
     partials = []
     for ds in data_files:
-        name = Path(ds["file"]).name
-        if _PARTIAL_RE.search(name):
-            partials.append(name)
-        elif _COMBINED_RE.search(name):
-            combined.append(name)
+        path = ds["file"]
+        role = instruments.file_role(path)
+        if role == instruments.PARTIAL:
+            partials.append(path)
         else:
-            combined.append(name)  # tolerate unknown — let intake decide
+            # COMBINED, or UNKNOWN — tolerated as combined; intake decides.
+            combined.append(path)
 
     if combined and partials:
         raise ConfigError(
@@ -335,15 +341,15 @@ def _detect_kind(state_name: str, data_files: List[dict]) -> str:
         )
 
     if partials:
-        set_ids = set()
-        for name in partials:
-            m = _PARTIAL_SETID_RE.search(name)
-            if m:
-                set_ids.add(m.group(1))
-        if len(set_ids) > 1:
+        group_keys = {
+            key
+            for key in (instruments.group_key(path) for path in partials)
+            if key is not None
+        }
+        if len(group_keys) > 1:
             raise ConfigError(
                 f"State {state_name!r}: partial files must share one set_id "
-                f"(found: {sorted(set_ids)})."
+                f"(found: {sorted(group_keys)})."
             )
         return "partials"
 
