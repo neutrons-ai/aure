@@ -252,3 +252,126 @@ def test_unknown_env_override_is_ignored(monkeypatch):
     assert I.resolve_by_name("/d/REFL_1_2_3_partial.txt").name == "REF_L"
 
 
+# ---------------------------------------------------------------------------
+# Phase 3: the previously silent unrecognised-file branch
+# ---------------------------------------------------------------------------
+
+
+def _state_yaml(tmp_path, filename, extra=""):
+    """Write a data file and a one-state config that references it."""
+    data = tmp_path / filename
+    data.write_text("# header\n0.01 1.0 0.1 0.001\n0.02 0.5 0.05 0.001\n")
+    cfg = tmp_path / "cfg.yaml"
+    cfg.write_text(
+        "states:\n"
+        f"  - name: A\n"
+        f"    data_files: [{filename}]\n" + (f"    {extra}\n" if extra else "")
+    )
+    return cfg
+
+
+def test_unrecognised_file_is_warned_about_not_silent(tmp_path, caplog):
+    from aure.config import load_user_config
+
+    cfg = _state_yaml(tmp_path, "mystery.xyz")
+    with caplog.at_level("WARNING"):
+        load_user_config(cfg)
+    assert any(
+        "no registered instrument recognises" in r.message.lower()
+        for r in caplog.records
+    ), caplog.text
+
+
+def test_recognised_file_produces_no_such_warning(tmp_path, caplog):
+    from aure.config import load_user_config
+
+    cfg = _state_yaml(tmp_path, "REFL_1_combined_data_auto.txt")
+    with caplog.at_level("WARNING"):
+        load_user_config(cfg)
+    assert not any(
+        "no registered instrument recognises" in r.message.lower()
+        for r in caplog.records
+    )
+
+
+def test_nuisance_on_an_unrecognised_file_explains_why(tmp_path):
+    """Previously this said "detected kind: combined", which described the
+    symptom. It must now name the instrument gap and how to close it."""
+    from aure.config import load_user_config
+
+    cfg = _state_yaml(tmp_path, "mystery.xyz", extra="theta_offset: true")
+    with pytest.raises(ConfigError) as exc:
+        load_user_config(cfg)
+    msg = str(exc.value)
+    assert "partials" in msg  # the historical wording callers match on
+    assert "no registered instrument recognises" in msg.lower()
+    assert "docs/instruments.md" in msg
+    assert _ENV_OVERRIDE in msg
+
+
+def test_nuisance_still_allowed_on_a_ref_l_partial(tmp_path):
+    from aure.config import load_user_config
+
+    cfg = _state_yaml(
+        tmp_path, "REFL_1_2_3_partial.txt", extra="theta_offset: true"
+    )
+    parsed = load_user_config(cfg)
+    assert parsed["states"][0]["theta_offset"]["min"] == -0.02
+
+
+def test_nuisance_still_rejected_on_a_ref_l_combined_file(tmp_path):
+    from aure.config import load_user_config
+
+    cfg = _state_yaml(
+        tmp_path, "REFL_1_combined_data_auto.txt", extra="theta_offset: true"
+    )
+    with pytest.raises(ConfigError, match="partials"):
+        load_user_config(cfg)
+
+
+def test_state_records_which_instrument_claimed_it(tmp_path):
+    from aure.config import load_user_config
+
+    cfg = _state_yaml(tmp_path, "REFL_1_combined_data_auto.txt")
+    assert load_user_config(cfg)["states"][0]["_instrument"] == "REF_L"
+
+
+def test_state_records_generic_for_an_unclaimed_file(tmp_path):
+    from aure.config import load_user_config
+
+    cfg = _state_yaml(tmp_path, "mystery.xyz")
+    assert load_user_config(cfg)["states"][0]["_instrument"] == "generic"
+
+
+def test_instrument_marker_is_stripped_on_setup_dump(tmp_path):
+    """``_instrument`` is private state, not part of the setup schema."""
+    from aure.setup import dump_setup, load_setup
+
+    data = tmp_path / "REFL_1_combined_data_auto.txt"
+    data.write_text("# h\n0.01 1.0 0.1 0.001\n")
+    src = tmp_path / "s.yaml"
+    src.write_text(
+        "sample_description: x\n"
+        "states:\n"
+        "  - name: A\n"
+        f"    data_files: [{data.name}]\n"
+    )
+    import yaml
+
+    # Assert on structure, not substring: tmp_path itself can contain the word.
+    dumped = yaml.safe_load(dump_setup(load_setup(src)))
+    for state in dumped["states"]:
+        assert not [k for k in state if k.startswith("_")], state
+
+
+def test_a_custom_instrument_can_permit_nuisance_on_its_own_files(
+    tmp_path, fake_registered
+):
+    """The gate asks the instrument, so a format whose files are all
+    single-angle can accept theta_offset even though REF_L would not."""
+    from aure.config import load_user_config
+
+    cfg = _state_yaml(tmp_path, "fake_12_a.dat", extra="theta_offset: true")
+    parsed = load_user_config(cfg)
+    assert parsed["states"][0]["_instrument"] == "FAKE"
+    assert parsed["states"][0]["theta_offset"]["max"] == 0.02

@@ -132,7 +132,10 @@ def load_user_config(path: Optional[str | Path] = None) -> UserConfig:
     if cfg["model_constraints"]:
         logger.info("[CONFIG]   %d model constraints", len(cfg["model_constraints"]))
     if cfg["states"]:
-        kinds = ", ".join(f"{s['name']}({s['_kind']})" for s in cfg["states"])
+        kinds = ", ".join(
+            f"{s['name']}({s['_kind']}/{s.get('_instrument') or 'generic'})"
+            for s in cfg["states"]
+        )
         logger.info("[CONFIG]   %d states: %s", len(cfg["states"]), kinds)
 
     return cfg
@@ -273,19 +276,65 @@ def _parse_states(
 
         kind = _detect_kind(name, data_files)
 
-        # Per-state nuisance parameters are partials-only.
+        # Per-state nuisance parameters describe one angle's optics, so they
+        # are only meaningful on a file the instrument classifies as a single
+        # measurement. Ask the instrument rather than the filename: that is
+        # what lets another facility declare its own rule, and it turns the
+        # previously silent "no instrument recognised this file" case into an
+        # error that says so.
+        resolved = [
+            (Path(ds["file"]).name, instruments.resolve_by_name(ds["file"]))
+            for ds in data_files
+        ]
+        roles = [(fn, inst, inst.file_role(fn)) for fn, inst in resolved]
         for key in _NUISANCE_KEYS:
             if key in entry and entry[key] not in (False, None):
-                if kind != "partials":
-                    raise ConfigError(
-                        f"State {name!r}: `{key}` is only valid for partials states "
-                        f"(detected kind: {kind})."
+                offenders = [
+                    (fn, inst.name, role)
+                    for fn, inst, role in roles
+                    if not inst.role_supports_nuisance(role)
+                ]
+                if offenders:
+                    detail = "; ".join(
+                        f"{fn} → {iname} reports {role!r}"
+                        for fn, iname, role in offenders
                     )
+                    hint = ""
+                    if all(role == instruments.UNKNOWN for _, _, role in offenders):
+                        hint = (
+                            " No registered instrument recognises these files, so "
+                            "AuRE cannot tell whether they are single-angle "
+                            "measurements. Add an instrument for this format (see "
+                            "docs/instruments.md) or set AURE_INSTRUMENT."
+                        )
+                    raise ConfigError(
+                        f"State {name!r}: `{key}` is only valid for partials "
+                        f"(single-angle) files: {detail}.{hint}"
+                    )
+
+        # The unrecognised-file branch used to be silent: an unknown filename
+        # was quietly counted as combined. Say it out loud — a run whose data
+        # no instrument claims is getting default conventions, and that is
+        # worth knowing before the fit rather than after.
+        unclaimed = [fn for fn, inst, role in roles if role == instruments.UNKNOWN]
+        if unclaimed:
+            logger.warning(
+                "[CONFIG] State %r: no registered instrument recognises %s — "
+                "treating as a combined curve with default conventions "
+                "(dQ as FWHM, no incident angle). Known instruments: %s.",
+                name,
+                ", ".join(unclaimed),
+                ", ".join(i.name for i in instruments.registered()),
+            )
 
         state: dict = {
             "name": name,
             "data_files": data_files,
             "_kind": kind,
+            # Which instrument(s) claimed this state's files. Private, so it
+            # is stripped on setup dump, but it is checkpointed with the state
+            # — a run's own record of how its data was interpreted.
+            "_instrument": ",".join(sorted({inst.name for _, inst in resolved})),
         }
         for opt in (
             "extra_description",
