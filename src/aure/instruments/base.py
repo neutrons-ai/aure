@@ -118,6 +118,21 @@ class Instrument(Protocol):
         ...
 
 
+#: Optional attribute name. An instrument may set ``authoritative_fields`` to
+#: the :data:`DEFAULT_HEADER_METADATA` keys its format *defines* rather than
+#: merely hints at. Those win over the LLM header parse in
+#: :func:`aure.nodes.intake.parse_file_header`, because a standard that
+#: specifies its own resolution convention is not something to guess about.
+#: Absent or empty means "the LLM's reading wins", which is how AuRE has
+#: always behaved.
+AUTHORITATIVE_FIELDS_ATTR = "authoritative_fields"
+
+
+def authoritative_fields(instrument) -> tuple:
+    """The fields *instrument* is authoritative about; ``()`` if it says none."""
+    return tuple(getattr(instrument, AUTHORITATIVE_FIELDS_ATTR, ()) or ())
+
+
 class GenericInstrument:
     """Fallback for a file no registered instrument claims.
 

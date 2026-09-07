@@ -113,6 +113,10 @@ def test_ref_l_claims_its_filenames():
     assert I.resolve_by_name("/d/REFL_1_combined_data_auto.txt").name == "REF_L"
 
 
+def test_orso_claims_the_ort_extension():
+    assert I.resolve_by_name("/d/anything.ort").name == "ORSO"
+
+
 def test_unknown_file_falls_back_to_generic():
     inst = I.resolve_by_name("/d/mystery.xyz")
     assert inst.name == "generic"
@@ -156,6 +160,92 @@ def test_only_partials_support_nuisance_parameters():
 def test_generic_refuses_nuisance_parameters():
     assert I.generic().role_supports_nuisance(UNKNOWN) is False
     assert I.generic().role_supports_nuisance(PARTIAL) is False
+
+
+# ---------------------------------------------------------------------------
+# ORSO — reads its own declared metadata
+# ---------------------------------------------------------------------------
+
+ORT_SINGLE_ANGLE = """\
+# # ORSO reflectivity data file | 1.0 standard | YAML encoding
+# data_source:
+#   experiment:
+#     instrument: Amor
+#     probe: neutron
+#   measurement:
+#     instrument_settings:
+#       incident_angle: {magnitude: 0.6, unit: deg}
+# columns:
+# - {name: Qz, unit: 1/angstrom}
+# - {name: R}
+# - {name: sR}
+# - {name: sQz}
+0.01 1.0 0.01 0.001
+0.02 0.5 0.01 0.001
+"""
+
+ORT_ANGLE_RANGE = """\
+# # ORSO reflectivity data file | 1.0 standard | YAML encoding
+# data_source:
+#   experiment:
+#     instrument: D17
+#   measurement:
+#     instrument_settings:
+#       incident_angle: {magnitude: [0.3, 2.4], unit: deg}
+# columns:
+# - {name: Qz}
+# - {name: R}
+0.01 1.0
+"""
+
+
+def _write(tmp_path, name, text):
+    p = tmp_path / name
+    p.write_text(text)
+    return str(p)
+
+
+def test_orso_single_angle_is_a_partial(tmp_path):
+    path = _write(tmp_path, "one.ort", ORT_SINGLE_ANGLE)
+    assert I.file_role(path) == PARTIAL
+
+
+def test_orso_angle_range_is_a_combined_curve(tmp_path):
+    path = _write(tmp_path, "many.ort", ORT_ANGLE_RANGE)
+    assert I.file_role(path) == COMBINED
+
+
+def test_orso_recovers_instrument_and_theta(tmp_path):
+    path = _write(tmp_path, "one.ort", ORT_SINGLE_ANGLE)
+    meta = I.header_metadata(path)
+    assert meta["instrument"] == "Amor"
+    assert meta["theta"] == pytest.approx(0.6)
+
+
+def test_orso_declares_a_one_sigma_resolution(tmp_path):
+    """An ORSO ``sQz`` column is a standard deviation, not a FWHM. Taking the
+    global ``dq_is_fwhm=True`` default would over-broaden it by 2.35."""
+    path = _write(tmp_path, "one.ort", ORT_SINGLE_ANGLE)
+    assert I.header_metadata(path)["dq_is_fwhm"] is False
+
+
+def test_orso_encodes_no_grouping(tmp_path):
+    path = _write(tmp_path, "one.ort", ORT_SINGLE_ANGLE)
+    assert I.group_key(path) is None
+
+
+def test_orso_survives_an_unparsable_header(tmp_path):
+    path = _write(
+        tmp_path, "bad.ort", "# data_source: [this: is: not: yaml\n0.01 1.0\n"
+    )
+    meta = I.header_metadata(path)
+    assert meta["theta"] == 0.0
+    assert meta["instrument"] == "ORSO"
+
+
+def test_orso_claims_an_ort_header_under_another_extension(tmp_path):
+    path = _write(tmp_path, "curve.dat", ORT_SINGLE_ANGLE)
+    assert I.resolve(path).name == "ORSO"
 
 
 # ---------------------------------------------------------------------------
@@ -375,3 +465,64 @@ def test_a_custom_instrument_can_permit_nuisance_on_its_own_files(
     parsed = load_user_config(cfg)
     assert parsed["states"][0]["_instrument"] == "FAKE"
     assert parsed["states"][0]["theta_offset"]["max"] == 0.02
+
+
+# ---------------------------------------------------------------------------
+# Authoritative fields: a format that defines a convention outranks the LLM
+# ---------------------------------------------------------------------------
+
+
+def test_orso_dq_convention_survives_a_contradicting_llm(tmp_path, monkeypatch):
+    """The LLM header parse is the primary path. An ORSO file's dQ convention
+    is fixed by the standard, so it must not be overridden by a guess."""
+    from aure.nodes import intake
+
+    path = _write(tmp_path, "one.ort", ORT_SINGLE_ANGLE)
+
+    class _Resp:
+        content = (
+            '{"dq_is_fwhm": true, "num_segments": 1, '
+            '"theta": 0.6, "instrument": "guessed"}'
+        )
+
+    monkeypatch.setattr(intake, "llm_available", lambda: True)
+    monkeypatch.setattr(intake, "get_llm", lambda **kw: object())
+    monkeypatch.setattr(intake, "invoke_with_timeout", lambda *a, **k: _Resp())
+
+    meta = intake.parse_file_header(path)
+    assert meta["dq_is_fwhm"] is False, "ORSO must win on its own convention"
+    # Fields the instrument does not claim still come from the LLM.
+    assert meta["instrument"] == "guessed"
+    assert meta["num_segments"] == 1
+
+
+def test_ref_l_leaves_the_llm_reading_alone(tmp_path, monkeypatch):
+    """REF_L declares no authoritative fields, so nothing changes for it."""
+    from aure.nodes import intake
+
+    path = tmp_path / "REFL_9_1_1_partial.txt"
+    path.write_text("# DataRun TwoTheta(deg)\n# 9_1 1.0\n0.01 1.0 0.1 0.001\n")
+
+    class _Resp:
+        content = (
+            '{"dq_is_fwhm": false, "num_segments": 1, '
+            '"theta": 0.5, "instrument": "REF_L"}'
+        )
+
+    monkeypatch.setattr(intake, "llm_available", lambda: True)
+    monkeypatch.setattr(intake, "get_llm", lambda **kw: object())
+    monkeypatch.setattr(intake, "invoke_with_timeout", lambda *a, **k: _Resp())
+
+    meta = intake.parse_file_header(path)
+    assert meta["dq_is_fwhm"] is False  # the LLM's answer, untouched
+
+
+def test_instrument_parse_is_used_when_no_llm(tmp_path, monkeypatch):
+    from aure.nodes import intake
+
+    path = _write(tmp_path, "one.ort", ORT_SINGLE_ANGLE)
+    monkeypatch.setattr(intake, "llm_available", lambda: False)
+    meta = intake.parse_file_header(path)
+    assert meta["instrument"] == "Amor"
+    assert meta["theta"] == pytest.approx(0.6)
+    assert meta["dq_is_fwhm"] is False

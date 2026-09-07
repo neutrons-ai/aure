@@ -251,6 +251,25 @@ def parse_file_header(file_path: str) -> dict:
             for key in result:
                 if key in parsed:
                     result[key] = parsed[key]
+            # A format that *defines* a field outranks the LLM's reading of
+            # it — an ORSO `sQz` column is one sigma by specification, not by
+            # inference. Instruments that declare nothing keep the LLM's
+            # answer, which is how this has always behaved.
+            instrument = instruments.resolve(file_path)
+            authoritative = instruments.authoritative_fields(instrument)
+            if authoritative:
+                own = instrument.header_metadata(file_path)
+                for key in authoritative:
+                    if key in result and key in own:
+                        if result[key] != own[key]:
+                            logger.info(
+                                "[INTAKE] %s defines %s=%r; overriding the LLM's %r",
+                                instrument.name,
+                                key,
+                                own[key],
+                                result[key],
+                            )
+                        result[key] = own[key]
             logger.info(
                 "[INTAKE] Header metadata for %s: dq_is_fwhm=%s, theta=%.4f, "
                 "segments=%d, instrument=%s",
