@@ -1816,8 +1816,8 @@ def _detect_profile_artifacts_into(
       evaluated and the answer can be relied on. Set only when **every** state
       reported a profile the detector could evaluate. Left unset on every path that
       could not reach one: no exported profile (``sld_z``/``sld_rho`` are written
-      only when the run has an output directory, so library and MCP runs have
-      none), fewer than two resolvable media, a detector that returned
+      only when the run has an output directory, so library runs have none),
+      fewer than two resolvable media, a detector that returned
       ``checked=False``, an unresolvable model shape, or a co-refinement where any
       one state's profile is missing. Absent means "no evidence either way", which
       the clamp treats as unsafe — it stands down and the evaluator's verdict

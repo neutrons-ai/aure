@@ -262,7 +262,7 @@ def test_the_profile_detectors_two_verdicts_veto_and_permit_the_clamp():
 @pytest.mark.parametrize(
     "fit,model,reason",
     [
-        # No exported profile at all (library and MCP runs have none).
+        # No exported profile at all (library runs have none).
         ({}, _model(), "no exported SLD profile"),
         # Fewer than two resolvable media — no SLD range to test against.
         (_fit_with_profile(*_clean_profile()), {"layers": []}, "Fewer than two media"),

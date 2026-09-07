@@ -350,7 +350,7 @@ evaluator's verdict to decide, as before the stop existed — when the SLD profi
 shows a non-physical excursion (an erf tail leaving the range its bounding media
 can produce; back to refinement however low χ² is); when the profile could not be
 *verified* — none was exported (refl1d writes one only when the run has an output
-directory, so an ad-hoc `run_analysis(...)` or an MCP run has nothing to check) or
+directory, so an ad-hoc `run_analysis(...)` call has nothing to check) or
 the detector declined the one it has (too few points, mismatched `z`/`rho`, a
 non-finite sample, every medium at the same SLD); when a per-file / per-state χ²
 is over the ceiling, carries the `+inf` "fit failed" sentinel, or is *under* the
@@ -372,7 +372,7 @@ afterwards, by `analyze`, `prepare` and `batch`) → `CHI2_MAX` / `CHI2_MIN`
 exported in your shell → the same names from `.env` → the built-in `5.0` and
 `0.5`. The shipped [.env.example](.env.example) sets `CHI2_MAX=2.5`; that is the
 env layer's value, not the built-in fallback. There is no CLI flag for either
-bound, and no setup key reaches a run driven through the web UI or MCP — those use
+bound, and no setup key reaches a run driven through the web UI — that uses
 the server process's environment. `aure resume` ignores the list: both bounds are
 resolved once, on a run's first pass, and pinned into the state, so a resume keeps
 the window the run was launched with and silently outranks the resuming shell. To
@@ -900,25 +900,6 @@ aure list-materials [-c CATEGORY]
 ```
 
 Categories: `polymers`, `metals`, `substrates`, `solvents`, `all` (default).
-
-### `aure mcp-server`
-
-Start a [Model Context Protocol](https://modelcontextprotocol.io/) server so AI
-assistants (e.g. Claude) can drive the workflow interactively.
-
-```bash
-aure mcp-server                          # stdio (for Claude Desktop)
-aure mcp-server --transport sse --port 8080  # HTTP/SSE
-```
-
-No MCP tool takes a χ² acceptance bound, so every run driven through this server
-uses the `CHI2_MAX` / `CHI2_MIN` of the **server process's** environment — set
-them before launching `aure mcp-server`, and use the CLI when you need a per-run
-window. `co_refine_states` reads its YAML with the co-refinement config loader,
-not the setup loader, so a `chi2_max:` in that file is silently ignored; and the
-deterministic χ² stop never fires for either tool anyway — `quick_analyze` has no
-`output_dir`, so no SLD profile is exported to verify, and `co_refine_states` is
-multi-state (see *χ² acceptance window* above).
 
 ### `aure serve`
 

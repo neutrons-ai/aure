@@ -380,14 +380,13 @@ numbering is topical, not chronological — `evaluation_node` runs 1 → 2 → 4
      to χ² and must never be accepted on χ² alone;
    - step 3 did not reach a trustworthy answer, which `_profile_checked` states
      positively: the fit carries no exported SLD profile (refl1d writes one only
-     when the run has an output directory — an ad-hoc `run_analysis(...)`, MCP's
-     `co_refine_states` without `output_dir`, or `quick_analyze`, which has no
-     such parameter), the detector declined the profile it has (too few points,
-     mismatched `z`/`rho` lengths, a non-finite sample, or a zero SLD span across
-     the media), **or any one state of a co-refinement reported no profile** —
-     partial coverage leaves the whole fit unverified. "Not checked" is treated as
-     unsafe, not as clean, so the LLM's verdict decides, exactly as it did before
-     the threshold became binding;
+     when the run has an output directory, so an ad-hoc `run_analysis(...)` call
+     without one has nothing to check), the detector declined the profile it has
+     (too few points, mismatched `z`/`rho` lengths, a non-finite sample, or a
+     zero SLD span across the media), **or any one state of a co-refinement
+     reported no profile** — partial coverage leaves the whole fit unverified.
+     "Not checked" is treated as unsafe, not as clean, so the LLM's verdict
+     decides, exactly as it did before the threshold became binding;
    - a **per-file / per-state χ²** is above the threshold, carries the `+inf`
      "fit failed" sentinel, or is below `chi2_min`: the reported χ² is
      `problem.chisq()` averaged over every model of a co-refinement, so a single

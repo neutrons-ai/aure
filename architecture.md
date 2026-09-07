@@ -11,8 +11,7 @@ hypothesis), AuRE runs an agentic pipeline — **intake → analysis → modelin
 evaluation → refinement** (nodes in `src/aure/nodes/`, orchestrated by the hand-written
 state machine in `workflow/runner.py`) — to produce a fitted refl1d model with
 uncertainties. It is driven
-three ways: a **web UI** (Flask, `web/`), a **CLI** (`analyze` / `batch`, `cli.py`), and an
-**MCP server** (`mcp_server.py`).
+two ways: a **web UI** (Flask, `web/`) and a **CLI** (`analyze` / `batch`, `cli.py`).
 
 ## 2. Domain concepts (orthogonal axes)
 
@@ -222,7 +221,7 @@ nr-isaac-format `architecture.md` for the store/representation contract.
   run in the runner's terminal block —
   see **[docs/finalization.md](docs/finalization.md)**.
 - `workflow/` — `runner.py` (the state-machine orchestrator + terminal
-  finalize/final_fit/save; the single execution engine for CLI, web UI, and MCP),
+  finalize/final_fit/save; the single execution engine for the CLI and web UI),
   `checkpoints.py` (run dir + `run_info.json` + `final_state.json`/`problem.json`).
 - `config.py` / `setup.py` / `state.py` — states, ties, reparametrization, and setup-YAML
   (de)serialization; `config.derived_parameters_enabled` is the opt-in gate.

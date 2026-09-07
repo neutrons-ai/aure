@@ -9,9 +9,8 @@ precedence:
 3. a per-user ``~/.aure`` file — same ``KEY=value`` format as ``.env``,
    acting as machine-wide defaults.
 
-``load_env()`` is the single entry point; both the CLI and the MCP server
-call it instead of bare ``dotenv.load_dotenv()`` so the ``~/.aure`` fallback
-is honoured everywhere.
+``load_env()`` is the single entry point; the CLI calls it instead of bare
+``dotenv.load_dotenv()`` so the ``~/.aure`` fallback is honoured everywhere.
 """
 
 from __future__ import annotations

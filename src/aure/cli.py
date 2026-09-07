@@ -4,7 +4,6 @@ Command-line interface for the Reflectivity Analysis Workflow.
 Usage:
     python -m aure.cli analyze data.dat "100 nm polystyrene on silicon"
     python -m aure.cli lookup-sld silicon gold D2O
-    python -m aure.cli mcp-server
 """
 
 import contextlib
@@ -3039,71 +3038,6 @@ def extract_features(data_file: str, output_json: bool):
             click.echo(f"  Estimated layers: {n} ({conf} confidence)")
 
         click.echo()
-
-
-# ============================================================================
-# MCP Server Command
-# ============================================================================
-
-
-@cli.command("mcp-server")
-@click.option(
-    "--transport",
-    "-t",
-    type=click.Choice(["stdio", "sse"]),
-    default="stdio",
-    help="Transport protocol (stdio for Claude Desktop, sse for HTTP)",
-)
-@click.option(
-    "--port",
-    "-p",
-    default=8000,
-    help="Port for SSE transport (default: 8000)",
-)
-def mcp_server(transport: str, port: int):
-    """
-    Start the MCP server for AI assistant integration.
-
-    This starts a Model Context Protocol server that allows AI assistants
-    like Claude to interact with the reflectivity analysis workflow.
-
-    For Claude Desktop, use stdio transport (default).
-    For HTTP-based clients, use sse transport.
-
-    Examples:
-
-        python -m aure.cli mcp-server
-
-        python -m aure.cli mcp-server --transport sse --port 8080
-    """
-    from .mcp_server import mcp
-
-    click.echo(click.style("═" * 60, fg="blue"))
-    click.echo(click.style("  Reflectivity Analysis MCP Server", fg="blue", bold=True))
-    click.echo(click.style("═" * 60, fg="blue"))
-    click.echo()
-    click.echo(f"  Transport: {transport}")
-    if transport == "sse":
-        click.echo(f"  Port: {port}")
-    click.echo()
-    click.echo("  Available tools:")
-    click.echo("    - lookup_material_sld")
-    click.echo("    - compare_materials")
-    click.echo("    - analyze_reflectivity_features")
-    click.echo("    - start_analysis_session")
-    click.echo("    - get_session_model")
-    click.echo("    - run_fit")
-    click.echo("    - evaluate_fit")
-    click.echo("    - modify_model")
-    click.echo("    - quick_analyze")
-    click.echo()
-    click.echo("  Starting server...")
-    click.echo()
-
-    if transport == "sse":
-        mcp.run(transport="sse", port=port)
-    else:
-        mcp.run(transport="stdio")
 
 
 # ============================================================================

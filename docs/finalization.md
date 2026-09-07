@@ -23,7 +23,7 @@ There is no graph framework. Everything drives this one engine:
 | CLI `aure analyze` | `run_analysis` | full loop + terminal block |
 | Web UI (Flask, background thread) | `run_workflow_with_checkpoints` | full loop + terminal block |
 | CLI `aure resume` | `run_from_checkpoint` | resume + terminal block |
-| MCP `start_analysis_session` | `run_prepare` | intake→analysis→modeling only (`stop_after="modeling"`, no terminal block) |
+| CLI `aure prepare`, Web UI structure preview | `run_prepare` | intake→analysis→modeling only (`stop_after="modeling"`, no terminal block) |
 
 The runner is a plain Python loop over `NODE_ORDER` that follows the
 `ROUTING_FUNCTIONS` to pick the next node, with its own state accumulation
