@@ -391,11 +391,6 @@ def analyze(
             format="%(message)s",
             stream=sys.stderr,
         )
-        for module in [
-            "agent.nodes.fitting",
-            "agent.nodes.evaluation",
-        ]:
-            logging.getLogger(module).setLevel(logging.INFO)
 
     from .setup import (
         SetupConfig,
