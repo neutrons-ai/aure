@@ -394,7 +394,6 @@ def analyze(
         for module in [
             "agent.nodes.fitting",
             "agent.nodes.evaluation",
-            "agent.nodes.refinement",
         ]:
             logging.getLogger(module).setLevel(logging.INFO)
 
@@ -940,20 +939,11 @@ def _print_analysis_results(result: dict, output_dir: Optional[str] = None):
             )
         click.echo()
 
-    # Evaluation. `result["evaluation"]` is only ever set by the MCP server; a
-    # workflow run records the evaluator's findings on the judged FitResult, so
-    # reading only the former made this whole block dead code for `aure analyze`
-    # and the excursion text above never reached the reader.
-    evaluation = result.get("evaluation")
-    if evaluation:
-        quality = evaluation.get("chi_squared_quality", "unknown")
-        acceptable = evaluation.get("acceptable", False)
-        color = "green" if acceptable else "yellow"
-        click.echo(click.style(f"  Fit Quality: {quality}", fg=color, bold=True))
-    else:
-        evaluation = fit or {}
-        if evaluation.get("issues") or evaluation.get("suggestions"):
-            click.echo(click.style("  Fit Quality Notes", fg="cyan", bold=True))
+    # Fit-quality notes. A workflow run records the evaluator's findings on
+    # the judged FitResult, so they are read from there.
+    evaluation = fit or {}
+    if evaluation.get("issues") or evaluation.get("suggestions"):
+        click.echo(click.style("  Fit Quality Notes", fg="cyan", bold=True))
 
     if evaluation.get("issues"):
         click.echo("    Issues:")
