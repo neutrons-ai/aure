@@ -519,3 +519,187 @@ and here is what to use instead" is a stronger position than a feature that
 works when the user already knows the answer. The single-curve case is the one
 with 51 curves of evidence behind it; anything that makes that case less robust
 for the sake of breadth is a bad trade.
+
+---
+
+## Resolve a data file from its content first; fall back to the filename only when the metadata is incomplete
+
+**Where:** [`src/aure/instruments/registry.py`](src/aure/instruments/registry.py) —
+`resolve_by_name` / `resolve`, and the `file_role` / `group_key` /
+`header_metadata` wrappers that pick between them.
+
+**What is wrong.** Resolution is filename-first by design: `resolve` tries the
+name and only opens the file if nothing claimed it, and the `file_role` /
+`group_key` wrappers never read the file at all. The stated reason is sound in
+itself — a setup file is parsed before the data need exist, and
+`refl1d_import` classifies probes whose files it is still writing — but it
+makes the filename authoritative over the file's own declared metadata, which
+is backwards. An extension is a fine hint. A name pattern is not evidence about
+what is inside.
+
+Three consequences, all reproduced on hand-written files, all silent:
+
+| file (identical ORSO content: θ=0.6 declared, `sQz` = 1σ) | `resolve_by_name` | `resolve` | role | group | θ | dq_is_fwhm |
+|---|---|---|---|---|---|---|
+| `REFL_201282_combined_data_auto.ort` | ORSO | ORSO | partial | **None** | 0.6 | False |
+| `REFL_2222_1_2223_partial.txt` | REF_L | REF_L | partial | 2222 | **0.0** | **True** |
+| `cu_film.txt` | **generic** | **ORSO** | unknown | None | 0.6 | False |
+
+1. **The filename wins over the header, and the fit pays.** Row 2 is claimed by
+   REF_L's name pattern, so the ORSO YAML header is never read: the declared
+   incident angle is lost (θ=0.0 makes `model_builder` build a Q-probe and
+   forfeit `theta_offset` / `sample_broadening`), and `dq_is_fwhm` stays `True`,
+   so a 1σ `sQz` column is read as a FWHM and refl1d divides it by 2.355 — the
+   resolution comes out 2.35× too narrow. `authoritative_fields` cannot help:
+   it asks `instruments.resolve()`, which has already answered REF_L.
+
+2. **Two instruments answer for one file.** Row 3 is `generic` to
+   `resolve_by_name` and ORSO to `resolve`. Because `file_role` / `group_key`
+   use the first and `header_metadata` uses the second, the file gets ORSO's dQ
+   convention *and* generic's `role=unknown` — which also makes
+   `role_supports_nuisance` refuse nuisance parameters for a file whose
+   incident angle is known and declared.
+
+3. **A set id present in the name is discarded, and a guardrail dies with it.**
+   REF_L's patterns are anchored to `\.txt$`, so ORSO claims row 1 by extension
+   and answers `group_key = None` — though `201282` is in the name. Both set-id
+   consistency checks filter `None` before counting
+   ([`config.py:393`](src/aure/config.py#L393),
+   [`intake.py:653`](src/aure/nodes/intake.py#L653)), so they stop firing rather
+   than erroring:
+
+   ```
+   two set_ids, .txt   -> ConfigError: partial files must share one set_id (found: ['2222', '3333'])
+   two set_ids, .ort   -> kind='partials'          # accepted silently
+   ```
+
+**How academic this is.** Entirely, for now: there is no real REF_L ORSO file
+to test against, and a properly written one would carry the metadata that is
+missing here — its `data_source.measurement.data_files` would name the original
+`REFL_<set>_..._.nxs` runs, so the set id would be recoverable from the
+*content* rather than the name, and the declared angle and 1σ resolution would
+be in the header where the ORSO instrument already looks. The failure modes
+above are what happens to a file that is mislabelled or incompletely written,
+not to a correct one. That is the reason to fix the ordering rather than to
+special-case REF_L-in-ORSO: correct files stop depending on their names, and
+incorrect ones degrade in a stated order instead of silently.
+
+**The change (minimal).** Invert the precedence and make the fallback explicit:
+
+- `resolve` reads the header first and prefers an instrument that claims the
+  file by *content*; the filename decides only when no instrument claims the
+  content, or when the content is unreadable / absent.
+- Keep `resolve_by_name` for the two call sites that genuinely cannot read a
+  file (`config` parsing a setup before the run, `refl1d_import` writing
+  probes), but treat it as the desperation path it is: name it accordingly, and
+  have the wrappers that *can* read the file (`file_role`, `group_key`) use
+  `resolve` so one file is answered by one instrument.
+- Let an instrument answer `group_key` from the header, so a set id declared in
+  ORSO metadata is honoured and one omitted from a mislabelled file is
+  `None` — as now.
+- Restore the guardrail's teeth: `partials` whose group keys are *all* `None`
+  should say so rather than pass, since "no instrument encodes grouping" and
+  "these files disagree" are different situations and only the second is fine
+  to ignore.
+
+`AURE_INSTRUMENT` already exists as the override for data whose provenance
+neither the name nor the header reveals, so nothing needs a new escape hatch.
+
+**A related gap, same theme.** Run-title extraction never moved behind the
+seam: it is still a module-level regex in intake
+(`^#\s*(?:run\s+)?title\s*:`, [`intake.py:52`](src/aure/nodes/intake.py#L52))
+applied to every file regardless of instrument. It happens to work on ORSO —
+it returned `'Cu film in dTHF'` from the nested YAML `experiment.title` — but
+by coincidence, and it will take the first `title:` at any nesting depth.
+
+**Verifying a fix.** The three rows above, as a table test alongside the golden
+table in [`tests/test_instruments.py`](tests/test_instruments.py): identical
+ORSO content must resolve to ORSO under every name, and one instrument must
+answer all four questions about a given file.
+
+---
+
+## An ORSO file cannot be loaded into a probe at all
+
+**Where:** [`src/aure/nodes/model_builder.py`](src/aure/nodes/model_builder.py)
+— `load_probe`, which hands `.ort` to refl1d's `load4`.
+
+**What is wrong.** It crashes. Not on a malformed file — on one written by
+`orsopy` itself:
+
+```
+load_probe(valid.ort) -> AttributeError: 'NoneType' object has no attribute 'error_value'
+```
+
+The bug is upstream, in refl1d 1.0.1,
+`refl1d/probe/data_loaders/load4.py:109-110`:
+
+```python
+if hasattr(v, "error") and resolution_index is None:
+    header_out[refl1d_resolution_name] = v.error.error_value
+```
+
+An orsopy `Value` is a dataclass that always *has* an `error` field, and it is
+`None` unless an error sub-field was written. So `hasattr` is True, the next
+line dereferences `None`, and any ORSO file whose
+`instrument_settings.incident_angle` or `wavelength` carries no explicit error
+fails — which is orsopy's default output.
+
+This is not academic. ORSO is a supported instrument on this branch: the
+registry claims `.ort`, reads its metadata correctly, and declares its dQ
+convention — and then the file cannot be turned into a probe, so it cannot be
+fitted, which is the only thing a user wants from it.
+
+**Why nothing caught it.** Nothing in the suite loads a `.ort` into a probe.
+`load_probe` appears in **zero** tests, and `.ort` appears only in
+`tests/test_instruments.py`, which exercises classification and header metadata
+without ever opening a probe. The 528 lines of instrument tests are all on the
+metadata side of the seam.
+
+**The change.** Guard the dereference — `getattr(v, "error", None) is not None`
+— and send it upstream to refl1d, since every refl1d user hits this. AuRE
+should not wait on the release: `load_probe` is the single entry point for data
+loading, so a local workaround belongs there, either as a targeted patch or by
+reading the ORSO file through `orsopy` directly and constructing the probe from
+the columns (which is what `tools.data_tools.parse_ort_file` already does for
+feature extraction, on a separate and more forgiving code path).
+
+Note the two ORSO readers as a consequence worth removing later:
+`parse_ort_file` is a lenient 4-column reader that succeeds on files `load4`
+rejects, so a `.ort` file can pass feature extraction and then fail to fit.
+
+**Verifying a fix.** Generate a file with `orsopy.fileio.save_orso` in a test
+fixture and assert `load_probe` returns a probe whose `dQ` equals the `sQz`
+column (not `sQz / 2.355`, which is the separate `dq_is_fwhm` question). That
+test is the coverage gap, independent of the crash.
+
+---
+
+## `instruments/orso.py` states the dQ error backwards
+
+**Where:** [`src/aure/instruments/orso.py`](src/aure/instruments/orso.py) — the
+module docstring, lines 14-17.
+
+**What is wrong.** It says that taking an ORSO `sQz` column as a FWHM
+"over-broadens an ORSO resolution by a factor of 2.35". It under-broadens it.
+`dq_is_fwhm=True` means "this column is a FWHM", so refl1d converts it to a
+sigma by *dividing* by 2.355. Measured on a plain 4-column file whose dQ column
+is exactly `2.0e-4`:
+
+```
+dq_is_fwhm=True  -> probe dQ[0] = 8.493e-05      (= 2.0e-4 / 2.3548)
+dq_is_fwhm=False -> probe dQ[0] = 2.000e-04
+```
+
+So a 1σ column read as a FWHM yields a resolution 2.35× too *narrow* — the
+model is under-smeared and will chase fringe structure the measurement cannot
+resolve.
+
+**What it costs.** Nothing today: the code is right and the fix
+(`meta["dq_is_fwhm"] = False`) is correct for the right reason. But the
+docstring is the thing a reader consults before touching resolution handling,
+and it points the wrong way — the same class of defect as the
+`_resolve_tied_set` docstring that claims a tie the code does not make.
+
+**The change.** Two words: "over-broadens" becomes "under-broadens", and the
+sentence should say the conversion divides rather than multiplies.
