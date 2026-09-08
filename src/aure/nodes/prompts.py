@@ -1244,6 +1244,7 @@ You must output a COMPLETE, valid JSON object matching this schema:
       "thickness_min": <min thickness Å>,
       "thickness_max": <max thickness Å>,
       "roughness": <roughness Å>,
+      "roughness_min": <min roughness Å — omit unless the interface needs one>,
       "roughness_max": <max roughness Å>,
       "roughness_tie": {{"fraction_max": <≤ 0.5>}}
     }}
@@ -1289,6 +1290,14 @@ Rules:
 2. You may add layers, remove layers, change materials, adjust SLD values, or change parameter bounds.
 3. If parameters are hitting their bounds, widen those bounds (sld_min/sld_max, thickness_min/thickness_max).
 4. If there are systematic residuals, consider adding a layer.
+4a. `roughness_min` is OPTIONAL and should be OMITTED unless you mean it. Omitted,
+    a 5 Å floor applies — and that floor YIELDS to a smaller `roughness` you
+    declare, because a default must not override a stated value. So an interface
+    you believe is chemically sharp needs only `"roughness": 2` and no
+    `roughness_min`; writing `"roughness_min": 5` would pin it at 5 Å and no
+    later iteration could get below. Declare it only to raise a floor you can
+    justify — an interface known to be at least this rough — in which case a
+    smaller `roughness` is clamped up to it and the contradiction is logged.
 4b. `roughness_tie` is OPTIONAL and should be OMITTED for normal layers. Add it
     only when an issue reports a non-physical SLD-profile excursion (an
     erf-tail artifact — the profile dipping below or overshooting above the

@@ -5,34 +5,44 @@ what is wrong, what it costs, and what the change would be.
 
 ---
 
-## No way to set a roughness floor deliberately
+## The substrate interface has a floor of 0 and no way to change it
 
-**Where:** [`src/aure/nodes/prompts.py`](src/aure/nodes/prompts.py) — the
-model-JSON schema in the modeling and refinement prompts; and the setup schema,
-which reaches layers only through `states[].layers[]`.
+**Where:** [`src/aure/nodes/model_builder.py`](src/aure/nodes/model_builder.py)
+— the substrate branch at the end of `_build_sample`.
 
-**What is wrong.** The hardcoded 5 Å floor in `_build_layers` is gone, so an
-ordinary run now inherits the builder's default and a description asking for a
-sharp interface gets one. What is still missing is the opposite: no surface
-sets a floor *on purpose*.
+**What is wrong.** Every layer interface resolves its lower bound through
+`_ranged`, which honours a declared `roughness_min` and otherwise applies a 5 Å
+default that yields to a smaller declared `roughness`. The substrate interface
+does neither:
 
-- `roughness_min` is absent from the model-JSON schema the prompts show the
-  LLM, so no refinement iteration can raise or lower one.
-- From a setup file it is reachable only inside `states[].layers[]`. There is
-  no top-level `layers:` key, so a description-driven single-file run —
-  `aure analyze DATA "description"` — has no config surface for it at all. The
-  codebase has an env override for the outer roughness *ceiling*
-  (`ROUGHNESS_MAX_OUTER`) and nothing for the floor.
+```python
+sample[0].interface.range(0, sub_rough_max)     # normal stack
+sample[0].interface.range(0, _outer_roughness_max(layers_info))  # back reflection
+```
 
-**What it costs.** Nothing observed. This is a gap in the declaration surface
-rather than a defect: the builder honours `roughness_min` correctly when it is
-declared (`_ranged` clamps and logs), it just cannot be declared from the paths
-most runs take.
+The lower bound is the literal `0` in both cases. `SubstrateInfo` declares no
+`roughness_min`, nothing reads one, and `roughness_max` is the only bound the
+substrate can state — so a substrate interface known to be at least a few Å
+rough cannot say so, and the fit may drive it to 0.
 
-**The change.** Add `roughness_min` to the prompt schema alongside
-`roughness_max`, so a refinement can state one. The setup-file half depends on
-whether a top-level `layers:` key is wanted, which is the same question U4
-raises in [docs/scope.md](docs/scope.md) — decide that first.
+**What it costs.** Not measured. A substrate roughness of 0 is unphysical but
+not obviously harmful, and it is a single parameter; the layers above it carry
+the structure. Worth knowing before someone reads the layer semantics and
+assumes the substrate shares them.
+
+**The change.** Either route the substrate through `_ranged` like every layer
+(giving it the same default-yields-to-declared behaviour, and a
+`roughness_min` that `SubstrateInfo` would then need to declare), or state in
+`SubstrateInfo` that the substrate interface is deliberately unbounded below.
+The first is more consistent; the second is honest about what is implemented.
+
+**A related gap in the declaration surface.** `roughness_min` reaches a *layer*
+from a refinement (prompt schema, rule 4a) and from a setup file inside
+`states[].layers[]`. It does not reach a description-driven single-file run —
+`aure analyze DATA "description"` — because there is no top-level `layers:`
+key. That is the same question U4 raises in [docs/scope.md](docs/scope.md);
+decide that first. The codebase has an env override for the outer roughness
+*ceiling* (`ROUGHNESS_MAX_OUTER`) and nothing for any floor.
 
 ## Tie a shared layer to the first state that *has* it, not always to state 0
 
