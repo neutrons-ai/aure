@@ -220,3 +220,56 @@ def test_the_default_substrate_needs_no_materials_database():
 
     assert not hasattr(modeling, "get_sld")
     assert _get_substrate({}, {})["sld"] == pytest.approx(2.07, abs=0.01)
+
+
+# ---------------------------------------------------------------------------
+# The 5 Å roughness floor is a default, not an assertion
+# ---------------------------------------------------------------------------
+
+
+def test_build_layers_does_not_inject_a_roughness_floor():
+    """`_build_layers` used to write `roughness_min: 5.0` into every layer.
+
+    That turned the builder's *default* floor into a *declared* bound, and
+    `_ranged` treats the two differently on purpose: a default yields to a
+    smaller declared roughness, a declared bound clamps it. So a parse that
+    said 2 Å was silently refitted from 5 Å with (5, 30) bounds, and no
+    iteration could get below the floor.
+    """
+    from aure.nodes.modeling import _build_layers
+
+    parsed = {"name": "SiO2", "sld": 3.47, "thickness": 15.0, "roughness": 2.0}
+    layer = _build_layers({"layers": [parsed]}, {})[0]
+    assert "roughness_min" not in layer, layer
+    assert layer["roughness"] == pytest.approx(2.0)
+
+
+def test_feature_estimated_layers_do_not_inject_a_floor_either():
+    from aure.nodes.modeling import _build_layers
+
+    layer = _build_layers(
+        {}, {"estimated_n_layers": 1, "estimated_total_thickness": 200.0}
+    )[0]
+    assert "roughness_min" not in layer, layer
+
+
+def test_a_sharp_parsed_interface_survives_into_the_fit(data_file):
+    """The default floor must yield to it, start value and bound together."""
+    from aure.nodes.modeling import _build_layers
+
+    parsed = {"name": "SiO2", "sld": 3.47, "thickness": 15.0, "roughness": 2.0}
+    layer = _build_layers({"layers": [parsed]}, {})[0]
+    problem = build_problem(_defn(data_file, layer))
+    par = _param(problem, "SiO2 interface")
+    assert par.value == pytest.approx(2.0)
+    assert par.prior.limits[0] == pytest.approx(2.0)
+
+
+def test_the_floor_still_binds_an_ordinary_interface(data_file):
+    """Dropping the hardcode must not drop the floor where it does not conflict."""
+    from aure.nodes.modeling import _build_layers
+
+    parsed = {"name": "film", "sld": 3.47, "thickness": 100.0, "roughness": 8.0}
+    layer = _build_layers({"layers": [parsed]}, {})[0]
+    problem = build_problem(_defn(data_file, layer))
+    assert _param(problem, "film interface").prior.limits[0] == pytest.approx(5.0)

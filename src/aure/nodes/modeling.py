@@ -974,7 +974,6 @@ def _build_layers(parsed: dict, features: dict) -> List[dict]:
                     "thickness_min": thickness_min,
                     "thickness_max": thickness_max,
                     "roughness": roughness,
-                    "roughness_min": 5.0,
                     "roughness_max": roughness_max,
                 }
             )
@@ -998,7 +997,6 @@ def _build_layers(parsed: dict, features: dict) -> List[dict]:
                     "thickness_min": avg_thickness * 0.5,
                     "thickness_max": avg_thickness * 2.0,
                     "roughness": features.get("estimated_roughness", 5.0),
-                    "roughness_min": 5.0,
                     "roughness_max": 30.0,
                 }
             )
