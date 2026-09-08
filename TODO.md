@@ -5,44 +5,73 @@ what is wrong, what it costs, and what the change would be.
 
 ---
 
-## The substrate interface has a floor of 0 and no way to change it
+## The bottom medium's interface is the one interface with no floor
 
 **Where:** [`src/aure/nodes/model_builder.py`](src/aure/nodes/model_builder.py)
-— the substrate branch at the end of `_build_sample`.
+— the two `sample[0].interface.range(...)` calls at the end of `_build_sample`.
 
-**What is wrong.** Every layer interface resolves its lower bound through
-`_ranged`, which honours a declared `roughness_min` and otherwise applies a 5 Å
-default that yields to a smaller declared `roughness`. The substrate interface
-does neither:
+**The semantics first**, because the naming misleads. Substrate and ambient are
+both slabs in the refl1d stack, and a slab's `interface` is its boundary with
+whatever sits *on top of it*. So the medium at the **bottom** of the stack owns
+a real fitted roughness, and the one at the **top** has an unused `0` — nothing
+is above it. Which medium is which depends on the beam direction:
 
-```python
-sample[0].interface.range(0, sub_rough_max)     # normal stack
-sample[0].interface.range(0, _outer_roughness_max(layers_info))  # back reflection
+```
+normal:           [silicon, SiO2, Cu, dTHF]
+  [0] silicon   interface=4.00  FREE bounds=(0.0, 15.0)   substrate/SiO2 boundary
+  [3] dTHF      interface=0.00  unused
+
+back reflection:  [dTHF, Cu, SiO2, silicon]
+  [0] dTHF      interface=7.00  FREE bounds=(0.0, 25.0)   the OUTER surface
+  [3] silicon   interface=0.00  unused
 ```
 
-The lower bound is the literal `0` in both cases. `SubstrateInfo` declares no
-`roughness_min`, nothing reads one, and `roughness_max` is the only bound the
-substrate can state — so a substrate interface known to be at least a few Å
-rough cannot say so, and the fit may drive it to 0.
+**What is wrong.** Every interface above the bottom resolves its lower bound
+through `_ranged`, which honours a declared `roughness_min` and otherwise
+applies a 5 Å default that yields to a smaller declared `roughness`.
+`sample[0].interface` does neither — its lower bound is the literal `0` in both
+branches:
 
-**What it costs.** Not measured. A substrate roughness of 0 is unphysical but
-not obviously harmful, and it is a single parameter; the layers above it carry
-the structure. Worth knowing before someone reads the layer semantics and
-assumes the substrate shares them.
+```python
+sample[0].interface.range(0, _outer_roughness_max(layers_info))  # back reflection
+sample[0].interface.range(0, sub_rough_max)                      # normal
+```
 
-**The change.** Either route the substrate through `_ranged` like every layer
-(giving it the same default-yields-to-declared behaviour, and a
-`roughness_min` that `SubstrateInfo` would then need to declare), or state in
-`SubstrateInfo` that the substrate interface is deliberately unbounded below.
-The first is more consistent; the second is honest about what is implemented.
+So the one interface that cannot state a floor is whichever the beam makes the
+bottom of the stack: the substrate boundary in a normal run, and the **outer
+surface** in back reflection — the interface most likely to be genuinely rough,
+and the one whose *ceiling* is already configurable via `ROUGHNESS_MAX_OUTER`.
+`SubstrateInfo` declares no `roughness_min` and nothing reads one.
+
+**A second observation, same code.** In back reflection the ambient's interface
+is seeded from the outermost layer's `roughness` (`layers_info[-1]["roughness"]`),
+so `[0] dTHF` and `[1] Cu` above both start at 7.00 — two independent free
+parameters from one declared value, with different bounds ((0, 25) and (5, 25)).
+That may be intended as a sensible seed; it is worth knowing that editing the
+outermost layer's roughness moves two parameters.
+
+**What it costs.** Not measured. A roughness of 0 is unphysical but it is one
+parameter and the layers above carry the structure; the fit is free to leave it.
+Worth knowing before someone reads the layer semantics and assumes the bottom
+medium shares them.
+
+**The change.** Route `sample[0].interface` through `_ranged` like every other
+interface, so it gets the same default-yields-to-declared behaviour and can
+carry a declared floor — which means `SubstrateInfo` needs a `roughness_min`,
+and the back-reflection branch needs to decide whose floor it reads (the
+ambient's, or the outermost layer's, whose roughness it already borrows).
+Alternatively state in `SubstrateInfo` that the bottom interface is
+deliberately unbounded below. The first is consistent; the second is honest
+about what is implemented.
 
 **A related gap in the declaration surface.** `roughness_min` reaches a *layer*
 from a refinement (prompt schema, rule 4a) and from a setup file inside
 `states[].layers[]`. It does not reach a description-driven single-file run —
 `aure analyze DATA "description"` — because there is no top-level `layers:`
 key. That is the same question U4 raises in [docs/scope.md](docs/scope.md);
-decide that first. The codebase has an env override for the outer roughness
-*ceiling* (`ROUGHNESS_MAX_OUTER`) and nothing for any floor.
+decide that first.
+
+---
 
 ## Tie a shared layer to the first state that *has* it, not always to state 0
 
