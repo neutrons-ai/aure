@@ -273,3 +273,57 @@ def test_the_floor_still_binds_an_ordinary_interface(data_file):
     layer = _build_layers({"layers": [parsed]}, {})[0]
     problem = build_problem(_defn(data_file, layer))
     assert _param(problem, "film interface").prior.limits[0] == pytest.approx(5.0)
+
+
+# ---------------------------------------------------------------------------
+# The ambient: bounded SLD, and no roughness of its own
+# ---------------------------------------------------------------------------
+
+
+#: One ordinary layer, so these tests can vary only the ambient.
+_CU_LAYER = {
+    "name": "Cu",
+    "sld": 6.5,
+    "thickness": 500.0,
+    "roughness": 7.0,
+    "roughness_max": 25.0,
+}
+
+
+def test_ambient_sld_bounds_are_honoured(data_file):
+    """`AmbientInfo` did not declare these, but `_build_sample` has always read
+    them — the ambient SLD is a fitted parameter whenever the ambient is not
+    air and its SLD is non-zero."""
+    defn = _defn(data_file, dict(_CU_LAYER))
+    defn["ambient"] = {"name": "dTHF", "sld": 6.2, "sld_min": 5.8, "sld_max": 6.5}
+    problem = build_problem(defn)
+    par = _param(problem, "dTHF rho")
+    assert par.prior.limits[0] == pytest.approx(5.8)
+    assert par.prior.limits[1] == pytest.approx(6.5)
+
+
+@pytest.mark.parametrize("back", [False, True], ids=["normal", "back_reflection"])
+def test_a_roughness_on_the_ambient_warns_rather_than_vanishing(
+    data_file, back, caplog
+):
+    """Nothing reads `ambient["roughness"]` in either geometry: an interface
+    belongs to the slab below it, so the outer surface is the outermost
+    layer's. A declaration that disappears without comment is the worst option.
+    """
+    defn = _defn(data_file, dict(_CU_LAYER))
+    defn["ambient"] = {"name": "dTHF", "sld": 6.2, "roughness": 22.0}
+    defn["back_reflection"] = back
+    with caplog.at_level("WARNING"):
+        build_problem(defn)
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("declares roughness" in m for m in messages), messages
+    # It must name the layer that actually owns the outer surface.
+    assert any("Cu" in m for m in messages), messages
+
+
+def test_a_clean_ambient_warns_about_nothing(data_file, caplog):
+    defn = _defn(data_file, dict(_CU_LAYER))
+    defn["ambient"] = {"name": "dTHF", "sld": 6.2, "sld_min": 5.8, "sld_max": 6.5}
+    with caplog.at_level("WARNING"):
+        build_problem(defn)
+    assert not [r for r in caplog.records if "ambient" in r.getMessage()]

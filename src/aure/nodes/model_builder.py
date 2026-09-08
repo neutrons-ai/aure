@@ -305,6 +305,25 @@ def _build_sample(definition: dict):
     layers_info = definition.get("layers", [])
     back_reflection = definition.get("back_reflection", False)
 
+    # A roughness on the AMBIENT is ignored, in both geometries, so say so. An
+    # interface belongs to the slab below it, and the outer surface is
+    # therefore the outermost layer's: in a normal stack that layer's own slab
+    # carries it, and in back reflection the ambient slab borrows that same
+    # declared value (see the stack assembly below). Either way nothing reads
+    # `ambient["roughness"]`, and a declaration that vanishes without comment
+    # is worse than one that is refused.
+    _rough_keys = ("roughness", "roughness_min", "roughness_max")
+    _stray = [k for k in _rough_keys if k in ambient_info]
+    if _stray:
+        owner = layers_info[-1].get("name") if layers_info else None
+        logger.warning(
+            "[BUILDER] ambient %r declares %s — ignored. The outer surface is "
+            "owned by %s; set its roughness instead.",
+            ambient_info.get("name", "ambient"),
+            ", ".join(_stray),
+            f"the outermost layer ({owner})" if owner else "the outermost layer",
+        )
+
     # --- Materials ---
     substrate = SLD(name=substrate_info["name"], rho=substrate_info["sld"])
     ambient = SLD(name=ambient_info["name"], rho=ambient_info["sld"])

@@ -46,10 +46,25 @@ class SubstrateInfo(TypedDict):
 
 
 class AmbientInfo(TypedDict):
-    """Information about the ambient/fronting medium."""
+    """Information about the ambient/fronting medium.
+
+    The ambient has **no roughness**. A slab's interface is its boundary with
+    whatever sits above it in the refl1d stack, so the outer surface belongs to
+    the outermost *layer* in both geometries — in a normal stack that layer's
+    slab carries it directly, and in back reflection the ambient slab borrows
+    that same declared value. A ``roughness`` here would be ignored;
+    :func:`aure.nodes.model_builder._build_sample` warns rather than dropping
+    it silently.
+    """
 
     name: str
     sld: float
+    # Bounds on the ambient SLD, which IS fitted whenever the ambient is not
+    # air and its SLD is non-zero. Declared here they are used verbatim;
+    # omitted, the builder defaults to 0.8x / 1.2x of the declared SLD — which
+    # inverts for a negative SLD, see the TODO in `_build_sample`.
+    sld_min: Optional[float]
+    sld_max: Optional[float]
 
 
 class IntensityInfo(TypedDict, total=False):
