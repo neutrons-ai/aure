@@ -808,15 +808,6 @@ aure import-refl1d ./fit_iter0_dream -o ./imported --state-name D2O --state-name
 aure import-refl1d ./Cu-D2O-226642 --setup ./plan/job_Cu-D2O-226642.yaml
 ```
 
-### `aure extract-features`
-
-Quickly extract physics features from a data file without running a full
-analysis.
-
-```bash
-aure extract-features DATA_FILE [--json]
-```
-
 ### `aure serve`
 
 Launch the AuRE web interface.

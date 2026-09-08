@@ -376,8 +376,7 @@ and the formula above assumes the incident medium is vacuum/air (ρ ≈ 0). This
 matters for solvent-contrast work: a D₂O ambient shifts the whole thing by
 ≈ 6.36. `format_critical_edge_line` therefore renders it as "SLD contrast" and
 attaches the deterministic *implied ambient SLD* hint when the contrast is
-inconsistent with an H-form ambient. (The `aure extract-features` CLI labels
-the same quantity simply `SLD ≈`, which is looser.)
+inconsistent with an H-form ambient.
 
 Confidence is keyed off edge sharpness `|d log₁₀R/dQ|` at Q_c: `> 50` high,
 `> 20` medium, else low.

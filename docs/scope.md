@@ -39,6 +39,7 @@ Retirements to date, which establish that pruning is normal here:
 | 2026-09-08 | `cli.py` `evaluate` command | `89d2156` |
 | 2026-09-08 | `cli.py` `lookup-sld`/`list-materials`, then `database/` | `2d5e1f1` |
 | 2026-09-08 | `cli.py` `plot-results` | never worked; see the use-case pass |
+| 2026-09-08 | `cli.py` `extract-features` | never worked; see the use-case pass |
 
 ---
 
@@ -176,26 +177,35 @@ code undocumented.
 
 ### Capabilities no listed use-case asks for
 
-Five inventory rows serve nothing in the list above. That is a question about
-the list as much as about the code:
+Four inventory rows serve nothing in the list above, and **none of them is a
+CLI command any more**. That is the result of asking the question, not the
+state it started in:
 
-- **21 (`extract-features`)** — a CLI command exposing one internal step,
-  defensible as a debugging aid and claimed by no use-case.
+- Of the five candidates this list first produced, **three became use-cases** —
+  batch, `prepare` and the ISAAC export are U10, U9 and U11.
+- **Two were retired, both because they had never worked.** `plot-results`
+  globbed `refl1d_output/fit_iter*_*/problem.json`, but bumps names that export
+  `<model_name>.json` — the same fact `CheckpointManager._find_problem_json`
+  exists to handle and which `plot-results` never consulted; 297 lines, no
+  test, five months. `extract-features` unpacked `load_reflectivity_data` as a
+  3-tuple when it returns a dict, so a 4-column file raised "Error loading
+  data" (blaming a file that had loaded) and a 3-column file bound the strings
+  `'Q'`, `'R'`, `'dR'` and crashed later; 108 lines, no test, and broken since
+  the **first commit**.
 
-  Of the five candidates this list first produced, three (batch, `prepare`,
-  the ISAAC export) turned out to be missing use-cases and became U9–U11, and
-  one (`plot-results`) was **retired**: asked what it did, it turned out never
-  to have worked. It globbed `refl1d_output/fit_iter*_*/problem.json`, but
-  bumps names that export `<model_name>.json` — the same fact
-  `CheckpointManager._find_problem_json` exists to handle and which
-  `plot-results` never consulted. It exited 1 on every run of this repository,
-  had no test, and 297 lines of it survived five months of that. Both outcomes
-  are the section working as intended.
+  Neither capability was redundant in principle — one showed every iteration on
+  one axis, the other reported what the data says before a model exists. Both
+  were dead code advertising a feature. The underlying feature extraction is
+  untouched and heavily used: the `analysis` node calls
+  `extract_all_features`, which the retired command did not.
+
+What remains unclaimed:
+
 - **14 (thin-layer mode enumeration), 15 (`roughness_tie`)** — fit strategy
   rather than user-facing capability; they serve U1–U3 indirectly and are
   reachable only by env var or hand-edited model JSON.
-- **26 (Docker), 27 (importable library)** — delivery and integration, not
-  use-cases. Row 27 has out-of-tree consumers regardless of what this list
+- **25 (Docker), 26 (importable library)** — delivery and integration, not
+  use-cases. Row 26 has out-of-tree consumers regardless of what this list
   says.
 
 ---
@@ -226,17 +236,16 @@ Footprint is what would be deleted, not what would be touched.
 | 18 | **Web UI** (setup / history / results, live param editor, file browser) | `aure serve`, `aure interactive` | 3,054 py + 3,836 assets = **6,890** | 02-09 |
 | 19 | **Import a hand-run refl1d fit** | `aure import-refl1d` | `refl1d_import.py` **1,740** | 05-22 |
 | 20 | ISAAC AI-ready export | `EXPORT_FORMAT`, web button | `exporters/` 523 + optional dep | 03-07 |
-| 21 | Standalone feature extraction | `extract-features` | `tools/feature_tools.py` 1,142 (shared with node 2) | 02-09 |
-| 22 | Load reflectivity data (`.txt`, `.dat`, `.csv`, `.asc`, `.refl`, `.ort`) | implicit; every command that takes a data file | `tools/data_tools.py` 389 | 02-09 |
-| 23 | **Pluggable instrument / file-format support** | `aure.instruments` entry point, `AURE_INSTRUMENT`, `register()` | `instruments/` 698 + own doc | **09-07** |
-| 24 | Domain skill library (9 skills) | LLM-selected into prompts | 1,466 md + `selector.py` 401 + `loader.py` 172 | 04-16 → **09-03** |
-| 25 | LLM provider layer (3 providers, timeout, retries, ledger) | `LLM_*` env | `llm/` ~600 | 02-14 |
-| 26 | Docker image | `ghcr.io/neutrons-ai/aure` | Dockerfile + CI | grown |
-| 27 | **AuRE as an importable library** | `import aure` — no dedicated code | `__all__` names 3 of them | 02-09 |
+| 21 | Load reflectivity data (`.txt`, `.dat`, `.csv`, `.asc`, `.refl`, `.ort`) | implicit; every command that takes a data file | `tools/data_tools.py` 389 | 02-09 |
+| 22 | **Pluggable instrument / file-format support** | `aure.instruments` entry point, `AURE_INSTRUMENT`, `register()` | `instruments/` 698 + own doc | **09-07** |
+| 23 | Domain skill library (9 skills) | LLM-selected into prompts | 1,466 md + `selector.py` 401 + `loader.py` 172 | 04-16 → **09-03** |
+| 24 | LLM provider layer (3 providers, timeout, retries, ledger) | `LLM_*` env | `llm/` ~600 | 02-14 |
+| 25 | Docker image | `ghcr.io/neutrons-ai/aure` | Dockerfile + CI | grown |
+| 26 | **AuRE as an importable library** | `import aure` — no dedicated code | `__all__` names 3 of them | 02-09 |
 
-11 CLI commands remain.
+10 CLI commands remain.
 
-Row 27 is the one surface this inventory previously missed, and it has a
+Row 26 is the one surface this inventory previously missed, and it has a
 consumer. `__all__` declares `ReflectivityState`, `create_initial_state` and
 `run_analysis` ([`__init__.py:33`](../src/aure/__init__.py#L33)). nr-workbench
 pins twelve callables across four modules in its own contract table — so a
