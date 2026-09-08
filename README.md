@@ -808,20 +808,6 @@ aure import-refl1d ./fit_iter0_dream -o ./imported --state-name D2O --state-name
 aure import-refl1d ./Cu-D2O-226642 --setup ./plan/job_Cu-D2O-226642.yaml
 ```
 
-### `aure plot-results`
-
-Plot R(Q) curves and SLD profiles from a completed run.
-
-```bash
-aure plot-results OUTPUT_DIR [OPTIONS]
-```
-
-| Option | Description |
-|--------|-------------|
-| `-s, --save PATH` | Save the figure (PNG, PDF, SVG) |
-| `-f, --offset N` | Vertical offset between curves (default: 10) |
-| `--no-show` | Don't open the interactive plot window |
-
 ### `aure extract-features`
 
 Quickly extract physics features from a data file without running a full

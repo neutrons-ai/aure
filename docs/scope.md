@@ -24,8 +24,9 @@ UI, and the MCP server.
 
 That matters for reading the "arrived" column. The web UI was **not** a later
 accretion, and neither was MCP — being in the first commit is not by itself an
-argument for keeping something, as the MCP removal below shows. What accreted
-afterwards is a different set of things, and the dates separate them.
+argument for keeping something, as the MCP removal in the table below shows.
+What accreted afterwards is a different set of things, and the dates separate
+them.
 
 Retirements to date, which establish that pruning is normal here:
 
@@ -34,170 +35,168 @@ Retirements to date, which establish that pruning is normal here:
 | 2026-03-13 | `llm/providers/{alcf,local,openai}.py` | consolidated into `openai_compat.py` |
 | 2026-07-27 | `workflow/graph.py` | LangGraph replaced by the hand-written runner |
 | 2026-09-04 | `llm/providers/alcf_auth.py` | an OpenAI-compatible endpoint needs no bespoke provider |
-| 2026-09-07 | `mcp_server.py`, `nodes/refinement.py` | see **Decisions taken** |
-| 2026-09-08 | `cli.py` `evaluate` command | see **Decisions taken** |
-| 2026-09-08 | `cli.py` `lookup-sld`/`list-materials`, then `database/` | see **Decisions taken** |
+| 2026-09-07 | `mcp_server.py`, `nodes/refinement.py` | `c22b994`, `265ef0a` |
+| 2026-09-08 | `cli.py` `evaluate` command | `89d2156` |
+| 2026-09-08 | `cli.py` `lookup-sld`/`list-materials`, then `database/` | `2d5e1f1` |
+| 2026-09-08 | `cli.py` `plot-results` | never worked; see the use-case pass |
 
 ---
 
-## Decisions taken
+## Use-cases
 
-**MCP server — retired (2026-09-07, `c22b994`).** Never needed in practice. It
-exposed 11 tools: three thin wrappers over the materials database and feature
-extraction, two one-shot wrappers over `run_analysis`, and a five-tool
-hand-driven session loop. Everything but one detail was already reachable from
-the CLI (`aure lookup-sld`, `aure extract-features`, `aure analyze`,
-`aure analyze -c`); the exception is that `analyze_reflectivity_features`
-accepted in-memory Q/R arrays where `aure extract-features` requires a file.
-`fastmcp` was a **core** runtime dependency, so this also shrank the default
-install.
+The inventory below says what exists. It cannot say what should — that depends
+on who AuRE is for and what they are trying to do, which is a judgement about
+the science, not about the code. This section holds that judgement, so the
+keep / bound / retire question has something to be answered *against*.
 
-**`nodes/refinement.py` — retired with it (`265ef0a`).** 114 lines that edited
-refl1d model *scripts* by regex, against a representation abandoned on
-2026-03-17 when `model_builder.py` arrived. MCP's `modify_model` was its only
-importer, and every one of that tool's five operations had been raising into an
-`except Exception` and returning `{"error": …}`: the two bound-wideners ran
-`re.sub` against a dict, and `_add_layer` was called with two arguments against
-a one-argument definition and was a self-declared stub returning `False`
-regardless. Dormant since 2026-03-06. The `result["evaluation"]` branch in
-`_print_analysis_results`, which only MCP ever populated, collapsed with it.
+Each entry should say what someone is trying to accomplish, not which command
+they type: "fit a single curve from a plain-English description" is a use-case,
+"`aure analyze`" is a surface that serves one. A capability in the inventory
+that serves no entry here is a candidate for retirement; an entry here that no
+capability serves is a gap.
 
-Net effect of both: **−1,079 lines**, one core dependency dropped, 783 tests
-still green.
+### The list
 
-**Facility coupling — bounded behind a seam (2026-09-07, `57a562d`,
-`92a9c5b`, `ca2b7a0`).** The ORNL REF_L filename conventions were hard-coded
-in three modules; adding another instrument meant editing all of them. They
-now sit in `aure/instruments/` (698 lines) behind a four-question protocol,
-with REF_L's regexes and theta parser moved verbatim and a golden parity
-table pinning their classifications. Consequences worth recording:
-
-- The previously silent branch is loud. A file no instrument recognises used
-  to be counted as a combined curve without comment; it now warns, records
-  `_instrument` on the state, and refuses a setup that declares
-  `theta_offset` / `sample_broadening` on files AuRE cannot classify.
-- ORSO `.ort` is the second instrument, which is what proves the seam. It
-  parses the YAML header `data_tools.parse_ort_file` was reading and
-  discarding, and declares `dq_is_fwhm = False` — an ORSO `sQz` column is one
-  sigma by specification, so the global REF_L-derived default had been
-  over-broadening every ORSO resolution by 2.35.
-- Third parties register through an `aure.instruments` entry point or
-  `AURE_INSTRUMENT`; see [instruments.md](instruments.md).
-
-**`aure evaluate` — retired (2026-09-08).** Scope creep: an LLM-judgement CLI
-wrapper whose inputs were a strict *subset* of what the library call it wrapped
-accepts. Removing it takes 310 lines out of `cli.py`, plus a 23-line helper and
-a 34-line test that existed only for it.
-
-The case against keeping it:
-
-- **It starved the judge it called.** `analyze_fit_quality_with_llm` takes
-  `bic` / `n_params` / `n_layers` / `skill_context` / `features` /
-  `residual_analysis`; the command passed none of them. With `bic=None` the
-  whole complexity block renders `(not computed)`
-  ([`prompts.py:627`](../src/aure/nodes/prompts.py#L627)), and with no
-  `skill_context` no domain skill reaches the prompt. The parsimony argument
-  and the physics grounding are what distinguish that judge from a χ²
-  threshold, and the command asked for a verdict without either.
-- **`aure import-refl1d` already does the richer version of the same ingest.**
-  It reads the same `problem.json` and computes BIC from `bic_inputs(problem)`,
-  extracts features, and sets `active_skills`
-  ([`refl1d_import.py:1562`](../src/aure/refl1d_import.py#L1562)). A verdict on
-  an external fit is `aure import-refl1d` then `aure serve` / `aure resume` —
-  the same capability through the door that feeds the evaluator properly.
-- **Its `--json` was an unwritten wire format, and its only consumer was
-  reading it wrong.** nr-analyzer shelled out to `aure evaluate <dir> --json`
-  (pipeline step 6, default on) and rendered `verdict` / `quality` / `status`,
-  `chi2`, `physical_plausibility`, `summary` — none of which AuRE emits. Its
-  actual keys are `quality_assessment`, `chi_squared`, `physical_concerns`.
-  Every fallback chain missed, so the rendered report carried the issues and
-  suggestions lists and nothing else: no verdict, no χ², no physical judgement,
-  no sign the verdict was advisory. nr-analyzer's pipeline papered over it with
-  a hard-coded "Verdict: (none reported by aure evaluate)". The fault was the
-  consumer's, but the guess was available to make because AuRE published the
-  format only by emitting it — and no test pinned the key names.
-- **The command also dropped most of what the judge returned.** The verdict
-  dict carries eleven keys
-  ([`evaluation.py:1446`](../src/aure/nodes/evaluation.py#L1446)); `--json`
-  forwarded five. `hypothesis_addressed` was omitted although the command took
-  `-h`, and `_used_fallback` was omitted, so a consumer could not tell an LLM
-  verdict from `_simple_evaluation`'s three χ² bands.
-- **It had no test coverage.** Only `analyze` and `batch` were exercised
-  through `CliRunner`.
-
-What replaces it for the two out-of-tree callers is what one of them was
-already doing: import the function. nr-workbench reaches
-`analyze_fit_quality_with_llm` directly through a pinned contract table, and
-nr-analyzer already imports `aure.llm` in four places — the subprocess was the
-odd path in its own codebase. The migration PR is tracked in
-[TODO.md](../TODO.md).
-
-**What this leaves unresolved.** `analyze_fit_quality_with_llm` is now reached
-by the `evaluation` node and by out-of-tree importers, with no CLI in between
-and still no `__all__` entry (see row 28). The verdict stays advisory outside
-the node: the deterministic guardrails — profile veto, χ² clamp — are the
-node's alone, and any external caller gets the model's opinion on one exported
-fit. That distinction was worth a JSON key; it is now worth a docstring.
-
-**Materials / SLD database — retired entirely (2026-09-08).** The two CLI
-commands (`lookup-sld`, `list-materials`, 126 lines of `cli.py`) and then the
-module behind them (`database/`, 448 lines).
-
-The question that prompted this was whether `database/` belongs in AuRE at all,
-given that refl1d ships `periodictable`. The first answer looked like "yes":
-**nothing in `database/` reimplements periodictable** — `compute_sld` is a
-four-line delegation to `neutron_sld()` — and what periodictable lacks is real:
-
-| | periodictable | `aure.database` |
+| # | Surface | Use-case |
 |---|---|---|
-| element densities | yes (`Si` 2.33, `Cu` 8.96) | — |
-| **compound** densities | no (`D2O`, `H2O`, `SiO2`, `Al2O3` all `None`) | 18 entries |
-| common-name resolution | no (`quartz`, `sapphire`, `silicon` all raise) | 66 aliases |
-| contrast matching | no | `get_contrast_match_ratio`, `get_mixture_sld` |
+| **U1** | CLI | Fit a **single** reflectivity curve (1 state, 1 file) from a textual description. |
+| **U2** | CLI | Co-refine several curves that are **one state** (1 state, N files — spliced Q segments) from a textual description. Every structural parameter is tied; nuisance parameters are *not* tied unless the description says so. |
+| **U3** | CLI | Co-refine **several states** (N states, N files) from a textual description, with some parameters tied as the description directs. |
+| **U4** | CLI | **Generate the setup YAML** for U1–U3, for the user to then edit by hand. |
+| **U5** | CLI | Run a fit **from a setup YAML**. |
+| **U6** | UI | U1 and U2 through the web interface. |
+| **U7** | UI | Import and export the setup YAML. |
+| **U8** | CLI → UI | Import a refl1d fit **run by hand**, then visualise it and resume fitting in the UI. |
+| **U9** | CLI | **Hand a model to bare refl1d**: build the stack from a description or a setup YAML and write a `problem.json`, to fit or inspect in refl1d directly rather than through AuRE's loop. |
+| **U10** | CLI | **Run a corpus unattended**: fit many samples in one invocation from a manifest, each job a setup merged with a shared `defaults:` block, with per-job selection and a dry run. Inherits U1–U3 unchanged — both modes pass the job's `states` into the same `run_analysis` / `run_prepare` entry points that `analyze -c` uses, so it is a loop over U5 rather than a second implementation. Also available in `prepare` mode, giving U9 for every job at once. |
+| **U11** | UI | **Deliver an AI-ready record**: export a finished fit in the ISAAC format for the data portal, so the result leaves AuRE as a citable record rather than a directory of files. |
 
-What overturned that is where the SLD in a fitted model actually comes from.
-**Not from this module.** The intake prompt asks the LLM for `sld` directly on
-the substrate, every layer and the ambient
-([`prompts.py:37`](../src/aure/nodes/prompts.py#L37)), and `_build_layers` uses
-that number as-is. The database was never consulted on that path. Its only
-internal caller was one line — `get_sld("silicon")`, resolving a constant of
-nature — now inlined as `_SILICON_SLD`.
+**U3 is the one that needs assessing, not just implementing.** Expressing a
+cross-state tie in prose is qualitatively harder than expressing a stack: the
+description has to say which parameters are shared, and "shared" is a claim
+about physics that the text may not pin down. The open question is whether
+**parametric constraints** — a parameter written as a function of another
+rather than tied to it — are viable inside AuRE at all, or whether they demand
+a declaration surface that prose cannot carry. Row 13 (`derived_parameters`) is
+the existing partial answer and is off by default for exactly this reason.
 
-And an LLM estimate is good enough, because the SLD is a *fitted* parameter and
-the estimate only has to seed it. With the formula known and only the density
-guessed, ±1 in SLD needs the density to ~15% for deuterated species and Al₂O₃,
-~30% for SiO₂/TiO₂, and is essentially unconstrained for anything protiated.
-What actually matters is protiation, not density: `b_c(D) − b_c(H) = 10.409 fm`,
-so deuteration adds the hydrogen number density times 1.041 — 5 to 8 for any
-organic — which is why "deuterated organics sit near 5.5, protiated near 0.4"
-holds across the 18 species measured for this decision. A 15 % density slip
-costs 1; a missed H/D swap costs 5. AuRE already treats the latter as a
-first-class structural hypothesis (refine rule 13's rewind), which is the right
-place for it.
+Two things bear on that assessment, both established by round-tripping real
+problems through `bumps.serialize` (see U9):
 
-So the tables encode what the LLM already knows, for a number the fit refines
-anyway. Retiring them costs nothing AuRE was using.
+- **A reparametrization is exportable, so it need not be a dead end.**
+  `save_problem_json` refuses any model carrying `derived_parameters`, on the
+  stated grounds that bumps serialization does not preserve expression
+  parameters. In bumps 1.0.x it does. A single-state declaration round-trips
+  with its free parameter, both `keep_physical` constraints and the derived
+  `Expression` intact and χ² unchanged; so does a multi-state **tied**
+  declaration (`assign: {SEI.rho: "ambient.rho + Gamma / SEI.thickness"}`) —
+  one shared free parameter, an `Expression` in each state, structural ties
+  preserved by object identity. `roughness_tie`, which that refusal cites as
+  its precedent, survives too. The guard looks obsolete rather than wrong in
+  principle, and should be re-tested against the pinned bumps version before
+  it is relaxed. If parametric constraints are the answer for U3, this is one
+  fewer thing standing in the way.
+- **The failure path is not safe yet.** When an `assign` expression cannot be
+  resolved, the declaration is pruned and the slot falls back to a free
+  parameter — but the slot stays marked as reparametrized, so the renaming pass
+  skips its `"<state> "` prefix and two distinct parameters end up with the
+  same name (`SEI rho` twice, in a two-state problem). Anything keyed by
+  parameter name then sees one of the two and cannot tell which. This is
+  reachable without a typo: `prune_derived_parameters` drops a declaration
+  whenever a structural edit removes a layer it references. It is the same
+  class of defect as the state-0 tie reference recorded in
+  [TODO.md](../TODO.md), and it should be fixed before `derived_parameters` is
+  offered as U3's mechanism.
+- **A tie spec needs names the user does not control.** This is the practical
+  obstacle, and it is not hypothetical: a four-job manifest exercising U1, U2,
+  U3 and U9 ran clean except that the U3 job died at the initial build with
 
-**The one thing that was load-bearing** was the fallback for when the parse
-supplies *no* SLD: `2.0` with bounds seeded at ±2.5, i.e. `(-0.5, 4.5)`. Real
-neutron SLDs are bimodal, so that window sits in the empty middle and excludes
-the entire deuterated half of the distribution — and a layer fenced into the
-wrong half cannot be fitted out of it, because the bound rather than the data
-is holding it. That is now `(-0.6, 7.5)`, spanning both clusters, with the
-reasoning recorded at the constant and pinned by a test. This was the real
-defect the scoping exercise turned up, and it had nothing to do with the
-database.
+  ```
+  shared_parameters references unknown layer 'Cu'; known:
+  ['D2O', 'D2O/H2O', 'H2O', 'ambient', 'copper', 'silicon', 'substrate']
+  ```
 
-**Downstream.** nr-workbench was the only external consumer, and barely: its
-`sld_for` wrapper is referenced nowhere in that repo, `lookup_material` was
-pinned in its contract table but never called, and `contrast_match_ratio` is
-live only as an *agent-facing* API documented in two of its SKILL.md files. It
-is six lines of interpolation over two solvent SLDs, which that repo now
-carries itself — consistent with its own stated policy of reimplementing
-AuRE's short arithmetic rather than paying for the import.
+  The manifest said `Cu.thickness`; the intake LLM had named the layer
+  `copper`. Tie specs match layer names exactly, and for a description-driven
+  run those names do not exist until intake has already run — so U3 asks the
+  user to write a reference to something they cannot see yet. The failure is at
+  least loud and lists the candidates; the quiet variants (a mid-run rename, a
+  name present only in the template) are recorded in
+  [TODO.md](../TODO.md). The documented remedy is to declare the stack
+  explicitly in the `states` block rather than leaving the names to the parse,
+  which for U10 means a manifest that pins layer names. Whether U3 can be
+  *description-driven at all*, as stated, turns on this more than on the tie
+  machinery, which works.
 
-`periodictable` remains a declared dependency though nothing in `src/aure`
-imports it any more; refl1d requires it regardless.
+### What serves what
+
+| Use-case | Inventory rows |
+|---|---|
+| U1 | 1, 2, 3, 4, 5, 6, 25 |
+| U2 | 9, 12 (+ the U1 set) |
+| U3 | 10, 11, 12, 13? (+ the U1 set) |
+| U4 | **nothing** — see below |
+| U5 | 8 |
+| U6 | 18 (+ the U1/U2 sets) |
+| U7 | 8, 18 |
+| U8 | 19, then 18, 7 |
+| U9 | 17, and whichever of 9 / 10 the shape needs |
+| U10 | 16, then whatever U1–U3 or U9 the jobs are |
+| U11 | 20, 18, and 5 (it exports the *selected* fit) |
+| all fitting | 22, 23, 26 |
+
+### Three findings the mapping produces
+
+**U4 has no implementation.** `setup.dump_setup` exists and round-trips, but its
+only caller is the web UI's `/api/setup/export`
+([`web/routes.py:951`](../src/aure/web/routes.py#L951)). No CLI command writes a
+setup file, so "generate the YAML, then edit it" is reachable only by starting
+the web server — which makes U4 as stated a gap, and U7 the workaround people
+would find. `aure prepare` is the nearest thing and serves U9 instead: it emits
+a refl1d `problem.json`, not a setup YAML — a different artifact for a
+different purpose.
+
+**U11 is UI-only, which its inventory row obscures.** Row 20 lists the export
+as "Exposed via `EXPORT_FORMAT`, web button", which reads as though the env var
+were a CLI trigger. It is not: `EXPORT_FORMAT` only *selects* which exporter
+the web button uses, and `exporters.get_exporter()` is called from exactly two
+places, both web routes
+([`web/routes.py:1797`](../src/aure/web/routes.py#L1797),
+[`:1817`](../src/aure/web/routes.py#L1817)). Neither the CLI nor the workflow
+ever exports. So a corpus run through U10 produces no records without opening
+each result in the browser, which is the combination most likely to be wanted
+and the one that does not exist. Whether U11 should also be a CLI use-case is a
+real decision, not a formality.
+
+**The UI already exceeds U6.** `/api/start-analysis` accepts `states` and
+`data_files`, not just a single `data_file`, so the web path can launch U3 as
+well — its own docstring documents only the single-file body and is out of
+date. Worth deciding whether U6 should claim U3 rather than leaving working
+code undocumented.
+
+### Capabilities no listed use-case asks for
+
+Five inventory rows serve nothing in the list above. That is a question about
+the list as much as about the code:
+
+- **21 (`extract-features`)** — a CLI command exposing one internal step,
+  defensible as a debugging aid and claimed by no use-case.
+
+  Of the five candidates this list first produced, three (batch, `prepare`,
+  the ISAAC export) turned out to be missing use-cases and became U9–U11, and
+  one (`plot-results`) was **retired**: asked what it did, it turned out never
+  to have worked. It globbed `refl1d_output/fit_iter*_*/problem.json`, but
+  bumps names that export `<model_name>.json` — the same fact
+  `CheckpointManager._find_problem_json` exists to handle and which
+  `plot-results` never consulted. It exited 1 on every run of this repository,
+  had no test, and 297 lines of it survived five months of that. Both outcomes
+  are the section working as intended.
+- **14 (thin-layer mode enumeration), 15 (`roughness_tie`)** — fit strategy
+  rather than user-facing capability; they serve U1–U3 indirectly and are
+  reachable only by env var or hand-edited model JSON.
+- **26 (Docker), 27 (importable library)** — delivery and integration, not
+  use-cases. Row 27 has out-of-tree consumers regardless of what this list
+  says.
 
 ---
 
@@ -230,15 +229,14 @@ Footprint is what would be deleted, not what would be touched.
 | 21 | Standalone feature extraction | `extract-features` | `tools/feature_tools.py` 1,142 (shared with node 2) | 02-09 |
 | 22 | Load reflectivity data (`.txt`, `.dat`, `.csv`, `.asc`, `.refl`, `.ort`) | implicit; every command that takes a data file | `tools/data_tools.py` 389 | 02-09 |
 | 23 | **Pluggable instrument / file-format support** | `aure.instruments` entry point, `AURE_INSTRUMENT`, `register()` | `instruments/` 698 + own doc | **09-07** |
-| 24 | Result plotting | `aure plot-results` | `cli.py:1998-2294` (297) | grown |
-| 25 | Domain skill library (9 skills) | LLM-selected into prompts | 1,466 md + `selector.py` 401 + `loader.py` 172 | 04-16 → **09-03** |
-| 26 | LLM provider layer (3 providers, timeout, retries, ledger) | `LLM_*` env | `llm/` ~600 | 02-14 |
-| 27 | Docker image | `ghcr.io/neutrons-ai/aure` | Dockerfile + CI | grown |
-| 28 | **AuRE as an importable library** | `import aure` — no dedicated code | `__all__` names 3 of them | 02-09 |
+| 24 | Domain skill library (9 skills) | LLM-selected into prompts | 1,466 md + `selector.py` 401 + `loader.py` 172 | 04-16 → **09-03** |
+| 25 | LLM provider layer (3 providers, timeout, retries, ledger) | `LLM_*` env | `llm/` ~600 | 02-14 |
+| 26 | Docker image | `ghcr.io/neutrons-ai/aure` | Dockerfile + CI | grown |
+| 27 | **AuRE as an importable library** | `import aure` — no dedicated code | `__all__` names 3 of them | 02-09 |
 
-12 CLI commands remain.
+11 CLI commands remain.
 
-Row 28 is the one surface this inventory previously missed, and it has a
+Row 27 is the one surface this inventory previously missed, and it has a
 consumer. `__all__` declares `ReflectivityState`, `create_initial_state` and
 `run_analysis` ([`__init__.py:33`](../src/aure/__init__.py#L33)). nr-workbench
 pins twelve callables across four modules in its own contract table — so a
@@ -281,10 +279,11 @@ straight to `parse_ascii_columns` — there is no NIST parser, only the column
 reader. A `.refl` file whose layout differs from bare columns is not read
 specially, it is read wrongly.
 
-(The second entry here was the REF_L filename coupling. It is addressed —
-see **Decisions taken** — and is kept out of this list because the
-conventions are now declarable rather than hard-coded, and an unrecognised
-file says so instead of taking the combined branch in silence.)
+(The second entry here was the REF_L filename coupling. It is addressed by
+the `instruments/` seam — `57a562d`, `92a9c5b`, `ca2b7a0` — and is kept out of
+this list because the conventions are now declarable rather than hard-coded,
+and an unrecognised file says so instead of taking the combined branch in
+silence.)
 
 ### Documentation weight is inverted
 
@@ -335,6 +334,6 @@ exists to *hold coupling in one place* rather than to add reach.
 
 Which of the remaining capabilities to keep. That is the owner's call, and the
 inventory exists to make it on evidence rather than recollection. Where this
-document takes a position, the position is factual rather than editorial: the
-two evaluation paths disagree by construction, six physics knobs are
-env-var-only, and the undocumented absorption boundary above is real.
+document takes a position, the position is factual rather than editorial: six
+physics knobs are env-var-only, and the undocumented absorption boundary above
+is real.

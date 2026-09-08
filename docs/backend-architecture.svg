@@ -38,7 +38,7 @@
   <!-- ============ ENTRY POINTS ============ -->
   <rect x="40" y="112" width="1280" height="110" rx="12" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5"/>
   <text x="60" y="136" class="box-t">Entry points &amp; inputs</text>
-  <text x="60" y="160" class="box-s"><tspan font-weight="700">CLI</tspan> (<tspan class="mono">aure.cli</tspan>):  analyze · batch · resume · evaluate · import-refl1d · prepare · plot-results</text>
+  <text x="60" y="160" class="box-s"><tspan font-weight="700">CLI</tspan> (<tspan class="mono">aure.cli</tspan>):  analyze · batch · resume · import-refl1d · prepare · serve</text>
   <text x="60" y="180" class="box-s"><tspan font-weight="700">Web UI</tspan> (<tspan class="mono">aure serve</tspan>, Flask) — interactive setup or viewer, over the same workflow</text>
   <text x="60" y="200" class="box-s"><tspan font-weight="700">Setup YAML</tspan> (<tspan class="mono">setup.py</tspan>) — states-only schema · <tspan class="mono">load_setup / load_manifest</tspan></text>
   <text x="720" y="160" class="box-s"><tspan font-weight="700">Inputs:</tspan></text>
