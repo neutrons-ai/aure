@@ -5,6 +5,62 @@ what is wrong, what it costs, and what the change would be.
 
 ---
 
+## `ROUGHNESS_MAX_OUTER` silently displaces a declared `roughness_max`
+
+**Where:** [`src/aure/nodes/model_builder.py`](src/aure/nodes/model_builder.py)
+— `_outer_roughness_max`.
+
+**What is wrong.** The env override is checked first and returns immediately,
+so the model's own declaration is never read:
+
+```python
+override = os.environ.get("ROUGHNESS_MAX_OUTER")
+if override:
+    return float(override)          # never reaches the layer
+if layers_info:
+    return float(layers_info[-1].get("roughness_max", _OUTER_ROUGHNESS_MAX_DEFAULT))
+```
+
+Nothing logs that it happened. A model that declares a ceiling on its outermost
+layer, and a prompt that instructs the LLM to declare one, both look satisfied
+while the number in force comes from the environment.
+
+**What it costs.** `aure-validation/config/providers.yaml` sets
+`ROUGHNESS_MAX_OUTER: "250"` for every sweep run, so the whole corpus fits its
+outer interface against `(0, 250)` regardless of the model. In
+`single-de/azure/cu_film__Cu_0__201334` the three iterations declared
+`roughness_max` of 30, 30 and 60 on their outermost layer and every one of them
+built `dTHF interface bounds=[0.0, 250.0]`.
+
+That run's hypothesis text says, in as many words, "Set roughness_max on the SEI
+**and on the solvent-facing interface** high enough to allow that — a 30 Å
+ceiling there cannot fit these data." The LLM complied, raising the outermost
+layer's `roughness_max` from 30 to 60 at iteration 2. It had no effect, and no
+line anywhere says so. Any attempt to tune that instruction against outcomes is
+measuring the environment, not the prompt.
+
+**The change.** Two candidates, and the second is probably right:
+
+- **Log the displacement.** When the override is set and the outermost layer
+  declares a different `roughness_max`, say which one won. One line, no
+  behaviour change, and it makes the corpus's outer bound self-evident in any
+  run's log.
+- **Make the override a floor on the ceiling** — `max(override, declared)` —
+  rather than a replacement. Its stated purpose is to stop a 30 Å default
+  capping genuinely diffuse interfaces; that purpose is served by raising a low
+  ceiling and not by lowering a high one. A model that asks for more than the
+  override presumably has a reason. This changes behaviour only for a model
+  declaring *more* than the override, which the corpus never does — its
+  declarations are 30 and 60 against an override of 250 — so it is free there.
+
+Note what this interacts with: the outer interface's *seed* comes from
+`layers_info[-1]["roughness"]` and its *floor* is a hardcoded `0` (see the entry
+above). So of the three numbers describing the interface most likely to be
+genuinely rough, one comes from the model, one from the environment, and one
+from a literal.
+
+---
+
 ## The bottom medium's interface is the one interface with no floor
 
 **Where:** [`src/aure/nodes/model_builder.py`](src/aure/nodes/model_builder.py)
