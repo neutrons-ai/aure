@@ -35,6 +35,7 @@ Retirements to date, which establish that pruning is normal here:
 | 2026-07-27 | `workflow/graph.py` | LangGraph replaced by the hand-written runner |
 | 2026-09-04 | `llm/providers/alcf_auth.py` | an OpenAI-compatible endpoint needs no bespoke provider |
 | 2026-09-07 | `mcp_server.py`, `nodes/refinement.py` | see **Decisions taken** |
+| 2026-09-08 | `cli.py` `evaluate` command | see **Decisions taken** |
 
 ---
 
@@ -82,6 +83,61 @@ table pinning their classifications. Consequences worth recording:
 - Third parties register through an `aure.instruments` entry point or
   `AURE_INSTRUMENT`; see [instruments.md](instruments.md).
 
+**`aure evaluate` — retired (2026-09-08).** Scope creep: an LLM-judgement CLI
+wrapper whose inputs were a strict *subset* of what the library call it wrapped
+accepts. Removing it takes 310 lines out of `cli.py`, plus a 23-line helper and
+a 34-line test that existed only for it.
+
+The case against keeping it:
+
+- **It starved the judge it called.** `analyze_fit_quality_with_llm` takes
+  `bic` / `n_params` / `n_layers` / `skill_context` / `features` /
+  `residual_analysis`; the command passed none of them. With `bic=None` the
+  whole complexity block renders `(not computed)`
+  ([`prompts.py:627`](../src/aure/nodes/prompts.py#L627)), and with no
+  `skill_context` no domain skill reaches the prompt. The parsimony argument
+  and the physics grounding are what distinguish that judge from a χ²
+  threshold, and the command asked for a verdict without either.
+- **`aure import-refl1d` already does the richer version of the same ingest.**
+  It reads the same `problem.json` and computes BIC from `bic_inputs(problem)`,
+  extracts features, and sets `active_skills`
+  ([`refl1d_import.py:1562`](../src/aure/refl1d_import.py#L1562)). A verdict on
+  an external fit is `aure import-refl1d` then `aure serve` / `aure resume` —
+  the same capability through the door that feeds the evaluator properly.
+- **Its `--json` was an unwritten wire format, and its only consumer was
+  reading it wrong.** nr-analyzer shelled out to `aure evaluate <dir> --json`
+  (pipeline step 6, default on) and rendered `verdict` / `quality` / `status`,
+  `chi2`, `physical_plausibility`, `summary` — none of which AuRE emits. Its
+  actual keys are `quality_assessment`, `chi_squared`, `physical_concerns`.
+  Every fallback chain missed, so the rendered report carried the issues and
+  suggestions lists and nothing else: no verdict, no χ², no physical judgement,
+  no sign the verdict was advisory. nr-analyzer's pipeline papered over it with
+  a hard-coded "Verdict: (none reported by aure evaluate)". The fault was the
+  consumer's, but the guess was available to make because AuRE published the
+  format only by emitting it — and no test pinned the key names.
+- **The command also dropped most of what the judge returned.** The verdict
+  dict carries eleven keys
+  ([`evaluation.py:1446`](../src/aure/nodes/evaluation.py#L1446)); `--json`
+  forwarded five. `hypothesis_addressed` was omitted although the command took
+  `-h`, and `_used_fallback` was omitted, so a consumer could not tell an LLM
+  verdict from `_simple_evaluation`'s three χ² bands.
+- **It had no test coverage.** Only `analyze` and `batch` were exercised
+  through `CliRunner`.
+
+What replaces it for the two out-of-tree callers is what one of them was
+already doing: import the function. nr-workbench reaches
+`analyze_fit_quality_with_llm` directly through a pinned contract table, and
+nr-analyzer already imports `aure.llm` in four places — the subprocess was the
+odd path in its own codebase. The migration PR is tracked in
+[TODO.md](../TODO.md).
+
+**What this leaves unresolved.** `analyze_fit_quality_with_llm` is now reached
+by the `evaluation` node and by out-of-tree importers, with no CLI in between
+and still no `__all__` entry (see row 29). The verdict stays advisory outside
+the node: the deterministic guardrails — profile veto, χ² clamp — are the
+node's alone, and any external caller gets the model's opinion on one exported
+fit. That distinction was worth a JSON key; it is now worth a docstring.
+
 ---
 
 ## The inventory
@@ -109,37 +165,31 @@ Footprint is what would be deleted, not what would be touched.
 | 17 | `prepare` → `problem.json` handoff to bare refl1d | `aure prepare`, batch mode | `cli.py:976-1314` (339) | grown |
 | 18 | **Web UI** (setup / history / results, live param editor, file browser) | `aure serve`, `aure interactive` | 3,054 py + 3,836 assets = **6,890** | 02-09 |
 | 19 | **Import a hand-run refl1d fit** | `aure import-refl1d` | `refl1d_import.py` **1,740** | 05-22 |
-| 20 | Standalone LLM evaluation of an external fit | `aure evaluate` | `cli.py:2298-2604` (307) | grown |
-| 21 | ISAAC AI-ready export | `EXPORT_FORMAT`, web button | `exporters/` 523 + optional dep | 03-07 |
-| 22 | Materials / SLD database | `lookup-sld`, `list-materials` | `database/` 448 | 02-09 |
-| 23 | Standalone feature extraction | `extract-features` | `tools/feature_tools.py` 1,142 (shared with node 2) | 02-09 |
-| 24 | Load reflectivity data (`.txt`, `.dat`, `.csv`, `.asc`, `.refl`, `.ort`) | implicit; every command that takes a data file | `tools/data_tools.py` 389 | 02-09 |
-| 25 | **Pluggable instrument / file-format support** | `aure.instruments` entry point, `AURE_INSTRUMENT`, `register()` | `instruments/` 698 + own doc | **09-07** |
-| 26 | Result plotting | `aure plot-results` | `cli.py:1998-2294` (297) | grown |
-| 27 | Domain skill library (9 skills) | LLM-selected into prompts | 1,466 md + `selector.py` 401 + `loader.py` 172 | 04-16 → **09-03** |
-| 28 | LLM provider layer (3 providers, timeout, retries, ledger) | `LLM_*` env | `llm/` ~600 | 02-14 |
-| 29 | Docker image | `ghcr.io/neutrons-ai/aure` | Dockerfile + CI | grown |
+| 20 | ISAAC AI-ready export | `EXPORT_FORMAT`, web button | `exporters/` 523 + optional dep | 03-07 |
+| 21 | Materials / SLD database | `lookup-sld`, `list-materials` | `database/` 448 | 02-09 |
+| 22 | Standalone feature extraction | `extract-features` | `tools/feature_tools.py` 1,142 (shared with node 2) | 02-09 |
+| 23 | Load reflectivity data (`.txt`, `.dat`, `.csv`, `.asc`, `.refl`, `.ort`) | implicit; every command that takes a data file | `tools/data_tools.py` 389 | 02-09 |
+| 24 | **Pluggable instrument / file-format support** | `aure.instruments` entry point, `AURE_INSTRUMENT`, `register()` | `instruments/` 698 + own doc | **09-07** |
+| 25 | Result plotting | `aure plot-results` | `cli.py:1998-2294` (297) | grown |
+| 26 | Domain skill library (9 skills) | LLM-selected into prompts | 1,466 md + `selector.py` 401 + `loader.py` 172 | 04-16 → **09-03** |
+| 27 | LLM provider layer (3 providers, timeout, retries, ledger) | `LLM_*` env | `llm/` ~600 | 02-14 |
+| 28 | Docker image | `ghcr.io/neutrons-ai/aure` | Dockerfile + CI | grown |
+| 29 | **AuRE as an importable library** | `import aure` — no dedicated code | `__all__` names 3 of them | 02-09 |
 
-15 CLI commands remain.
+14 CLI commands remain.
+
+Row 29 is the one surface this inventory previously missed, and it has a
+consumer. `__all__` declares `ReflectivityState`, `create_initial_state` and
+`run_analysis` ([`__init__.py:33`](../src/aure/__init__.py#L33)). nr-workbench
+pins twelve callables across four modules in its own contract table — so a
+rename here breaks its CI rather than a scientist's fit — and reaches three more
+in `aure.llm` besides. None of the fifteen appears in any `__all__`. Whatever
+is decided about the CLI, that list is a de-facto API, and the scoping decision
+should say whether it becomes a declared one.
 
 ---
 
 ## Things the inventory turned up that bear on the decision
-
-### The same job done twice: fit evaluation
-
-Two code paths judge a fit, and they do not agree by design:
-
-1. the `evaluation` node — full deterministic guardrails (profile veto, χ² clamp);
-2. `aure evaluate` — its own docstring says the verdict is **advisory** and
-   "can differ from what `aure analyze` decided for the same fit", because it
-   runs neither the profile check nor the χ² stop
-   ([`cli.py:2342`](../src/aure/cli.py#L2342)).
-
-This was three paths until MCP's `evaluate_fit` was removed. `_simple_evaluation`
-itself remains and should: it is the LLM-failure fallback *inside* the evaluation
-node ([`evaluation.py:1463`](../src/aure/nodes/evaluation.py#L1463)), not a
-separate verdict surface.
 
 ### Physics knobs reachable only through environment variables
 

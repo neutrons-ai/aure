@@ -22,7 +22,7 @@ The longest-form design rationale lives in [docs/approach.md](docs/approach.md) 
 
 - Tests: `pytest tests/` (config in `pyproject.toml` adds `--cov=aure` and an html coverage report). Single test: `pytest tests/test_workflow.py::test_name -v`.
 - Lint/format: ruff is wired via pre-commit (`ruff-check --fix --ignore=E741,E402` then `ruff-format`). Install hooks with `pre-commit install`; run on demand with `pre-commit run --all-files`. Other hooks: yamllint, taplo (TOML), gitleaks.
-- CLI entry point: `aure …` (defined in `[project.scripts]` → `aure.cli:main`). Top-level commands: `analyze`, `prepare`, `batch`, `resume`, `checkpoints`, `inspect-checkpoint`, `evaluate`, `import-refl1d`, `plot-results`, `extract-features`, `lookup-sld`, `list-materials`, `serve` / `interactive`, `check-llm`. Full reference is in [README.md](README.md).
+- CLI entry point: `aure …` (defined in `[project.scripts]` → `aure.cli:main`). Top-level commands: `analyze`, `prepare`, `batch`, `resume`, `checkpoints`, `inspect-checkpoint`, `import-refl1d`, `plot-results`, `extract-features`, `lookup-sld`, `list-materials`, `serve` / `interactive`, `check-llm`. Full reference is in [README.md](README.md).
 - Validation harness (separate package): `python -m validation.cli compare|chi2|diagnose` — compares fitted runs against reference models. See [validation/](validation/).
 
 ## Architecture
@@ -88,7 +88,7 @@ Two distinct co-refinement modes share the same workflow:
 `aure import-refl1d REFL1D_DIR -o OUTPUT_DIR` ingests a hand-run refl1d `problem.json` into an AuRE workspace so it can be opened with `aure serve`, evaluated, or extended via `aure resume`. The module:
 
 - `definition_from_problem(problem)` walks `problem.models`, groups experiments by sample identity (`id(sample)`), and reconstructs a `ModelDefinition` with explicit `states`. Tied-parameter detection uses Python identity on `bumps.Parameter` instances (which is the protocol `build_states_problem` follows). Material-name heuristics guess `back_reflection` orientation; `--back-reflection` overrides.
-- `extract_fit_result_from_problem(problem, …)` — moved from `cli.py`; reused by `aure evaluate` and the importer.
+- `extract_fit_result_from_problem(problem, …)` — moved from `cli.py`; used by the importer.
 - Probes are dumped to `<output_dir>/data/*.txt` so the imported run is self-contained.
 
 ### Checkpoints ([src/aure/workflow/checkpoints.py](src/aure/workflow/checkpoints.py))

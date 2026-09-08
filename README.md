@@ -768,58 +768,11 @@ aure inspect-checkpoint CHECKPOINT_PATH [-s] [--json]
 
 `-s, --show-state` prints the full workflow state (can be large).
 
-### `aure evaluate`
-
-Evaluate a refl1d fit result using LLM analysis, without re-running the
-full workflow. Point it at a refl1d output directory containing a
-`problem.json` and optionally describe the sample so the LLM can judge
-physical plausibility.
-
-```bash
-aure evaluate REFL1D_DIR [OPTIONS]
-```
-
-| Option | Description |
-|--------|-------------|
-| `-c, --context TEXT` | Sample / model description to give the LLM context |
-| `-h, --hypothesis TEXT` | Optional hypothesis being tested |
-| `-v, --verbose` | Verbose logging |
-| `--json` | JSON output |
-
-If `REFL1D_DIR` is the parent `refl1d_output/` directory, the latest
-`fit_iter*` subdirectory is selected automatically.
-
-It judges against the `chi2_max` the evaluated run was launched with, recovered
-from that run's `final_state.json`; a directory inspected out of context falls back
-to the ambient `CHI2_MAX`, and the output states which was used.
-
-Its `acceptable` field is **advisory** and says so: the command applies neither the
-deterministic χ² stop nor the SLD-profile veto, so it can disagree with what
-`aure analyze` decided for the same fit. Applying the stop here would force
-acceptance on χ² alone with no profile check — the exact case the stop's guards
-exist for — so it stays an inspection tool. To gate on a run's actual outcome, read
-its `final_state.json` or `aure analyze --json`'s `selection` block. `--json`
-carries `acceptable_is_advisory`, `chi2_max` and `chi2_max_source`.
-
-**Examples:**
-
-```bash
-# Evaluate a specific fit iteration
-aure evaluate output/refl1d_output/fit_iter0_dream
-
-# Provide sample context for better physical assessment
-aure evaluate output/refl1d_output/fit_iter1_dream \
-    -c "100 nm copper on 5 nm titanium on silicon, measured in D2O"
-
-# Machine-readable output
-aure evaluate output/refl1d_output/ --json
-```
-
 ### `aure import-refl1d`
 
 Ingest a hand-run refl1d `problem.json` into an AuRE output directory so it
-can be opened with `aure serve`, judged with `aure evaluate`, or extended
-with `aure resume`. `REFL1D_DIR` may be a specific `fit_iter*_*` directory or
+can be opened with `aure serve`, evaluated, or extended with
+`aure resume`. `REFL1D_DIR` may be a specific `fit_iter*_*` directory or
 its parent (the latest iteration is then picked automatically).
 
 ```bash
