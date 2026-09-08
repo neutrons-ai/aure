@@ -639,11 +639,37 @@ if hasattr(v, "error") and resolution_index is None:
     header_out[refl1d_resolution_name] = v.error.error_value
 ```
 
-An orsopy `Value` is a dataclass that always *has* an `error` field, and it is
-`None` unless an error sub-field was written. So `hasattr` is True, the next
-line dereferences `None`, and any ORSO file whose
-`instrument_settings.incident_angle` or `wavelength` carries no explicit error
-fails — which is orsopy's default output.
+There are **two** failure modes on that one line, and between them they cover
+both shapes a real file takes:
+
+- **No errors written** — orsopy's default. `instrument_settings.incident_angle`
+  is a `Value`, whose dataclass *declares* `error` with a default of `None`. So
+  `hasattr(v, "error")` is True, it guards nothing, and the next line
+  dereferences `None`.
+- **Errors written.** The angle is then fine, but `wavelength` is normally a
+  `ValueRange`, which declares no `error` field at all — orsopy attaches it as
+  an untyped attribute holding a plain **`dict`**, and the same line raises
+  `'dict' object has no attribute 'error_value'`. (`Value.error` deserializes
+  to an `ErrorValue` while `ValueRange.error` stays a dict; that asymmetry is
+  an orsopy issue in its own right and worth raising there separately.)
+
+So there is no way to write the header that gets past it. `resolution_index` —
+the thing that would skip the branch — is only set when the file carries the
+angle as a data *column* with a matching `physical_quantity` and `error_of`
+pair, which a reduced R(Q) curve does not.
+
+**Reproduction.** A standalone script covering both modes was written for the
+refl1d team: it builds its files with `orsopy`'s own writer (so they are
+spec-valid by construction), shows orsopy reading them back, shows `load4`
+failing, prints the offending object state, and carries the patch below in its
+docstring. The core of it is four lines:
+
+```python
+from orsopy import fileio
+from refl1d.names import load4
+fileio.save_orso([fileio.OrsoDataset(info, data)], "reduced.ort")
+load4("reduced.ort")   # AttributeError: 'NoneType' object has no attribute 'error_value'
+```
 
 This is not academic. ORSO is a supported instrument on this branch: the
 registry claims `.ort`, reads its metadata correctly, and declares its dQ
@@ -656,8 +682,10 @@ fitted, which is the only thing a user wants from it.
 without ever opening a probe. The 528 lines of instrument tests are all on the
 metadata side of the seam.
 
-**The change.** Guard the dereference — `getattr(v, "error", None) is not None`
-— and send it upstream to refl1d, since every refl1d user hits this. AuRE
+**The change.** Guard the dereference and tolerate both shapes — read
+`getattr(v, "error", None)`, skip when it is `None`, and take `error_value` /
+`value_is` from either an `ErrorValue` or a `dict` — then send it upstream to
+refl1d, since every refl1d user hits this. AuRE
 should not wait on the release: `load_probe` is the single entry point for data
 loading, so a local workaround belongs there, either as a targeted patch or by
 reading the ORSO file through `orsopy` directly and constructing the probe from
@@ -670,8 +698,10 @@ rejects, so a `.ort` file can pass feature extraction and then fail to fit.
 
 **Verifying a fix.** Generate a file with `orsopy.fileio.save_orso` in a test
 fixture and assert `load_probe` returns a probe whose `dQ` equals the `sQz`
-column (not `sQz / 2.355`, which is the separate `dq_is_fwhm` question). That
-test is the coverage gap, independent of the crash.
+column (not `sQz / 2.355`, which is the separate `dq_is_fwhm` question). Cover
+both header shapes — with and without an explicit angle/wavelength error —
+since they fail for different reasons. That test is the coverage gap,
+independent of the crash.
 
 ---
 

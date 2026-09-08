@@ -157,17 +157,21 @@ would find. `aure prepare` is the nearest thing and serves U9 instead: it emits
 a refl1d `problem.json`, not a setup YAML — a different artifact for a
 different purpose.
 
-**U11 is UI-only, which its inventory row obscures.** Row 20 lists the export
-as "Exposed via `EXPORT_FORMAT`, web button", which reads as though the env var
-were a CLI trigger. It is not: `EXPORT_FORMAT` only *selects* which exporter
-the web button uses, and `exporters.get_exporter()` is called from exactly two
-places, both web routes
+**U11 is UI-only by design — decided, not a gap.** Worth stating explicitly
+because the absence of a CLI export otherwise reads as an oversight, and
+because row 20 used to invite that reading: it listed the export as "Exposed
+via `EXPORT_FORMAT`, web button", as though the env var were a CLI trigger.
+It is not, and the row now says so. `EXPORT_FORMAT` only *selects* which
+exporter the web button uses, and
+`exporters.get_exporter()` is called from exactly two places, both web routes
 ([`web/routes.py:1797`](../src/aure/web/routes.py#L1797),
 [`:1817`](../src/aure/web/routes.py#L1817)). Neither the CLI nor the workflow
-ever exports. So a corpus run through U10 produces no records without opening
-each result in the browser, which is the combination most likely to be wanted
-and the one that does not exist. Whether U11 should also be a CLI use-case is a
-real decision, not a formality.
+ever exports.
+
+The consequence is accepted: a corpus run through U10 produces no records
+until someone opens each result. Publishing a record is a deliberate act, and
+it stays behind the surface where a person has actually looked at the fit. So
+U11 is tagged UI and there is no CLI counterpart to add.
 
 **The UI already exceeds U6.** `/api/start-analysis` accepts `states` and
 `data_files`, not just a single `data_file`, so the web path can launch U3 as
@@ -235,7 +239,7 @@ Footprint is what would be deleted, not what would be touched.
 | 17 | `prepare` → `problem.json` handoff to bare refl1d | `aure prepare`, batch mode | `cli.py:976-1314` (339) | grown |
 | 18 | **Web UI** (setup / history / results, live param editor, file browser) | `aure serve`, `aure interactive` | 3,054 py + 3,836 assets = **6,890** | 02-09 |
 | 19 | **Import a hand-run refl1d fit** | `aure import-refl1d` | `refl1d_import.py` **1,740** | 05-22 |
-| 20 | ISAAC AI-ready export | `EXPORT_FORMAT`, web button | `exporters/` 523 + optional dep | 03-07 |
+| 20 | ISAAC AI-ready export | web button only; `EXPORT_FORMAT` selects the format | `exporters/` 523 + optional dep | 03-07 |
 | 21 | Load reflectivity data (`.txt`, `.dat`, `.csv`, `.asc`, `.refl`, `.ort`) | implicit; every command that takes a data file | `tools/data_tools.py` 389 | 02-09 |
 | 22 | **Pluggable instrument / file-format support** | `aure.instruments` entry point, `AURE_INSTRUMENT`, `register()` | `instruments/` 698 + own doc | **09-07** |
 | 23 | Domain skill library (9 skills) | LLM-selected into prompts | 1,466 md + `selector.py` 401 + `loader.py` 172 | 04-16 → **09-03** |
