@@ -316,79 +316,91 @@ checkpoint must carry the declared window rather than `(6.3, 8.5)`.
 
 ---
 
-## No layer parameter can be held fixed, and the widener would undo it anyway
+## "Fix this SLD" is honoured about half the time, and nothing says how to ask
 
 **Where:** [`src/aure/nodes/prompts.py`](src/aure/nodes/prompts.py) — the model
 JSON schema in the modeling and refinement prompts, and refinement rule 3.
 
-**What is wrong.** A layer offers `sld_min` / `sld_max` and nothing else. There
-is no `fixed` flag, though one exists for the probe intensity in the same
-schema:
+**What is wrong.** A layer offers `sld_min` / `sld_max` and no `fixed` flag,
+though one exists for the probe intensity in the same schema:
 
 ```
 "intensity": { "value": ..., "min": ..., "max": ..., "fixed": <true/false> }
 ```
 
-So "this copper is bulk copper at 6.48e-6 Å^-2, do not fit it" has no
-representation. The nearest expression is `sld_min == sld_max`, which the prompt
-never suggests — the schema glosses these as *"minimum SLD if user specifies a
-range, otherwise omit"* — and which refinement rule 3 would then undo:
+A pin *is* expressible — `sld_min == sld_max` reaches the builder as a
+zero-width range and bumps accepts it — but nothing in the prompt says so. The
+schema glosses the two keys as *"minimum SLD if user specifies a range,
+otherwise omit"*, which describes a range, not a pin. So whether an explicit
+instruction takes effect is left to the model inferring an undocumented
+convention, and it does so inconsistently.
+
+**What it costs.** Measured over the first 9 curves of a sweep whose
+description said, in these words, *"the copper metal is 6.48e-6 Å^-2 (bulk
+copper), and the dTHF solvent is 6.2e-6 Å^-2. Fix both."*
+
+| | pinned (`sld_min == sld_max` reached the fit) |
+|---|---|
+| solvent SLD | **5 / 9** |
+| copper SLD | **2 / 9** |
+| copper within 0.02 of 6.48 without being pinned | 4 / 9 |
+
+Identical wording, same model, same corpus, and the instruction is silently
+dropped on roughly half the runs. That is worse than a missing feature: a user
+cannot tell from the output whether their constraint was applied, and a sweep
+that relies on it gets a mixture. On `cu_film/Cu_0/201144` the trace shows where
+it goes when it goes wrong —
+
+| stage | what happened |
+|---|---|
+| intake | **understood** — both constraints recorded verbatim among 13, copper's start value set to 6.48 |
+| modeling | value kept, but `SLD ∈ [4.0, 9.0]` proposed for it regardless, with no reasoning offered |
+| builder | stored as `(3.98, 8.98)`, i.e. `6.48 ± 2.5`, the code default |
+| a later iteration | narrowed to `(6.3, 8.5)` by an unrelated floor in the sample description |
+| fit | landed at **6.581**, and the solvent at 5.958 against a stated 6.2 |
+
+— while on `201236` and `201290` the same instruction produced
+`copper rho bounds=(6.48, 6.48)` and held. This is not a comprehension failure:
+intake parses it correctly every time. It is a missing schema affordance, and
+the checkpoint is a bare proposal with nowhere to record that a constraint could
+not be honoured.
+
+**A second hazard, latent rather than observed.** Refinement rule 3 says
 
 > 3. If parameters are hitting their bounds, widen those bounds (sld_min/sld_max,
 >    thickness_min/thickness_max).
 
-A fixed parameter sits at its bounds by construction, so the one instruction
-that could hold it is also the one the widener is guaranteed to target.
+A pinned parameter is at its bounds by construction, so anything keyed on
+"hitting its bounds" should target it. The five pins above survived to the final
+problem, so this did not fire in practice — but nothing prevents it, and a
+deterministic widener that does not exempt zero-width ranges would silently
+unpin them.
 
-**What it costs.** The instruction is understood and then lost. Measured on
-`cu_film/Cu_0/201144`, whose description said *"Fix copper metal SLD at
-6.48e-6 Å^-2; do not fit it"* and *"Fix dTHF solvent SLD at 6.2e-6 Å^-2; do not
-fit it"*:
-
-| stage | what happened |
-|---|---|
-| intake | **understood** — both recorded verbatim among 13 constraints, copper's start value set to 6.48 |
-| modeling | value kept, but `SLD ∈ [4.0, 9.0]` proposed for it regardless, with no reasoning offered |
-| builder | window stored as `(3.98, 8.98)`, i.e. `6.48 ± 2.5`, the code default |
-| a later iteration | narrowed to `(6.3, 8.5)` by an unrelated floor in the sample description |
-| fit | landed at **6.581** |
-
-The solvent went the same way: pinned at 6.2 in the description, parsed as
-`Ambient: dTHF (SLD = 6.20)`, fitted to 5.958.
-
-This is not a comprehension failure and it should not be read as one. The
-modeling node behaved reasonably given a schema with no way to say "fixed"; the
-checkpoint is a bare proposal, so there is not even a place for it to record
-that it could not honour a constraint it had just been handed.
-
-**Why it matters beyond one run.** Fixing a known scattering-length density is
+**Why it matters beyond one sweep.** Fixing a known scattering-length density is
 ordinary practice — the calibrated expert reference fits in the validation
 corpus hold the ambient SLD fixed and fit only its roughness. A workflow whose
-premise is that the user knows their system needs a way to accept "I know this
-constant", and today there is none: not in the description (no representation),
-not in a setup file for a single curve (see the single-state entry above), and
-not through the refinement loop (rule 3 widens it back).
+premise is that the user knows their system needs to accept "I know this
+constant" *reliably*, and today it is a coin flip: undocumented in the
+description path, dropped entirely in a single-state setup file (see the entry
+above), and unprotected against the widener.
 
-**The change.** Three parts, and the third is the one that makes the other two
-stick:
+**The change.** Three parts:
 
 - Add `"fixed": <true/false>` to the layer schema in both prompts, alongside the
   existing per-parameter bounds, and mention it in the guidance the way the
-  intensity `fixed` flag is mentioned.
+  intensity `fixed` flag is mentioned. This is the part that converts a
+  half-honoured convention into a stated one.
 - Honour it in the builder: a fixed parameter is set and not ranged, so it never
-  enters `problem.getp()`.
-- Exempt fixed parameters from rule 3 and from the deterministic bound-widener.
-  A parameter that is fixed is *at* its bounds permanently, so anything keyed on
-  "hitting its bounds" must skip it explicitly.
+  enters `problem.getp()`. Keep treating `sld_min == sld_max` the same way, for
+  the models that already write it.
+- Exempt fixed and zero-width parameters from rule 3 and from the deterministic
+  bound-widener, explicitly.
 
-A narrower alternative — treat `sld_min == sld_max` as a pin and exempt it from
-widening — needs only the last two parts, but leaves the capability undiscoverable
-from the schema, which is how it came to be missed here.
-
-**Verifying a fix.** Run any curve with *"fix the copper SLD at 6.48, do not fit
-it"* in the description: the exported `problem.json` must contain no free
-parameter for that layer's SLD, and the value must still be 6.48 after five
-refinement iterations.
+**Verifying a fix.** Run the same curve five times with *"fix the copper SLD at
+6.48, do not fit it"* in the description: the exported `problem.json` must
+contain no free parameter for that layer's SLD in **all five**, and the value
+must still be 6.48 after the refinement iterations. Today the same test gives a
+mixture.
 
 ---
 
