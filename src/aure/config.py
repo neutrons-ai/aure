@@ -11,10 +11,6 @@ An optional YAML file (``--config config.yaml``) lets the user inject:
   (each grouping data files that share one physical sample).
 * **shared_parameters** / **unshared_parameters** – whitelist or
   blacklist of layer attributes tied across states. Mutually exclusive.
-* **derived_parameters** – reparametrization: fit a combination of raw
-  parameters (a surface excess, a volume fraction) and derive a raw one
-  from it. See ``aure.state.DerivedParameter``. Gated by
-  **allow_derived_parameters** (default off) / ``ALLOW_DERIVED_PARAMETERS``.
 
 See ``aure_config.example.yaml`` in the repository root for the full schema.
 """
@@ -40,8 +36,6 @@ class UserConfig(TypedDict, total=False):
     shared_parameters: List[str]
     unshared_parameters: List[str]
     distinct_sample: bool  # co-refined states are distinct physical samples
-    derived_parameters: List[dict]  # reparametrization (DerivedParameter-shaped)
-    allow_derived_parameters: bool  # opt-in gate for the above (default False)
 
 
 _EMPTY: UserConfig = {
@@ -52,8 +46,6 @@ _EMPTY: UserConfig = {
     "shared_parameters": [],
     "unshared_parameters": [],
     "distinct_sample": False,
-    "derived_parameters": [],
-    "allow_derived_parameters": False,
 }
 
 
@@ -108,13 +100,6 @@ def load_user_config(path: Optional[str | Path] = None) -> UserConfig:
 
     cfg["shared_parameters"] = _as_str_list(raw.get("shared_parameters"))
     cfg["unshared_parameters"] = _as_str_list(raw.get("unshared_parameters"))
-    cfg["derived_parameters"] = _parse_derived_parameters(
-        raw.get("derived_parameters")
-    )
-    cfg["allow_derived_parameters"] = derived_parameters_enabled(
-        raw.get("allow_derived_parameters")
-    )
-    check_derived_parameters_allowed(cfg, source=str(path))
     if cfg["shared_parameters"] and cfg["unshared_parameters"]:
         raise ConfigError(
             "shared_parameters and unshared_parameters are mutually exclusive; "
@@ -479,122 +464,6 @@ def states_from_config(cfg: Optional[UserConfig]) -> List[dict]:
         return []
     states = cfg.get("states") or []
     return [dict(s) for s in states]
-
-
-_DERIVED_FLAG_ENV = "ALLOW_DERIVED_PARAMETERS"
-_TRUTHY = ("1", "true", "yes", "on")
-
-
-def derived_parameters_enabled(explicit: Any = None) -> bool:
-    """Is reparametrization (``derived_parameters``) enabled for this run?
-
-    **Off by default.** A reparametrized model asks more of the LLM than a
-    plain layer stack: derived layer attributes are not fit parameters, their
-    numbers are computed rather than fitted, and the layers they reference must
-    not be removed. A model that does not hold all that in mind will "fix" a
-    derived SLD or refine the layer away, and the run degrades in a way that is
-    hard to read from the outside. So the whole feature — the config key, the
-    prompt rule, the skill — stays out of the way unless it is asked for.
-
-    An explicit ``allow_derived_parameters`` in the config wins; otherwise the
-    ``ALLOW_DERIVED_PARAMETERS`` environment variable; otherwise False.
-    """
-    if explicit is not None:
-        return bool(explicit)
-    import os
-
-    return os.environ.get(_DERIVED_FLAG_ENV, "").strip().lower() in _TRUTHY
-
-
-def check_derived_parameters_allowed(cfg: Any, *, source: str = "config") -> None:
-    """Refuse a config that declares reparametrizations while the gate is off.
-
-    Ignoring the block would be worse than refusing it: the run would fit a
-    model measurably different from the one that was described, and nothing in
-    the report would say why the excess it was supposed to constrain came out
-    unconstrained.
-    """
-    if not (cfg or {}).get("derived_parameters"):
-        return
-    if (cfg or {}).get("allow_derived_parameters"):
-        return
-    names = ", ".join(
-        str(d.get("name")) for d in cfg["derived_parameters"]  # type: ignore[index]
-    )
-    raise ConfigError(
-        f"{source}: derived_parameters ({names}) are declared, but "
-        f"reparametrization is off by default because it asks more of the "
-        f"model than a plain layer stack does. Enable it with "
-        f"`allow_derived_parameters: true` in this file, or "
-        f"{_DERIVED_FLAG_ENV}=1 in the environment."
-    )
-
-
-def _parse_derived_parameters(raw: Any) -> List[dict]:
-    """Shape-check the ``derived_parameters:`` block.
-
-    Only the shape is checked here — whether the names and expressions resolve
-    against the model is checked in the modeling node, which is the first point
-    that knows the layer stack. What is caught here is what would otherwise
-    produce a confusing failure much later: a scalar where a list belongs, a
-    missing ``name``, a range that is not a range.
-    """
-    if not raw:
-        return []
-    if not isinstance(raw, list):
-        raise ConfigError("`derived_parameters:` must be a list of mappings.")
-    out: List[dict] = []
-    seen: set[str] = set()
-    for i, entry in enumerate(raw):
-        if not isinstance(entry, dict):
-            raise ConfigError(
-                f"derived_parameters[{i}] must be a mapping, got "
-                f"{type(entry).__name__}."
-            )
-        name = entry.get("name")
-        if not name or not isinstance(name, str):
-            raise ConfigError(f"derived_parameters[{i}] is missing a non-empty `name`.")
-        if name in seen:
-            raise ConfigError(f"Duplicate derived parameter name: {name!r}.")
-        seen.add(name)
-        free = entry.get("free") or {}
-        if not isinstance(free, dict):
-            raise ConfigError(f"derived_parameters[{name}].free must be a mapping.")
-        for key in ("min", "max"):
-            if key not in free:
-                raise ConfigError(
-                    f"derived_parameters[{name}].free is missing `{key}` — a "
-                    f"derived parameter has no bounds of its own to fall back on."
-                )
-        try:
-            lo, hi = float(free["min"]), float(free["max"])
-        except (TypeError, ValueError) as exc:
-            raise ConfigError(
-                f"derived_parameters[{name}].free min/max must be numbers."
-            ) from exc
-        if lo >= hi:
-            raise ConfigError(f"derived_parameters[{name}]: free.min must be < max.")
-        assign = entry.get("assign") or {}
-        if not isinstance(assign, dict):
-            raise ConfigError(
-                f"derived_parameters[{name}].assign must be a mapping of "
-                f'"<layer>.<attr>" to an expression.'
-            )
-        guards = entry.get("keep_physical") or []
-        if isinstance(guards, str):
-            guards = [guards]
-        if not isinstance(guards, list):
-            raise ConfigError(
-                f"derived_parameters[{name}].keep_physical must be a list."
-            )
-        spec: dict = {"name": name, "free": dict(free), "assign": dict(assign)}
-        if guards:
-            spec["keep_physical"] = [str(g) for g in guards]
-        for opt in ("source", "tied", "states"):
-            if opt in entry:
-                spec[opt] = entry[opt]
-        out.append(spec)
-    return out
 
 
 def _as_str_list(value: Any) -> List[str]:

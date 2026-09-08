@@ -233,7 +233,6 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
         # Tie specs dropped automatically because their layer is gone; those
         # need no explanation from the model (see below).
         pruned_specs: list[str] = []
-        pruned_derived: list[str] = []
 
         # Load skill context
         registry = SkillRegistry()
@@ -315,20 +314,6 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
                 new_model["background"] = current_model["background"]
             # A reparametrization is the user's/analysis's structural decision,
             # not a per-iteration one. The refine LLM re-emits the whole model
-            # and does not know about this block, so without an explicit
-            # carry-over it would be dropped on the first refinement — the fit
-            # would silently revert to the raw coordinates, and the run would
-            # look like it simply changed its mind. Config wins if it declared
-            # any; otherwise the previous model's block is authoritative.
-            cfg_derived = (state.get("user_config") or {}).get("derived_parameters")
-            if cfg_derived:
-                new_model["derived_parameters"] = copy.deepcopy(cfg_derived)
-            elif current_model.get("derived_parameters"):
-                new_model["derived_parameters"] = copy.deepcopy(
-                    current_model["derived_parameters"]
-                )
-            else:
-                new_model.pop("derived_parameters", None)
             # Multi-state co-refinement: carry over states + tie spec from
             # the previous model when the LLM omitted them. If the user
             # supplied ties in the config they win, regardless of the LLM.
@@ -417,21 +402,6 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
                         dropped,
                     )
 
-            # Same reconciliation for reparametrizations: a structural edit can
-            # remove the layer a derived parameter is written against. The
-            # refine LLM is told not to do that (rule 14) but may anyway.
-            # Dropping the declaration costs one modelling choice; letting the
-            # build raise would end the run and forfeit every remaining
-            # refinement iteration over it.
-            from .model_builder import prune_derived_parameters
-
-            pruned_derived = prune_derived_parameters(new_model)
-            if pruned_derived:
-                logger.warning(
-                    "[MODELING] Dropped derived parameter(s) invalidated by the "
-                    "structural change: %s",
-                    "; ".join(pruned_derived),
-                )
             updates["llm_calls"].append(
                 LLMCallRecord(
                     node="modeling",
@@ -499,11 +469,6 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
             changes.append(
                 "Dropped tie spec(s) for removed layer(s): "
                 + ", ".join(sorted(pruned_specs))
-            )
-        for note in pruned_derived:
-            changes.append(
-                f"Dropped reparametrization {note} — the structural change "
-                f"removed what it was written against"
             )
         # A tie the pruner removed is already accounted for; anything else that
         # moved is a judgement the model made and owes a reason for.
@@ -705,12 +670,12 @@ def _extract_cross_state_unshared(sample_description: str, model_def: dict):
         data = json.loads(_strip_code_fences(response.content.strip()))
         proposed = data.get("unshared_parameters") or []
         tieable_set = set(tieable)
-        derived = [p for p in proposed if isinstance(p, str) and p in tieable_set]
-        if derived:
+        unshared = [p for p in proposed if isinstance(p, str) and p in tieable_set]
+        if unshared:
             logger.info(
-                "[MODELING] Derived unshared parameters from description: %s", derived
+                "[MODELING] Derived unshared parameters from description: %s", unshared
             )
-        return derived or None
+        return unshared or None
     except Exception as exc:  # graceful: fall back to default tying
         logger.warning("[MODELING] cross-state tie extraction failed: %s", exc)
         return None
@@ -874,41 +839,20 @@ def _build_initial_model(state: ReflectivityState) -> Dict[str, Any]:
                 if not uc.get("shared_parameters") and not uc.get(
                     "unshared_parameters"
                 ):
-                    derived = _extract_cross_state_unshared(
+                    unshared = _extract_cross_state_unshared(
                         state.get("sample_description", ""), model_def
                     )
-                    if derived:
-                        uc["unshared_parameters"] = derived
+                    if unshared:
+                        uc["unshared_parameters"] = unshared
                         # Persist so it survives refinement and is visible in state;
                         # _attach_state_metadata (config wins) applies it below.
                         state["user_config"] = uc
                         updates["user_config"] = uc
             _attach_state_metadata(model_def, state)
 
-            # Reparametrization (derived_parameters) comes from the user config
-            # only — nothing proposes one on its own. Validated against the
-            # model that was just built, so a typo in a layer name or an
-            # expression is an error here rather than a crash mid-fit or, worse,
-            # a quietly different model.
         except ValueError as exc:
             updates["error"] = f"Multi-state model setup failed: {exc}"
             return updates
-
-        cfg_derived = (state.get("user_config") or {}).get("derived_parameters")
-        if cfg_derived:
-            try:
-                model_def["derived_parameters"] = copy.deepcopy(cfg_derived)
-                from .model_builder import validate_derived_parameters
-
-                validate_derived_parameters(model_def)
-            except ValueError as exc:
-                updates["error"] = f"Reparametrization (derived_parameters): {exc}"
-                return updates
-            logger.info(
-                "[MODELING] Reparametrized with %d derived parameter(s): %s",
-                len(cfg_derived),
-                ", ".join(str(d.get("name")) for d in cfg_derived),
-            )
 
         # Snapshot the clean intake model as the rewind point. When a later
         # refinement realizes a *reinterpretation* hypothesis (e.g. "the

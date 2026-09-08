@@ -41,14 +41,15 @@ failing)`.
 Two things follow from that definition:
 
 1. **It excludes the penalty terms.** `FitProblem.chisq()` scales the *total*
-   nllf, `pmodel + pparameter + pconstraints`. With plain box bounds and no
-   constraints the extra terms are identically zero and the two agree. The
-   moment a [`derived_parameters`](derived-parameters.md) `keep_physical` guard
-   is declared they do not: a violated constraint pushed the total to ~10¹⁰ in
-   testing. χ² is used as a statement about *how well the model describes the
-   measurement*, so it must see only the data term. The penalty is not
-   discarded — the optimizer still minimizes the total — it is reported
-   separately by `model_builder.penalty_nllf`.
+   nllf, `pmodel + pparameter + pconstraints`. Every model AuRE builds declares
+   plain box bounds and no constraints, so the extra terms are identically zero
+   and the two agree. The separation is kept anyway because the conflation
+   would be silent: a single `bumps` `Constraint` makes `chisq()` a number
+   about the penalty rather than the data — a violated one measured ~10¹⁰ in
+   testing — and χ² is used as a statement about *how well the model describes
+   the measurement*. The penalty is not discarded; the optimizer still
+   minimizes the total, and it is reported separately by
+   `model_builder.penalty_nllf`.
 
 2. **Infeasible is `+inf`, not 0.** bumps short-circuits and returns
    `pmodel = 0.0` without evaluating the model when a prior or constraint is
@@ -264,7 +265,6 @@ k = 3 · n_layers                                  # thickness, SLD, roughness e
   + 1  if substrate.roughness_max is not None
   + 1  if ambient is not "air" and ambient.sld ≠ 0
   + 1  unless intensity.fixed
-  + derived-parameter delta                       # §3.4
 ```
 
 > **Caveat — the structural estimate undercounts.** The builder also makes free,
@@ -277,25 +277,7 @@ k = 3 · n_layers                                  # thickness, SLD, roughness e
 every dataset of every state, falls back to the flat `data_files` list, and only
 then to `state["Q"]`.
 
-### 3.4 The derived-parameter delta
-
-A [reparametrization](derived-parameters.md) adds one **free** parameter and
-derives raw ones from it, so the raw ones leave the free set (bumps discovers
-parameters by traversal, and an expression is not one). `_derived_param_delta`
-adjusts the structural estimate:
-
-```
-delta = (number of declarations)  −  (assigned slots that k had actually charged for)
-```
-
-A one-for-one swap — a surface excess replacing an SLD — is BIC-neutral.
-Solvation (two free, one derived: a volume fraction and a dry SLD) costs one.
-Only slots the count above actually charged for are refunded, so an assignment
-to something it never counted (an `air` ambient) cannot drive the total
-negative. `len(problem.getp())` needs none of this, which is the other reason to
-prefer it.
-
-### 3.5 Changing the convention
+### 3.4 Changing the convention
 
 `evaluation.BIC_FORMULA` marks which formula a stored `best_bic` was computed
 under, and is persisted as `state["bic_formula"]`. A run resumed across a change

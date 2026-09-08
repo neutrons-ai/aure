@@ -177,11 +177,10 @@ re-adds it from `user_config` on the next iteration and prune drops it again,
 so it stays inert for the remainder of the run while looking, in the config,
 like it is still in force.
 
-Nothing forbids the rename. The one prompt rule that does — rule 14's "DO NOT
-remove or rename any layer an entry references" — is emitted by
-`_format_derived_parameters_rule` only for a model that carries a
-`derived_parameters` block, so a run using `shared_parameters` alone never
-sees it.
+Nothing forbids the rename. No refinement rule tells the LLM to leave alone a
+layer name a tie spec references. (One did, for the reparametrization block
+retired on 2026-09-08, and it was emitted only for models carrying that block —
+so a run using `shared_parameters` alone never saw it either.)
 
 The drop does reach the run transcript, but worded "Dropped tie spec(s) for
 **removed layer(s)**", which misattributes a rename as a removal and sends a
@@ -221,9 +220,9 @@ The union is deliberate and correct for the case it was written for — a layer
 present in some states but not others must stay a valid tie target — but it
 also admits names that are live nowhere.
 
-This bites exactly the documented remedy for the naming hazard. The advice in
-[`docs/derived-parameters.md`](docs/derived-parameters.md) ("declare the stack
-explicitly in the state instead of leaving it to the description") is sound,
+This bites exactly the remedy for the naming hazard. The advice to declare the
+stack explicitly in the state rather than leaving it to the description is
+sound,
 and there is no top-level `layers:` key in the setup schema, so following it
 means giving *every* state its own stack. The LLM-parsed template still exists
 underneath and its names — `copper`, say — remain valid tie targets while the
@@ -510,7 +509,7 @@ not just written down); **retired** (removed, with the reason recorded).
 A starting inventory, to be checked against the code rather than trusted:
 single-curve steady-state fitting; multi-file fitting of one sample;
 multi-state co-refinement with cross-state ties; per-state structure overrides;
-reparametrization via `derived_parameters`; thin-layer mode enumeration;
+thin-layer mode enumeration;
 contrast variation; time-resolved series; the batch manifest and plan/job
 surface; the web UI; the MCP tool surface; the skill library.
 
@@ -733,3 +732,77 @@ and it points the wrong way — the same class of defect as the
 
 **The change.** Two words: "over-broadens" becomes "under-broadens", and the
 sentence should say the conversion divides rather than multiplies.
+
+---
+
+## Wish: functional constraints between fit parameters, as an add-on
+
+**Not a defect.** `derived_parameters` — declaring one parameter as a function
+of others, so the fit explores a *combination* rather than the coordinates it is
+written in — was **removed on 2026-09-08**. This records what it must do if it
+comes back, so a future design starts from the constraints rather than
+rediscovering them.
+
+**What it was for.** Reflectivity does not determine the parameters a model is
+written in; it determines combinations of them. A thin layer's
+`(ρ_layer − ρ_ambient)·t` is pinned tightly while the SLD and the thickness
+separately are not. Independent measurements have the same shape: QCM-D gives an
+adsorbed amount, not an SLD; a density plus a swelling measurement gives a
+volume fraction, not a thickness. Fitting the combination removes the degeneracy
+ridge from the geometry the optimizer explores.
+
+**Why it was removed, in order of weight:**
+
+1. **It has to survive AuRE's own iteration, and it did not.** A declaration is
+   written against layers; the refinement loop adds and removes them. The
+   response was `prune_derived_parameters` — drop the declaration and log it.
+   That is a workaround for the hard problem, not an answer to it, and it is
+   exactly the part an add-on has to design first. A constraint that evaporates
+   when the loop edits the stack is worse than no constraint, because the run
+   continues and reports a χ² for a model nobody declared.
+2. **No prose route, and the fallback was unsafe.** The mechanism was
+   config-only. Asked in a description for a relation it could have expressed
+   ("the volume fraction is the same in both contrasts, so the SLD must differ
+   as the solvent does"), the tie extractor returned the nearest expressible
+   thing — an untie — silently substituting two free parameters for one shared
+   invariant. Whatever replaces this must **refuse** and say so in `issues`.
+3. **It was never used.** Added to support benchmarking and not used for it.
+   Off by default was the tell.
+
+**What worked and is worth carrying forward:**
+
+- **Expressions round-trip.** bumps 1.0.x preserves expression parameters *and*
+  `Constraint` objects through `problem.json` — verified single-state and
+  multi-state, with χ² and constraint count unchanged. The old
+  `save_problem_json` refusal was over-conservative; an add-on need not inherit
+  it. (Re-verify against the pinned bumps version.)
+- **Cross-state relations were expressible**, if awkwardly: an auxiliary *tied*
+  declaration holding one shared free parameter, plus one state-scoped
+  assignment per state, each with its own expression. Verified: a 2× ratio held
+  as the shared handle moved. Two of the three declarations existed only to
+  carry an expression and their mandatory `free` blocks were dead — a first-class
+  surface should express this directly.
+- **The expression namespace was per state**, built from that state's own
+  sample, with no handle on another state's parameters. The shared auxiliary was
+  the only way to link states; there was no `other_state.thickness` to write.
+  An add-on needs to decide whether cross-state references are first-class.
+- **A whitelisted-AST evaluator, never `eval`.** These strings come from config
+  files and from LLMs. The retired `expressions.py` admitted numbers, dotted
+  names, unary minus, five arithmetic operators and four comparisons, and
+  rejected everything else by name. Reuse that shape.
+- **BIC accounting.** A derived raw parameter leaves the free set, so the count
+  has to move with it. Multi-state runs read the count off the problem
+  (`len(problem.getp())`), which is correct without special-casing; only the
+  single-state and checkpoint-replay paths needed a delta.
+- **χ² must stay the data term.** `data_chisq` exists because a `Constraint`
+  makes `FitProblem.chisq()` a number about the penalty rather than the data — a
+  violated one measured ~10¹⁰. It was kept on removal, so an add-on inherits a
+  χ² that already means what it should.
+
+**Where the code was**, for anyone reconstructing it: `nodes/expressions.py`
+(the evaluator), a ~400-line block in `nodes/model_builder.py` between
+`_build_sample` and `data_chisq`, the gate and shape-check in `config.py`, the
+carry-over in `nodes/modeling.py`, refinement rule 14 in `nodes/prompts.py`, the
+`functional-constraints` skill, `docs/derived-parameters.md`, and
+`tests/test_derived_parameters.py`. All present up to the commit that removed
+them.

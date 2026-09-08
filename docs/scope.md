@@ -62,7 +62,7 @@ capability serves is a gap.
 |---|---|---|
 | **U1** | CLI | Fit a **single** reflectivity curve (1 state, 1 file) from a textual description. |
 | **U2** | CLI | Co-refine several curves that are **one state** (1 state, N files — spliced Q segments) from a textual description. Every structural parameter is tied; nuisance parameters are *not* tied unless the description says so. |
-| **U3** | CLI | Co-refine **several states** (N states, N files) from a textual description, with some parameters tied as the description directs. |
+| **U3** | CLI | Co-refine **several states** (N states, N files) from a textual description, with some parameters tied as the description directs. Equality ties only — see the assessment below. |
 | **U4** | CLI | **Generate the setup YAML** for U1–U3, for the user to then edit by hand. |
 | **U5** | CLI | Run a fit **from a setup YAML**. |
 | **U6** | UI | U1 and U2 through the web interface. |
@@ -72,79 +72,149 @@ capability serves is a gap.
 | **U10** | CLI | **Run a corpus unattended**: fit many samples in one invocation from a manifest, each job a setup merged with a shared `defaults:` block, with per-job selection and a dry run. Inherits U1–U3 unchanged — both modes pass the job's `states` into the same `run_analysis` / `run_prepare` entry points that `analyze -c` uses, so it is a loop over U5 rather than a second implementation. Also available in `prepare` mode, giving U9 for every job at once. |
 | **U11** | UI | **Deliver an AI-ready record**: export a finished fit in the ISAAC format for the data portal, so the result leaves AuRE as a citable record rather than a directory of files. |
 
-**U3 is the one that needs assessing, not just implementing.** Expressing a
-cross-state tie in prose is qualitatively harder than expressing a stack: the
-description has to say which parameters are shared, and "shared" is a claim
-about physics that the text may not pin down. The open question is whether
-**parametric constraints** — a parameter written as a function of another
-rather than tied to it — are viable inside AuRE at all, or whether they demand
-a declaration surface that prose cannot carry. Row 13 (`derived_parameters`) is
-the existing partial answer and is off by default for exactly this reason.
+### U3 assessed
 
-Two things bear on that assessment, both established by round-tripping real
-problems through `bumps.serialize` (see U9):
+U3 was flagged as needing assessment rather than implementation. It has now had
+one, against the code and against a live model. **The verdict splits on a line
+the use-case as stated does not draw: whether the relation between states is an
+equality or a function.**
 
-- **A reparametrization is exportable, so it need not be a dead end.**
-  `save_problem_json` refuses any model carrying `derived_parameters`, on the
-  stated grounds that bumps serialization does not preserve expression
-  parameters. In bumps 1.0.x it does. A single-state declaration round-trips
-  with its free parameter, both `keep_physical` constraints and the derived
-  `Expression` intact and χ² unchanged; so does a multi-state **tied**
-  declaration (`assign: {SEI.rho: "ambient.rho + Gamma / SEI.thickness"}`) —
-  one shared free parameter, an `Expression` in each state, structural ties
-  preserved by object identity. `roughness_tie`, which that refusal cites as
-  its precedent, survives too. The guard looks obsolete rather than wrong in
-  principle, and should be re-tested against the pinned bumps version before
-  it is relaxed. If parametric constraints are the answer for U3, this is one
-  fewer thing standing in the way.
-- **The failure path is not safe yet.** When an `assign` expression cannot be
-  resolved, the declaration is pruned and the slot falls back to a free
-  parameter — but the slot stays marked as reparametrized, so the renaming pass
-  skips its `"<state> "` prefix and two distinct parameters end up with the
-  same name (`SEI rho` twice, in a two-state problem). Anything keyed by
-  parameter name then sees one of the two and cannot tell which. This is
-  reachable without a typo: `prune_derived_parameters` drops a declaration
-  whenever a structural edit removes a layer it references. It is the same
-  class of defect as the state-0 tie reference recorded in
-  [TODO.md](../TODO.md), and it should be fixed before `derived_parameters` is
-  offered as U3's mechanism.
-- **A tie spec needs names the user does not control.** This is the practical
-  obstacle, and it is not hypothetical: a four-job manifest exercising U1, U2,
-  U3 and U9 ran clean except that the U3 job died at the initial build with
+- **Equality ties from prose — viable, and working.** Keep U3 as stated.
+- **Functional relations from prose — not viable, and currently unsafe**, because
+  the prose path silently substitutes an untie. Either narrow U3 to exclude them
+  or make the substitution refuse.
+- **Functional relations from a config file — viable today**, with an awkward
+  idiom and no prose route to it.
 
-  ```
-  shared_parameters references unknown layer 'Cu'; known:
-  ['D2O', 'D2O/H2O', 'H2O', 'ambient', 'copper', 'silicon', 'substrate']
-  ```
+#### What works
 
-  The manifest said `Cu.thickness`; the intake LLM had named the layer
-  `copper`. Tie specs match layer names exactly, and for a description-driven
-  run those names do not exist until intake has already run — so U3 asks the
-  user to write a reference to something they cannot see yet. The failure is at
-  least loud and lists the candidates; the quiet variants (a mid-run rename, a
-  name present only in the template) are recorded in
-  [TODO.md](../TODO.md). The documented remedy is to declare the stack
-  explicitly in the `states` block rather than leaving the names to the parse,
-  which for U10 means a manifest that pins layer names. Whether U3 can be
-  *description-driven at all*, as stated, turns on this more than on the tie
-  machinery, which works.
+*The tie machinery.* Parameters are aliased across states as shared
+`bumps.Parameter` objects, resolved by layer *name* so an inserted or removed
+layer above the tied one does not break it. The aliasing survives a
+`bumps.serialize` round-trip by object identity — a `problem.json` written from
+a multi-state model reloads with `sample_a[1].thickness is sample_b[1].thickness`
+and no duplicated parameter names. Per-state structure works in both directions
+(a layer present in some states and absent in others), and a tie naming a layer
+a state does not have is skipped rather than failing.
+
+*The prose-to-tie-name mapping.* This was the expected weak link and is not.
+Given a three-layer stack in two contrasts, `_extract_cross_state_unshared`
+produced:
+
+| description | result |
+|---|---|
+| nothing said about differences | `None` → the default tied set |
+| "the copper oxide thickness may differ … everything else is the same sample" | `['CuOx.thickness']` |
+| "only the copper thickness and SLD should be common; let everything else float" | the full complement — including `Cu.interface`, correctly reading "thickness and SLD" as excluding roughness |
+| "the buried interfaces are identical, but the outer surface roughens" | `['CuOx.interface']` — inferring both that `CuOx` is outermost and that roughness is `interface` |
+
+The third case is the interesting one: it inverted a whitelist statement into
+the blacklist the schema wants. The vocabulary problem — mapping physics prose
+onto `<layer>.<attr>` — is solved well enough to build on.
+
+*End to end.* A two-state job run through `aure batch` completed with exactly
+the intended structure: one shared `copper thickness/rho/interface`, per-state
+`D2O rho` / `H2O rho`, `intensity` and `silicon interface`.
+
+#### Where prose fails, and how
+
+A cross-state relation that is not an equality has no representation in
+`shared_parameters`, which can only tie or not tie. Asked to express one, the
+extractor does not decline — it returns the nearest expressible thing, which is
+an untie:
+
+| description | returned | what it means |
+|---|---|---|
+| "the oxide in the second measurement is twice as thick, it was left in air overnight" | `['SiO2.thickness']` | *independent*, not 2× — and it picked the wrong oxide |
+| "the polymer volume fraction is the same in both, so the layer SLD must differ exactly as the solvent SLD does" | `['Cu.material.rho']` | two free SLDs instead of one shared volume fraction |
+
+Both are silent. The stated constraint is discarded, replaced by a free
+parameter, and nothing in the run says so — the fit then reports a χ² for a
+model the description did not ask for. That is worse than refusing, and it is
+the substantive finding of this assessment.
+
+The second row is the case a reparametrization would have expressed, which
+makes the failure precise: prose states a relation the schema cannot hold, and
+the fallback quietly contradicts it.
+
+#### Functional constraints: retired, deferred to an add-on
+
+`derived_parameters` — declaring one parameter as a function of others — was
+**removed on 2026-09-08**, and U3 is narrowed to equality ties as a result.
+
+It worked, and more than the earlier note credited: a cross-state ratio was
+expressible with an auxiliary tied handle plus one scoped assignment per state,
+verified end to end, and `bumps` 1.0.x round-trips the resulting expressions
+and constraints through `problem.json` intact — so the export refusal it
+carried was over-conservative. The reasons to retire it were not that it failed
+to work:
+
+- **It has to survive AuRE's own iteration and does not.** A declaration is
+  written against layers; the refinement loop adds and removes them. The
+  response was to prune the declaration and log it — a workaround for the hard
+  problem, not an answer to it, and the mechanism that most needed designing.
+- **No prose route, and the fallback is unsafe.** The two rows above are the
+  evidence: the one mechanism that could express those relations was reachable
+  only from a config file, while the description path silently substituted an
+  untie.
+- **It was never used.** Added to support benchmarking and not used for it.
+  Off by default was the tell.
+
+The design constraints established here are recorded as a wish in
+[TODO.md](../TODO.md), so a future add-on starts from them rather than
+rediscovering them.
+
+#### What gates it
+
+Five recorded defects sit on this path, all in [TODO.md](../TODO.md) except
+where noted:
+
+1. **Tie names do not exist when the user has to write them.** A tie spec
+   matches layer names exactly, and for a description-driven run those names
+   are chosen by the intake parse. Observed live: a manifest saying
+   `Cu.thickness` failed against a parse that named the layer `copper`. Loud,
+   with the candidates listed — but it means U3 as stated asks the user to
+   reference something they cannot see yet. The remedy is to declare the stack
+   in the `states` block, which trades the prose interface away.
+2. **State 0 is the tie reference.** A layer absent from state 0 but present in
+   two or more others is tied nowhere, and both copies keep the tied name, so
+   three parameters end up double-named.
+3. **A mid-run rename voids a pinned tie**, silently, reported as a removed
+   layer.
+4. **Union validation, per-state application.** A name present only in the
+   model-level template validates and then ties nothing.
+Only (1) is a design question. (2)–(4) are bounded fixes.
+
+#### Recommendation
+
+Keep U3 for equality ties; it works and the prose mapping is good. Before
+functional constraints return as an add-on:
+
+- make the untie substitution **refuse** rather than approximate — if a
+  description states a relation the schema cannot express, that belongs in
+  `issues` and in front of the user, not in a silently different model;
+- fix (2)–(4);
+- design the add-on around surviving structural iteration, which is the
+  constraint the retired mechanism did not meet, and decide whether it has a
+  prose surface at all — "from a textual description" could not reach the old
+  one.
 
 ### What serves what
 
 | Use-case | Inventory rows |
 |---|---|
-| U1 | 1, 2, 3, 4, 5, 6, 25 |
+| U1 | 1, 2, 3, 4, 5, 6, 22 |
 | U2 | 9, 12 (+ the U1 set) |
-| U3 | 10, 11, 12, 13? (+ the U1 set) |
+| U3 | 10, 11, 12 (+ the U1 set) |
 | U4 | **nothing** — see below |
 | U5 | 8 |
-| U6 | 18 (+ the U1/U2 sets) |
-| U7 | 8, 18 |
-| U8 | 19, then 18, 7 |
-| U9 | 17, and whichever of 9 / 10 the shape needs |
-| U10 | 16, then whatever U1–U3 or U9 the jobs are |
-| U11 | 20, 18, and 5 (it exports the *selected* fit) |
-| all fitting | 22, 23, 26 |
+| U6 | 17 (+ the U1/U2 sets) |
+| U7 | 8, 17 |
+| U8 | 18, then 17, 7 |
+| U9 | 16, and whichever of 9 / 10 the shape needs |
+| U10 | 15, then whatever U1–U3 or U9 the jobs are |
+| U11 | 19, 17, and 5 (it exports the *selected* fit) |
+| all fitting | 20, 21, 23 |
 
 ### Three findings the mapping produces
 
@@ -205,11 +275,11 @@ state it started in:
 
 What remains unclaimed:
 
-- **14 (thin-layer mode enumeration), 15 (`roughness_tie`)** — fit strategy
+- **13 (thin-layer mode enumeration), 14 (`roughness_tie`)** — fit strategy
   rather than user-facing capability; they serve U1–U3 indirectly and are
   reachable only by env var or hand-edited model JSON.
-- **25 (Docker), 26 (importable library)** — delivery and integration, not
-  use-cases. Row 26 has out-of-tree consumers regardless of what this list
+- **24 (Docker), 25 (importable library)** — delivery and integration, not
+  use-cases. Row 25 has out-of-tree consumers regardless of what this list
   says.
 
 ---
@@ -232,24 +302,23 @@ Footprint is what would be deleted, not what would be touched.
 | 10 | **Multi-state co-refinement + cross-state ties** | `states:`, `shared_/unshared_parameters` | ~320 of `model_builder.py` + skill 234 | 05-17 |
 | 11 | Per-state structure overrides | `states[].layers/substrate` | `config.py:352`, `_state_overrides` | 05-17 |
 | 12 | Nuisance/resolution parameters | `theta_offset`, `sample_broadening`, `background`, `intensity` | scattered, partials-only | grown |
-| 13 | `derived_parameters` reparametrization | `derived_parameters:` + `allow_derived_parameters` | `nodes/expressions.py` 205 + ~200 in builder + own doc | **09-02** |
-| 14 | Thin-layer SLD mode enumeration | `MODE_ENUMERATION=1` env only | inside `fitting.py` + skill 101 | 07-24 |
-| 15 | `roughness_tie` profile reparametrization | model JSON only | `model_builder.py:383-396` | grown |
-| 16 | Batch manifest runner (2 modes) | `aure batch` | `cli.py:1318-1750` (433) | grown |
-| 17 | `prepare` → `problem.json` handoff to bare refl1d | `aure prepare`, batch mode | `cli.py:976-1314` (339) | grown |
-| 18 | **Web UI** (setup / history / results, live param editor, file browser) | `aure serve`, `aure interactive` | 3,054 py + 3,836 assets = **6,890** | 02-09 |
-| 19 | **Import a hand-run refl1d fit** | `aure import-refl1d` | `refl1d_import.py` **1,740** | 05-22 |
-| 20 | ISAAC AI-ready export | web button only; `EXPORT_FORMAT` selects the format | `exporters/` 523 + optional dep | 03-07 |
-| 21 | Load reflectivity data (`.txt`, `.dat`, `.csv`, `.asc`, `.refl`, `.ort`) | implicit; every command that takes a data file | `tools/data_tools.py` 389 | 02-09 |
-| 22 | **Pluggable instrument / file-format support** | `aure.instruments` entry point, `AURE_INSTRUMENT`, `register()` | `instruments/` 698 + own doc | **09-07** |
-| 23 | Domain skill library (9 skills) | LLM-selected into prompts | 1,466 md + `selector.py` 401 + `loader.py` 172 | 04-16 → **09-03** |
-| 24 | LLM provider layer (3 providers, timeout, retries, ledger) | `LLM_*` env | `llm/` ~600 | 02-14 |
-| 25 | Docker image | `ghcr.io/neutrons-ai/aure` | Dockerfile + CI | grown |
-| 26 | **AuRE as an importable library** | `import aure` — no dedicated code | `__all__` names 3 of them | 02-09 |
+| 13 | Thin-layer SLD mode enumeration | `MODE_ENUMERATION=1` env only | inside `fitting.py` + skill 101 | 07-24 |
+| 14 | `roughness_tie` profile reparametrization | model JSON only | `model_builder.py:383-396` | grown |
+| 15 | Batch manifest runner (2 modes) | `aure batch` | `cli.py:1318-1750` (433) | grown |
+| 16 | `prepare` → `problem.json` handoff to bare refl1d | `aure prepare`, batch mode | `cli.py:976-1314` (339) | grown |
+| 17 | **Web UI** (setup / history / results, live param editor, file browser) | `aure serve`, `aure interactive` | 3,054 py + 3,836 assets = **6,890** | 02-09 |
+| 18 | **Import a hand-run refl1d fit** | `aure import-refl1d` | `refl1d_import.py` **1,740** | 05-22 |
+| 19 | ISAAC AI-ready export | web button only; `EXPORT_FORMAT` selects the format | `exporters/` 523 + optional dep | 03-07 |
+| 20 | Load reflectivity data (`.txt`, `.dat`, `.csv`, `.asc`, `.refl`, `.ort`) | implicit; every command that takes a data file | `tools/data_tools.py` 389 | 02-09 |
+| 21 | **Pluggable instrument / file-format support** | `aure.instruments` entry point, `AURE_INSTRUMENT`, `register()` | `instruments/` 698 + own doc | **09-07** |
+| 22 | Domain skill library (8 skills) | LLM-selected into prompts | 1,466 md + `selector.py` 401 + `loader.py` 172 | 04-16 → **09-03** |
+| 23 | LLM provider layer (3 providers, timeout, retries, ledger) | `LLM_*` env | `llm/` ~600 | 02-14 |
+| 24 | Docker image | `ghcr.io/neutrons-ai/aure` | Dockerfile + CI | grown |
+| 25 | **AuRE as an importable library** | `import aure` — no dedicated code | `__all__` names 3 of them | 02-09 |
 
 10 CLI commands remain.
 
-Row 26 is the one surface this inventory previously missed, and it has a
+Row 25 is the one surface this inventory previously missed, and it has a
 consumer. `__all__` declares `ReflectivityState`, `create_initial_state` and
 `run_analysis` ([`__init__.py:33`](../src/aure/__init__.py#L33)). nr-workbench
 pins twelve callables across four modules in its own contract table — so a
@@ -331,10 +400,10 @@ It is a steady outward drift from one curve:
   *getting other people's structure in*.
 - **Jun–Jul** — hypothesis machinery, finalize, final_fit: the loop learning to
   stop well.
-- **Aug–Sep** — `expressions.py` (derived parameters) and the
-  `functional-constraints` skill, then `instruments/` — the first addition
-  that *removed* coupling rather than adding capability, and the newest code
-  in the repo.
+- **Aug–Sep** — `instruments/`, the first addition that *removed* coupling
+  rather than adding capability, and the newest code in the repo. (A
+  reparametrization mechanism arrived here too and was retired in the same
+  month; see **Use-cases**.)
 
 The three largest single blocks that are not the core loop are still the **web
 UI (6,890)**, **`refl1d_import.py` (1,740)** and the **skill library (1,867

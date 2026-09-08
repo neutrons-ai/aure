@@ -22,16 +22,6 @@ sample description to a fitted
   flags physically impossible roughness excursions a good χ² hides; and an
   optional `roughness_tie` (σ = fraction × thickness) that keeps a thin layer's
   interface from outgrowing it. See [docs/approach.md](docs/approach.md) §6.8.
-- **Reparametrization (`derived_parameters:`)** — fit a *combination* of
-  parameters instead of the parameters themselves: a surface excess
-  `(ρ−ρ_ambient)·t`, a solvated film's volume fraction. Reflectivity pins those
-  combinations far better than the coordinates they are written in, and an
-  independent measurement (QCM-D, a known density) usually gives you one
-  directly. In a co-refinement the combination is shared across states while
-  each state's SLD follows from its own solvent — the relationship contrast
-  variation actually assumes, which a tie between layer attributes cannot
-  state. Off by default (`allow_derived_parameters:`) — see
-  [docs/derived-parameters.md](docs/derived-parameters.md).
 - **Deterministic stop when the fit is good enough** — a finite χ² inside the
   run's acceptance window (`chi2_min:` ≤ χ² ≤ `chi2_max:`) ends the refinement
   loop in code rather than at the evaluator LLM's discretion, and the structural
@@ -147,11 +137,10 @@ or resume a run from any point.
 
 | Document | What it covers |
 |----------|----------------|
-| **[docs/approach.md](docs/approach.md)** | The narrative introduction: reflectometry and LLM primers, the workflow node by node, Agent Skills, the ranked-hypothesis refinement loop, co-refinement and reparametrization, and how to read a run's output. Start here. |
+| **[docs/approach.md](docs/approach.md)** | The narrative introduction: reflectometry and LLM primers, the workflow node by node, Agent Skills, the ranked-hypothesis refinement loop, co-refinement, and how to read a run's output. Start here. |
 | **[architecture.md](architecture.md)** | The design decisions and the invariants not to break. Read before changing the workflow. |
 | **[docs/metrics.md](docs/metrics.md)** | Every number that judges a fit, with the math: χ² (what is and is not in it), the acceptance window, BIC and how `n` and `k` are counted, the regression guardrails, the deterministic feature-extraction formulas, residual-fringe analysis, profile-artifact detection, and final model selection. |
 | **[docs/finalization.md](docs/finalization.md)** | What happens after the loop stops: how the reported model is selected, the optional uncertainty polish, and the artifacts a run writes. |
-| **[docs/derived-parameters.md](docs/derived-parameters.md)** | Reparametrization — declaring a functional relationship between fit parameters, and what it changes about a run. |
 | **[CLAUDE.md](CLAUDE.md)** | Orientation for coding agents working in this repository. |
 
 ## Installation
@@ -305,13 +294,6 @@ A tie naming a layer a state does not have simply does not apply there, so no
 `shared_parameters` / `unshared_parameters` edit is needed. AuRE can also infer
 the difference from the sample description, or propose it mid-run as a
 hypothesis scoped to the affected states.
-
-> **Reparametrization.** When the quantity you actually know is a *combination*
-> — a surface excess, a solvated layer's volume fraction — fit the combination
-> instead, with a `derived_parameters:` block. In a contrast series the
-> combination is shared across states while each state's SLD follows from its own
-> solvent, which no tie between layer attributes can express. Off by default; see
-> [docs/derived-parameters.md](docs/derived-parameters.md).
 
 #### χ² acceptance window
 

@@ -249,13 +249,13 @@ The modeling prompt contains:
 On the **first** iteration the node also settles the parts of the model that are
 not the layer stack: it attaches the measurement states, resolves which
 parameters are tied across them (the user's configuration wins; otherwise it can
-derive the answer from the description), works out any per-state structural
-differences, and validates a reparametrization if one was declared (§7).
+derive the answer from the description), and works out any per-state structural
+differences (§7).
 
 The response is a complete JSON model definition. The node validates it,
 preserves immutable fields (like the data-file path), and writes it back
 into the state. Fields the LLM knows nothing about — the states block, the tie
-specification, a reparametrization — are **carried over explicitly** rather than
+specification — are **carried over explicitly** rather than
 taken from the response, because a model that re-emits the whole definition each
 iteration would otherwise drop them and silently revert the run to a simpler
 problem than the one that was asked for. If the LLM output is invalid JSON, the node falls back to
@@ -491,7 +491,6 @@ The skills currently shipped:
 | `sei-layer-analysis` | Battery / electrolyte samples | Solid-electrolyte interphase layer conventions |
 | `solvent-contrast-matching` | Samples in D₂O, H₂O, deuterated solvents | Solvent SLDs, contrast matching, isotope-confusion traps |
 | `multi-state-corefinement` | More than one state in the run | Which parameters to tie across states and why, the common experimental patterns, and when the states differ in *structure* rather than in values (§7.2–7.3) |
-| `functional-constraints` | Reparametrization enabled for the run | When fitting a combination beats fitting the coordinates, the two canonical forms, and how to behave around a model that already has one (§7.4) |
 
 Skill activation is itself an LLM decision. At the start of a run, the
 model is given the list of available skills and the user's sample
@@ -500,10 +499,8 @@ automatically regardless of the LLM's answer, and a few activations are
 decided by code rather than judgement: `solvent-contrast-matching` is forced in
 for any liquid ambient (a solvent may be deuterated and the description simply
 not say so), `multi-state-corefinement` whenever the run has more than one
-state, and `functional-constraints` strictly according to the reparametrization
-gate — added when it is on, and removed even if the selector picked it when it
-is off, so a run that cannot use the feature is never told about it. When the selector LLM is
-unavailable or returns an empty list, the always-on skills alone remain.
+state. When the selector LLM is unavailable or returns an empty list, the
+always-on skills alone remain.
 
 Skill selection is **not** frozen at intake. When the evaluation node
 revises the hypotheses (§6.5), it re-runs the selector with the observed
@@ -884,32 +881,6 @@ each state, and fringes in a *subset* of states are the signature to look for:
 either that subset's untied parameters are wrong, or the states genuinely differ
 in structure. Both readings are put to the evaluator, along with which states
 are affected.
-
-### 7.4 Fitting a combination instead of a coordinate
-
-Reflectivity does not determine the parameters a model is written in; it
-determines certain **combinations** of them. A thin layer's
-$(\rho_\text{layer} - \rho_\text{ambient}) \cdot t$ is pinned tightly while the
-SLD and the thickness separately are not — the degeneracy ridge of §6.8. What an
-independent measurement gives you has the same shape: QCM-D yields an adsorbed
-amount, not an SLD; a known density plus a swelling measurement yields a volume
-fraction, not a thickness.
-
-A **reparametrization** (`derived_parameters:`) makes the combination a free
-parameter and derives the raw one from it. The ridge disappears from the
-geometry the optimizer explores, and an ordinary range on the combination means
-what it says. In a co-refinement the combination is shared across states while
-each state's SLD follows from its *own* solvent — which is what contrast
-variation actually assumes, and which no tie between layer attributes can state,
-because the invariant is not a layer attribute.
-
-This is **off by default** (`allow_derived_parameters:`): a reparametrized model
-asks more of the LLM than a plain stack, since derived attributes are not fit
-parameters and the layers they reference must not be refined away. Declarations
-come from the setup file; the workflow does not write its own. Full reference:
-**[derived-parameters.md](derived-parameters.md)**.
-
----
 
 ## 8. Reading the output of a run
 
