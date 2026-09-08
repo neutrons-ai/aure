@@ -327,3 +327,107 @@ def test_a_clean_ambient_warns_about_nothing(data_file, caplog):
     with caplog.at_level("WARNING"):
         build_problem(defn)
     assert not [r for r in caplog.records if "ambient" in r.getMessage()]
+
+
+# ---------------------------------------------------------------------------
+# `interfaces`: naming a boundary instead of attaching it to a layer
+# ---------------------------------------------------------------------------
+
+
+def _layer(name, sld, thickness, roughness):
+    return {
+        "name": name,
+        "sld": sld,
+        "thickness": thickness,
+        "roughness": roughness,
+        "roughness_max": 40.0,
+    }
+
+
+_THREE_LAYERS = [
+    _layer("SiO2", 3.47, 15.0, 1.0),
+    _layer("Ti", -1.95, 40.0, 2.0),
+    _layer("Cu", 6.5, 500.0, 3.0),
+]
+
+
+def _stack_roughness(data_file, *, back, interfaces=None):
+    """Every slab's interface value, keyed by material, in stack order."""
+    defn = {
+        "substrate": {
+            "name": "Si",
+            "sld": 2.07,
+            "roughness": 9.0,
+            "roughness_max": 40.0,
+        },
+        "layers": _THREE_LAYERS,
+        "ambient": {"name": "dTHF", "sld": 6.2},
+        "data_file": data_file,
+        "back_reflection": back,
+        "intensity": {"value": 1.0, "min": 0.7, "max": 1.1, "fixed": False},
+    }
+    if interfaces is not None:
+        defn["interfaces"] = interfaces
+    sample = list(build_problem(defn).models)[0].sample
+    return {s.material.name: round(float(s.interface.value), 2) for s in sample}
+
+
+@pytest.mark.parametrize("back", [False, True], ids=["normal", "back_reflection"])
+def test_no_interfaces_block_changes_nothing(data_file, back):
+    """The block is opt-in. Every model that exists today omits it, so its
+    presence in the builder must be inert — including for the corpus, whose
+    layer-attached roughness compares like-for-like against reference refl1d
+    fits built with the same convention."""
+    assert _stack_roughness(data_file, back=back) == _stack_roughness(
+        data_file, back=back, interfaces=[]
+    )
+
+
+def test_a_named_interface_lands_on_the_owning_layer_either_way(data_file):
+    """The point of the block: one declaration, correct in both geometries.
+
+    `Ti.interface` is the Ti/Cu boundary in a normal stack; in back reflection
+    the stack is ambient-first and that same boundary is `Cu.interface`.
+    """
+    declared = [
+        {"below": "Ti", "above": "Cu", "roughness": 30.0, "roughness_max": 60.0}
+    ]
+    front = _stack_roughness(data_file, back=False, interfaces=declared)
+    back = _stack_roughness(data_file, back=True, interfaces=declared)
+    assert front["Ti"] == pytest.approx(30.0)
+    assert front["Cu"] == pytest.approx(3.0)  # untouched
+    assert back["Cu"] == pytest.approx(30.0)
+    assert back["Ti"] == pytest.approx(2.0)  # untouched
+
+
+def test_the_substrate_interface_becomes_reachable_in_back_reflection(data_file):
+    """`substrate.roughness` is discarded in back reflection — the substrate's
+    slab is the unused top one — so that boundary has no other route."""
+    declared = [
+        {
+            "below": "Si",
+            "above": "SiO2",
+            "roughness": 0.5,
+            "roughness_min": 0.0,
+            "roughness_max": 5.0,
+        }
+    ]
+    back = _stack_roughness(data_file, back=True, interfaces=declared)
+    assert back["SiO2"] == pytest.approx(0.5)
+
+
+@pytest.mark.parametrize(
+    "entry,message",
+    [
+        ({"below": "Ti", "above": "Cu"}, "declares no `roughness`"),
+        ({"below": "Ti", "roughness": 5.0}, "needs both `below` and `above`"),
+        ({"below": "gold", "above": "Cu", "roughness": 5.0}, "not in this model"),
+        ({"below": "SiO2", "above": "Cu", "roughness": 5.0}, "not adjacent"),
+    ],
+    ids=["no-roughness", "one-sided", "unknown-material", "non-adjacent"],
+)
+def test_a_malformed_interface_declaration_is_refused(data_file, entry, message):
+    """Silently ignoring one would be the failure mode this block exists to
+    remove."""
+    with pytest.raises(ValueError, match=message):
+        _stack_roughness(data_file, back=True, interfaces=[entry])

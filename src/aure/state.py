@@ -21,6 +21,19 @@ class LayerInfo(TypedDict):
     thickness: float
     thickness_min: Optional[float]
     thickness_max: Optional[float]
+    # This layer's boundary with whatever sits above it in the refl1d STACK.
+    # Back reflection assembles the stack ambient-first, so the physical
+    # interface this describes depends on the geometry: with layers listed
+    # substrate->ambient as [SiO2, Ti, Cu], `Ti.roughness` is the Ti/Cu
+    # boundary in a normal measurement and the Ti/SiO2 boundary in back
+    # reflection. `_log_interface_map` prints the mapping per build.
+    #
+    # This is deliberate and must not be "corrected": it is the convention the
+    # reference refl1d fits were built with, so a layer-attached roughness
+    # compares like-for-like against them. Re-keying it would put every buried
+    # interface one position off against the reference corpus. To state a
+    # boundary without depending on the geometry, use `ModelDefinition.
+    # interfaces` (see `InterfaceInfo`) instead.
     roughness: float
     # Lower bound on the interface. Omitted, a 5 Å floor applies — but only
     # where it does not contradict `roughness` itself, since a default that
@@ -67,6 +80,35 @@ class AmbientInfo(TypedDict):
     sld_max: Optional[float]
 
 
+class InterfaceInfo(TypedDict, total=False):
+    """One interface named by the two materials it separates.
+
+    A layer's own ``roughness`` describes its boundary with whatever sits above
+    it in the refl1d *stack*, and back reflection assembles the stack
+    ambient-first — so which physical interface a layer's declaration describes
+    depends on the geometry. That is deliberate and must stay: it is the
+    convention the reference refl1d fits were built with, so a layer-attached
+    roughness compares like-for-like against them.
+
+    What it cannot express is an interface *named*. "The interface between the
+    copper and the titanium is 3 nm" belongs to a different layer in each
+    geometry, and the substrate's own declaration is discarded in back
+    reflection, leaving one boundary unreachable. An entry here names both
+    materials in **sample order** (substrate side first) and is therefore
+    geometry-independent; the builder resolves it to the right slab.
+
+    Optional and empty by default: absent, the positional mapping stands
+    exactly as before. Resolved by
+    :func:`aure.nodes.model_builder._apply_interface_declarations`.
+    """
+
+    below: str  # material on the substrate side of the boundary
+    above: str  # material on the ambient side
+    roughness: float
+    roughness_min: Optional[float]
+    roughness_max: Optional[float]
+
+
 class IntensityInfo(TypedDict, total=False):
     """Probe intensity normalization settings."""
 
@@ -106,6 +148,11 @@ class ModelDefinition(TypedDict, total=False):
     ambient: AmbientInfo
     constraints: List[str]
     back_reflection: bool
+    # Optional, empty by default. Names an interface by the two materials it
+    # separates, so a boundary can be stated without knowing the geometry —
+    # see `InterfaceInfo`. Absent, the positional mapping from each layer's
+    # own `roughness` stands unchanged.
+    interfaces: List[InterfaceInfo]
 
     # ---- Fitting context ----
     data_file: str  # Absolute path to reflectivity data

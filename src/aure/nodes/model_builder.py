@@ -284,6 +284,181 @@ def _ranged(param, value, lo, hi, *, label: str, declared_lo: bool = True) -> No
     param.range(lo, hi)
 
 
+def _interface_owner_index(
+    position: int, n_layers: int, *, back_reflection: bool
+) -> int:
+    """Slab index carrying the boundary above *position* in SAMPLE order.
+
+    Sample order is substrate-first: ``-1`` is the substrate, ``0..n-1`` the
+    layers, ``n`` the ambient. The boundary "above position p" is the one
+    between p and p+1.
+
+    A slab's ``interface`` is its boundary with whatever sits above it *in the
+    stack*, and the stack is assembled ambient-first in back reflection — so
+    the slab that carries a given physical boundary is the lower of the two in
+    STACK order, which is the substrate-side material normally and the
+    ambient-side material in back reflection.
+    """
+    if back_reflection:
+        # stack = [ambient, L(n-1), ..., L0, substrate]; the ambient-side
+        # material of the pair sits lower.
+        upper = position + 1
+        return 0 if upper >= n_layers else n_layers - upper
+    # stack = [substrate, L0, ..., L(n-1), ambient]
+    return position + 1
+
+
+def _log_interface_map(
+    layers_info: list, substrate_info: dict, ambient_info: dict, back_reflection: bool
+) -> None:
+    """Record which declared roughness feeds which physical boundary.
+
+    The mapping is not what a reader of the model JSON would assume. A layer's
+    ``roughness`` is its boundary with whatever sits above it in the *stack*,
+    and back reflection assembles the stack ambient-first — so the same
+    declaration describes a different interface depending on the geometry, the
+    substrate's is discarded, and the outermost layer's is used twice (once for
+    its own buried boundary, once for the borrowed outer surface). Working that
+    out from the code takes a while; this makes it readable off a run.
+
+    Logged at INFO for back reflection, where the mapping is surprising and
+    lossy, and at DEBUG for a normal stack, where it is the obvious one.
+    """
+    if not layers_info:
+        return
+    names = [layer.get("name", f"layer{i}") for i, layer in enumerate(layers_info)]
+    sub = substrate_info.get("name", "substrate")
+    amb = ambient_info.get("name", "ambient")
+    chain = [sub, *names, amb]
+
+    pieces = []
+    for position in range(-1, len(names)):
+        lower, upper = chain[position + 1], chain[position + 2]
+        if back_reflection:
+            # The ambient-side material's slab carries the boundary, and the
+            # ambient has no roughness of its own — the OUTER boundary borrows
+            # the outermost layer's declaration.
+            if position + 1 >= len(names):
+                pieces.append(
+                    f"{names[-1]}.roughness -> {lower}/{upper} (outer, borrowed)"
+                )
+                continue
+            owner = names[position + 1]
+        else:
+            owner = sub if position < 0 else names[position]
+        pieces.append(f"{owner}.roughness -> {lower}/{upper}")
+    if back_reflection:
+        pieces.append(f"{sub}.roughness -> (unused)")
+        logger.info("[BUILDER] back-reflection interface map: %s", "; ".join(pieces))
+    else:
+        pieces.append(f"{amb} interface -> (unused)")
+        logger.debug("[BUILDER] interface map: %s", "; ".join(pieces))
+
+
+def _apply_interface_declarations(definition: dict, sample) -> None:
+    """Apply an optional ``interfaces`` block, overriding the positional map.
+
+    A layer's ``roughness`` describes its boundary with whatever sits above it
+    in the *stack*, and back reflection assembles the stack ambient-first — so
+    which physical interface a declaration describes depends on the geometry
+    (see :func:`_log_interface_map`). That is self-consistent, and it matches
+    the convention the reference refl1d fits were built with, so it is not
+    changed here.
+
+    What it cannot do is let someone *name* an interface. "The interface
+    between the copper and the titanium is 3 nm" has no unambiguous home: the
+    layer that owns it differs between geometries, and the substrate's own
+    declaration is discarded in back reflection, so one boundary is unreachable
+    altogether.
+
+    An ``interfaces`` entry names the two materials the boundary separates, in
+    sample order (substrate side first), and is therefore geometry-independent:
+
+        interfaces:
+          - {below: silicon, above: SiO2, roughness: 3.0, roughness_max: 20.0}
+
+    Absent — which is every model today — this is a no-op and the positional
+    mapping stands untouched.
+    """
+    declared = definition.get("interfaces") or []
+    if not declared:
+        return
+
+    layers_info = definition.get("layers") or []
+    back_reflection = definition.get("back_reflection", False)
+    names = [layer.get("name", f"layer{i}") for i, layer in enumerate(layers_info)]
+    sub = (definition.get("substrate") or {}).get("name", "substrate")
+    amb = (definition.get("ambient") or {}).get("name", "ambient")
+    chain = [sub, *names, amb]  # sample order: substrate first
+
+    seen: dict[int, str] = {}
+    for entry in declared:
+        if not isinstance(entry, dict):
+            raise ValueError("each `interfaces` entry must be a mapping")
+        below, above = entry.get("below"), entry.get("above")
+        if not below or not above:
+            raise ValueError(
+                f"interface entry {entry!r} needs both `below` and `above` "
+                f"(the two materials it separates, substrate side first)"
+            )
+        try:
+            i_below, i_above = chain.index(str(below)), chain.index(str(above))
+        except ValueError:
+            raise ValueError(
+                f"interface {below!r}/{above!r} names a material not in this "
+                f"model; known, in sample order: {chain}"
+            ) from None
+        if i_above != i_below + 1:
+            raise ValueError(
+                f"interface {below!r}/{above!r} is not a boundary: those "
+                f"materials are not adjacent. Sample order is {chain}, and "
+                f"`below` must be the substrate-side one."
+            )
+
+        position = i_below - 1  # sample-order position: -1 is the substrate
+        idx = _interface_owner_index(
+            position, len(names), back_reflection=back_reflection
+        )
+        if idx in seen:
+            raise ValueError(
+                f"interfaces declares {below!r}/{above!r} and {seen[idx]} for "
+                f"the same boundary"
+            )
+        seen[idx] = f"{below!r}/{above!r}"
+
+        # `roughness_tie` replaces the interface with an expression, which has
+        # no value to set. It is the profile-artifact remedy and more specific
+        # than a declared number, so it wins — loudly.
+        if not hasattr(sample[idx].interface, "range"):
+            logger.warning(
+                "[BUILDER] interface %s/%s ignored: that interface is tied to "
+                "its layer thickness (roughness_tie)",
+                below,
+                above,
+            )
+            continue
+
+        value = entry.get("roughness")
+        if value is None:
+            raise ValueError(f"interface {below!r}/{above!r} declares no `roughness`")
+        declared_lo = "roughness_min" in entry
+        _ranged(
+            sample[idx].interface,
+            float(value),
+            float(entry.get("roughness_min", _ROUGHNESS_MIN_DEFAULT)),
+            float(entry.get("roughness_max", 30.0)),
+            label=f"{below}/{above} interface",
+            declared_lo=declared_lo,
+        )
+        logger.info(
+            "[BUILDER] interface %s/%s set explicitly: roughness=%g (slab %d)",
+            below,
+            above,
+            float(value),
+            idx,
+        )
+
+
 def _build_sample(definition: dict):
     """Build a refl1d sample stack with parameter ranges from a ModelDefinition.
 
@@ -431,6 +606,9 @@ def _build_sample(definition: dict):
     else:
         sub_rough_max = substrate_info.get("roughness_max", 15.0)
         sample[0].interface.range(0, sub_rough_max)
+
+    _apply_interface_declarations(definition, sample)
+    _log_interface_map(layers_info, substrate_info, ambient_info, back_reflection)
 
     return sample
 
