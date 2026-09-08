@@ -8,7 +8,6 @@ Main components:
 - workflow: the analysis pipeline state machine (runner.py)
 - state: State definitions for the workflow
 - tools: LangChain tools for data loading, feature extraction, and model building
-- database: Material SLD database
 - cli: Click-based command-line interface
 
 Usage:

@@ -36,6 +36,7 @@ Retirements to date, which establish that pruning is normal here:
 | 2026-09-04 | `llm/providers/alcf_auth.py` | an OpenAI-compatible endpoint needs no bespoke provider |
 | 2026-09-07 | `mcp_server.py`, `nodes/refinement.py` | see **Decisions taken** |
 | 2026-09-08 | `cli.py` `evaluate` command | see **Decisions taken** |
+| 2026-09-08 | `cli.py` `lookup-sld`/`list-materials`, then `database/` | see **Decisions taken** |
 
 ---
 
@@ -133,10 +134,70 @@ odd path in its own codebase. The migration PR is tracked in
 
 **What this leaves unresolved.** `analyze_fit_quality_with_llm` is now reached
 by the `evaluation` node and by out-of-tree importers, with no CLI in between
-and still no `__all__` entry (see row 29). The verdict stays advisory outside
+and still no `__all__` entry (see row 28). The verdict stays advisory outside
 the node: the deterministic guardrails — profile veto, χ² clamp — are the
 node's alone, and any external caller gets the model's opinion on one exported
 fit. That distinction was worth a JSON key; it is now worth a docstring.
+
+**Materials / SLD database — retired entirely (2026-09-08).** The two CLI
+commands (`lookup-sld`, `list-materials`, 126 lines of `cli.py`) and then the
+module behind them (`database/`, 448 lines).
+
+The question that prompted this was whether `database/` belongs in AuRE at all,
+given that refl1d ships `periodictable`. The first answer looked like "yes":
+**nothing in `database/` reimplements periodictable** — `compute_sld` is a
+four-line delegation to `neutron_sld()` — and what periodictable lacks is real:
+
+| | periodictable | `aure.database` |
+|---|---|---|
+| element densities | yes (`Si` 2.33, `Cu` 8.96) | — |
+| **compound** densities | no (`D2O`, `H2O`, `SiO2`, `Al2O3` all `None`) | 18 entries |
+| common-name resolution | no (`quartz`, `sapphire`, `silicon` all raise) | 66 aliases |
+| contrast matching | no | `get_contrast_match_ratio`, `get_mixture_sld` |
+
+What overturned that is where the SLD in a fitted model actually comes from.
+**Not from this module.** The intake prompt asks the LLM for `sld` directly on
+the substrate, every layer and the ambient
+([`prompts.py:37`](../src/aure/nodes/prompts.py#L37)), and `_build_layers` uses
+that number as-is. The database was never consulted on that path. Its only
+internal caller was one line — `get_sld("silicon")`, resolving a constant of
+nature — now inlined as `_SILICON_SLD`.
+
+And an LLM estimate is good enough, because the SLD is a *fitted* parameter and
+the estimate only has to seed it. With the formula known and only the density
+guessed, ±1 in SLD needs the density to ~15% for deuterated species and Al₂O₃,
+~30% for SiO₂/TiO₂, and is essentially unconstrained for anything protiated.
+What actually matters is protiation, not density: `b_c(D) − b_c(H) = 10.409 fm`,
+so deuteration adds the hydrogen number density times 1.041 — 5 to 8 for any
+organic — which is why "deuterated organics sit near 5.5, protiated near 0.4"
+holds across the 18 species measured for this decision. A 15 % density slip
+costs 1; a missed H/D swap costs 5. AuRE already treats the latter as a
+first-class structural hypothesis (refine rule 13's rewind), which is the right
+place for it.
+
+So the tables encode what the LLM already knows, for a number the fit refines
+anyway. Retiring them costs nothing AuRE was using.
+
+**The one thing that was load-bearing** was the fallback for when the parse
+supplies *no* SLD: `2.0` with bounds seeded at ±2.5, i.e. `(-0.5, 4.5)`. Real
+neutron SLDs are bimodal, so that window sits in the empty middle and excludes
+the entire deuterated half of the distribution — and a layer fenced into the
+wrong half cannot be fitted out of it, because the bound rather than the data
+is holding it. That is now `(-0.6, 7.5)`, spanning both clusters, with the
+reasoning recorded at the constant and pinned by a test. This was the real
+defect the scoping exercise turned up, and it had nothing to do with the
+database.
+
+**Downstream.** nr-workbench was the only external consumer, and barely: its
+`sld_for` wrapper is referenced nowhere in that repo, `lookup_material` was
+pinned in its contract table but never called, and `contrast_match_ratio` is
+live only as an *agent-facing* API documented in two of its SKILL.md files. It
+is six lines of interpolation over two solvent SLDs, which that repo now
+carries itself — consistent with its own stated policy of reimplementing
+AuRE's short arithmetic rather than paying for the import.
+
+`periodictable` remains a declared dependency though nothing in `src/aure`
+imports it any more; refl1d requires it regardless.
 
 ---
 
@@ -166,19 +227,18 @@ Footprint is what would be deleted, not what would be touched.
 | 18 | **Web UI** (setup / history / results, live param editor, file browser) | `aure serve`, `aure interactive` | 3,054 py + 3,836 assets = **6,890** | 02-09 |
 | 19 | **Import a hand-run refl1d fit** | `aure import-refl1d` | `refl1d_import.py` **1,740** | 05-22 |
 | 20 | ISAAC AI-ready export | `EXPORT_FORMAT`, web button | `exporters/` 523 + optional dep | 03-07 |
-| 21 | Materials / SLD database | `lookup-sld`, `list-materials` | `database/` 448 | 02-09 |
-| 22 | Standalone feature extraction | `extract-features` | `tools/feature_tools.py` 1,142 (shared with node 2) | 02-09 |
-| 23 | Load reflectivity data (`.txt`, `.dat`, `.csv`, `.asc`, `.refl`, `.ort`) | implicit; every command that takes a data file | `tools/data_tools.py` 389 | 02-09 |
-| 24 | **Pluggable instrument / file-format support** | `aure.instruments` entry point, `AURE_INSTRUMENT`, `register()` | `instruments/` 698 + own doc | **09-07** |
-| 25 | Result plotting | `aure plot-results` | `cli.py:1998-2294` (297) | grown |
-| 26 | Domain skill library (9 skills) | LLM-selected into prompts | 1,466 md + `selector.py` 401 + `loader.py` 172 | 04-16 → **09-03** |
-| 27 | LLM provider layer (3 providers, timeout, retries, ledger) | `LLM_*` env | `llm/` ~600 | 02-14 |
-| 28 | Docker image | `ghcr.io/neutrons-ai/aure` | Dockerfile + CI | grown |
-| 29 | **AuRE as an importable library** | `import aure` — no dedicated code | `__all__` names 3 of them | 02-09 |
+| 21 | Standalone feature extraction | `extract-features` | `tools/feature_tools.py` 1,142 (shared with node 2) | 02-09 |
+| 22 | Load reflectivity data (`.txt`, `.dat`, `.csv`, `.asc`, `.refl`, `.ort`) | implicit; every command that takes a data file | `tools/data_tools.py` 389 | 02-09 |
+| 23 | **Pluggable instrument / file-format support** | `aure.instruments` entry point, `AURE_INSTRUMENT`, `register()` | `instruments/` 698 + own doc | **09-07** |
+| 24 | Result plotting | `aure plot-results` | `cli.py:1998-2294` (297) | grown |
+| 25 | Domain skill library (9 skills) | LLM-selected into prompts | 1,466 md + `selector.py` 401 + `loader.py` 172 | 04-16 → **09-03** |
+| 26 | LLM provider layer (3 providers, timeout, retries, ledger) | `LLM_*` env | `llm/` ~600 | 02-14 |
+| 27 | Docker image | `ghcr.io/neutrons-ai/aure` | Dockerfile + CI | grown |
+| 28 | **AuRE as an importable library** | `import aure` — no dedicated code | `__all__` names 3 of them | 02-09 |
 
-14 CLI commands remain.
+12 CLI commands remain.
 
-Row 29 is the one surface this inventory previously missed, and it has a
+Row 28 is the one surface this inventory previously missed, and it has a
 consumer. `__all__` declares `ReflectivityState`, `create_initial_state` and
 `run_analysis` ([`__init__.py:33`](../src/aure/__init__.py#L33)). nr-workbench
 pins twelve callables across four modules in its own contract table — so a

@@ -167,3 +167,56 @@ def test_back_reflection_states_do_not_share_an_ambient_interface_name(data_file
     dupes = [n for n in names if names.count(n) > 1]
     assert len(names) == len(set(names)), f"duplicates: {dupes}"
     assert {"a dTHF interface", "b dTHF interface"} <= set(names)
+
+
+# ---------------------------------------------------------------------------
+# An unknown SLD must not be fenced into one half of a bimodal distribution
+# ---------------------------------------------------------------------------
+
+
+def test_an_unparsed_sld_gets_bounds_spanning_both_hd_clusters():
+    """A layer whose SLD nothing supplied must be free to reach either cluster.
+
+    Neutron SLDs are bimodal — protiated organics near 0.4, deuterated near
+    5.5, nothing in between. The seed lands mid-gap by necessity, so applying
+    the usual ±2.5 window to it produced (-0.5, 4.5) and excluded every
+    deuterated material. The bound, not the data, then decided what the layer
+    was made of.
+    """
+    from aure.nodes.modeling import _build_layers
+
+    layer = _build_layers({"layers": [{"name": "unknown", "thickness": 100.0}]}, {})[0]
+    assert layer["sld_min"] <= -0.5, layer
+    assert layer["sld_max"] >= 7.0, layer
+    # Both clusters reachable: a protiated organic and its deuterated form.
+    assert layer["sld_min"] < 0.4 < layer["sld_max"]
+    assert layer["sld_min"] < 6.4 < layer["sld_max"]
+
+
+def test_a_parsed_sld_keeps_the_narrow_window():
+    """The wide span is for ignorance only; a stated SLD still gets ±2.5."""
+    from aure.nodes.modeling import _build_layers
+
+    layer = _build_layers({"layers": [{"name": "dPS", "sld": 6.4}]}, {})[0]
+    assert layer["sld_min"] == pytest.approx(3.9)
+    assert layer["sld_max"] == pytest.approx(8.9)
+
+
+def test_feature_estimated_layers_span_both_clusters_too():
+    """Fringe counting says how many layers and how thick, not what they are."""
+    from aure.nodes.modeling import _build_layers
+
+    layer = _build_layers(
+        {}, {"estimated_n_layers": 1, "estimated_total_thickness": 200.0}
+    )[0]
+    assert layer["sld_min"] < 0.4 < layer["sld_max"]
+    assert layer["sld_min"] < 6.4 < layer["sld_max"]
+
+
+def test_the_default_substrate_needs_no_materials_database():
+    """`_get_substrate` used to import `aure.database` to look up a constant."""
+    import aure.nodes.modeling as modeling
+    from aure.nodes.modeling import _get_substrate
+
+    assert not hasattr(modeling, "get_sld")
+    assert _get_substrate({}, {})["sld"] == pytest.approx(2.07, abs=0.01)

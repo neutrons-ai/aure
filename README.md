@@ -831,29 +831,6 @@ analysis.
 aure extract-features DATA_FILE [--json]
 ```
 
-### `aure lookup-sld`
-
-Look up neutron scattering length densities for one or more materials.
-
-```bash
-aure lookup-sld MATERIAL [MATERIAL ...] [-w WAVELENGTH] [--json]
-```
-
-```bash
-aure lookup-sld silicon gold D2O
-aure lookup-sld SiO2 polystyrene PMMA
-```
-
-### `aure list-materials`
-
-List known materials in the built-in database.
-
-```bash
-aure list-materials [-c CATEGORY]
-```
-
-Categories: `polymers`, `metals`, `substrates`, `solvents`, `all` (default).
-
 ### `aure serve`
 
 Launch the AuRE web interface.
