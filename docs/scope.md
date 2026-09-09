@@ -2,7 +2,9 @@
 
 An inventory of every capability in this repository, assembled from the code
 rather than from memory, so that a keep / bound / retire decision can be made
-against facts. This answers the last entry in [TODO.md](../TODO.md).
+against facts, and the use-case list it is judged against. (This began as a
+TODO entry — "enumerate AuRE's use-cases and decide which it should serve" —
+which this document replaced.)
 
 It records **what exists, where it is exposed, what it weighs, and when it
 arrived**. It deliberately does *not* record whether each capability works, is

@@ -510,55 +510,6 @@ the data require it, and a tie expressed by role must hold across them.
 
 ---
 
-## Take a step back: enumerate AuRE's use-cases and decide which it should serve
-
-**Not an issue with a decided remedy** — the other entries in this file are, and
-this one deliberately is not. It is a scoping decision that should be made
-deliberately and written down, because several of the entries above are only
-worth fixing if the use-case behind them is one AuRE is meant to serve.
-
-**Why now.** The evidence from the validation work is that AuRE is genuinely
-useful on the case it was built for, and that the further a use-case sits from
-that centre the more the machinery has to be bent to reach it — each bend adding
-a surface that can fail quietly rather than loudly. Three of the entries above
-are of exactly that shape: a bound that cannot be declared, a tie that cannot be
-expressed, a structure that cannot be inferred per state. None of them is hard
-to patch individually. Together they are a signal that capability is being added
-faster than the boundaries are being drawn, and the cost lands on robustness in
-the centre.
-
-**The exercise.** List every use-case the system currently admits — from the
-README, the config schema, the CLI, the web UI and the MCP surface, not from
-memory — and for each one record:
-
-- what it claims to do, and where that claim is made;
-- whether it has ever been run end to end on real data, and where the evidence
-  is;
-- what it depends on that the user must supply, and whether the interface can
-  actually accept it (three of the entries above are failures of exactly this);
-- how it fails when a precondition is missing: loudly, or silently;
-- what it costs to keep — code paths, prompt surface, schema fields,
-  documentation, and the failure modes it introduces into unrelated paths.
-
-Then sort into: **core** (supported, tested, documented, defended);
-**bounded** (works within stated limits, and the limits are enforced in code,
-not just written down); **retired** (removed, with the reason recorded).
-
-A starting inventory, to be checked against the code rather than trusted:
-single-curve steady-state fitting; multi-file fitting of one sample;
-multi-state co-refinement with cross-state ties; per-state structure overrides;
-thin-layer mode enumeration;
-contrast variation; time-resolved series; the batch manifest and plan/job
-surface; the web UI; the MCP tool surface; the skill library.
-
-**The point of the exercise** is to be able to say no. "AuRE does not do this,
-and here is what to use instead" is a stronger position than a feature that
-works when the user already knows the answer. The single-curve case is the one
-with 51 curves of evidence behind it; anything that makes that case less robust
-for the sake of breadth is a bad trade.
-
----
-
 ## Resolve a data file from its content first; fall back to the filename only when the metadata is incomplete
 
 **Where:** [`src/aure/instruments/registry.py`](src/aure/instruments/registry.py) —
@@ -653,37 +604,6 @@ by coincidence, and it will take the first `title:` at any nesting depth.
 table in [`tests/test_instruments.py`](tests/test_instruments.py): identical
 ORSO content must resolve to ORSO under every name, and one instrument must
 answer all four questions about a given file.
-
----
-
-## `instruments/orso.py` states the dQ error backwards
-
-**Where:** [`src/aure/instruments/orso.py`](src/aure/instruments/orso.py) — the
-module docstring, lines 14-17.
-
-**What is wrong.** It says that taking an ORSO `sQz` column as a FWHM
-"over-broadens an ORSO resolution by a factor of 2.35". It under-broadens it.
-`dq_is_fwhm=True` means "this column is a FWHM", so refl1d converts it to a
-sigma by *dividing* by 2.355. Measured on a plain 4-column file whose dQ column
-is exactly `2.0e-4`:
-
-```
-dq_is_fwhm=True  -> probe dQ[0] = 8.493e-05      (= 2.0e-4 / 2.3548)
-dq_is_fwhm=False -> probe dQ[0] = 2.000e-04
-```
-
-So a 1σ column read as a FWHM yields a resolution 2.35× too *narrow* — the
-model is under-smeared and will chase fringe structure the measurement cannot
-resolve.
-
-**What it costs.** Nothing today: the code is right and the fix
-(`meta["dq_is_fwhm"] = False`) is correct for the right reason. But the
-docstring is the thing a reader consults before touching resolution handling,
-and it points the wrong way — the same class of defect as the
-`_resolve_tied_set` docstring that claims a tie the code does not make.
-
-**The change.** Two words: "over-broadens" becomes "under-broadens", and the
-sentence should say the conversion divides rather than multiplies.
 
 ---
 

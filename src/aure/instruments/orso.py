@@ -12,9 +12,11 @@ Two things this fixes as a side effect of implementing it properly:
   incident angle and instrument name now reach the run.
 * An ORSO ``sQz`` column is a **standard deviation**, not a FWHM — the ``s``
   prefix is the standard's notation for one sigma. AuRE's global default is
-  ``dq_is_fwhm=True`` (a REF_L convention), which over-broadens an ORSO
-  resolution by a factor of 2.35. This instrument declares the correct
-  convention for its own files.
+  ``dq_is_fwhm=True`` (a REF_L convention), and refl1d converts a FWHM to a
+  sigma by *dividing* by 2.355 — so taking an ORSO ``sQz`` column as a FWHM
+  makes the resolution 2.35x too NARROW, and the model is under-smeared,
+  chasing fringe structure the measurement cannot resolve. This instrument
+  declares the correct convention for its own files.
 """
 
 from __future__ import annotations
