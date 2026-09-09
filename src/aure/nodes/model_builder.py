@@ -43,6 +43,15 @@ def load_probe(file_path: str, *, dq_is_fwhm: bool = True):
     -------
     probe
         A refl1d ``Probe`` (or ``QProbe``) object.
+
+    Notes
+    -----
+    ``.ort`` support is refl1d's, and in 1.0.1 its loader accepts only files
+    that carry the incident angle *and* the wavelength as tagged data columns,
+    each with a matching ``ErrorColumn``. A file stating them once in the
+    header — the natural form for a reduced curve — raises ``AttributeError``
+    from inside ``load4``. See ``tests/test_orso_probe.py``, whose strict
+    xfails will fail once that is fixed upstream.
     """
     import warnings
 
