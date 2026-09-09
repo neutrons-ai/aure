@@ -78,10 +78,10 @@ metadata intake attached. `refl1d_import` round-trips heterogeneous co-refinemen
 state's own `layers` when its refl1d stack diverges from the base, and recovers cross-state ties
 by **layer name** (not stack position, which shifts when a state drops a layer).
 
-Decision (bugfix): cross-state ties are collected in `setup.js:_buildAnalysisBody` **outside**
+Decision: cross-state ties are collected in `setup.js:_buildAnalysisBody` **outside**
 the file-grouping branches, so they survive both **Start Analysis** and **Save Setup**
-(`/api/setup/export`) regardless of grouping-UI state (previously they were dropped after a
-setup load). The backend round-trips them via `setup._setup_from_dict` / `dump_setup`.
+(`/api/setup/export`) regardless of grouping-UI state. The backend round-trips them via
+`setup._setup_from_dict` / `dump_setup`.
 
 ## 4. The run directory (AI-ready provenance)
 
@@ -162,7 +162,7 @@ nr-isaac-format `architecture.md` for the store/representation contract.
 
    The clamp decides by reading the two markers the artifact check leaves behind
    (`_profile_artifact`, `_profile_checked`) and **stands down** — declining to
-   force acceptance, so the LLM decides, as before the clamp — on a vetoed fit,
+   force acceptance, so the LLM decides — on a vetoed fit,
    on an unverified one (no exported SLD profile, the detector declining with
    `checked=False`, or a co-refinement where any one state reported no profile —
    every state is checked against its own effective media, and partial coverage

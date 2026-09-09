@@ -80,8 +80,8 @@ Finalize makes the choice explicit and auditable:
   iteration. (BIC's idea without depending on the stored `bic`.)
 
   The veto exclusion exists because the excursion is often *what buys* the low
-  χ², so the vetoed iteration is routinely the run's best-scoring one — ranking
-  on χ² alone reported exactly the model `evaluation` had refused to accept. A
+  χ², so the vetoed iteration is routinely the run's best-scoring one: ranking on
+  χ² alone would report exactly the model `evaluation` refused to accept. A
   vetoed fit is reported only when it is the whole field, and then the selection
   message says so. `final_selection` records `vetoed_iterations`,
   `demoted_for_profile_artifact` (the veto *changed the answer*, not merely

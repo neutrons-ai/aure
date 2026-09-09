@@ -386,7 +386,7 @@ numbering is topical, not chronological — `evaluation_node` runs 1 → 2 → 4
      zero SLD span across the media), **or any one state of a co-refinement
      reported no profile** — partial coverage leaves the whole fit unverified.
      "Not checked" is treated as unsafe, not as clean, so the LLM's verdict
-     decides, exactly as it did before the threshold became binding;
+     decides;
    - a **per-file / per-state χ²** is above the threshold, carries the `+inf`
      "fit failed" sentinel, or is below `chi2_min`: the reported χ² is
      `problem.chisq()` averaged over every model of a co-refinement, so a single
@@ -402,16 +402,15 @@ numbering is topical, not chronological — `evaluation_node` runs 1 → 2 → 4
      model carries enough free parameters to absorb the noise. That is evidence
      about the **error model**, not about the structure, so it must not force
      acceptance. The default is deliberately the same number
-     `_simple_evaluation` has always called "Possible overfitting" — the
-     heuristic now reads the configured floor, so the two can no longer
-     contradict each other. (The `neutron-reflectometry` skill still quotes the
+     `_simple_evaluation` calls "Possible overfitting" — that heuristic reads
+     the configured floor, so the two cannot contradict each other. (The `neutron-reflectometry` skill still quotes the
      literal 0.5 in its guidance table.)
 
    **A stand-down is not a veto.** In all four cases the clamp merely declines to
-   *force* acceptance; the evaluator LLM's verdict then decides, as it did before
-   the clamp existed. That matters most for the floor: a dataset whose `dR`
-   genuinely is conservative can produce a low χ² on a correct model, and vetoing
-   there would re-introduce the endless refinement the clamp was added to stop. So
+   *force* acceptance; the evaluator LLM's verdict then decides. That matters most
+   for the floor: a dataset whose `dR` genuinely is conservative can produce a low
+   χ² on a correct model, and vetoing there would bring back the endless
+   refinement the clamp exists to stop. So
    the floor hands the decision back *with the reasoning attached* — the prompt
    gains an acceptance-floor block, the node records the finding in
    `analysis["issues"]` (copied onto the `FitResult`, hence `final_state.json`),
@@ -656,11 +655,11 @@ the reasoning visible in the LLM's own words.
 
 A frequent intermediate state is: the fit ran, one parameter hit its
 bound, the evaluation node auto-expanded the bound, and there are no
-other issues. In earlier versions this still triggered a full LLM
-refinement call (modeling → fitting → evaluation) even though the only
-thing that needed to change was already done by the evaluation node.
+other issues. Routing that through a full refinement pass (modeling →
+fitting → evaluation) would spend an LLM call on a model change that the
+evaluation node has already made.
 
-The fix is a one-field optimisation. The evaluator sets
+So it is a one-field shortcut. The evaluator sets
 `bounds_only_refinement = True` when the *only* issue is an auto-expanded
 bound. The router honours this by routing directly from `evaluation` back
 to `fitting`, skipping the `modeling` node entirely and saving one LLM

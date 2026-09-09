@@ -2,9 +2,7 @@
 
 An inventory of every capability in this repository, assembled from the code
 rather than from memory, so that a keep / bound / retire decision can be made
-against facts, and the use-case list it is judged against. (This began as a
-TODO entry — "enumerate AuRE's use-cases and decide which it should serve" —
-which this document replaced.)
+against facts, and the use-case list it is judged against.
 
 It records **what exists, where it is exposed, what it weighs, and when it
 arrived**. It deliberately does *not* record whether each capability works, is
@@ -19,16 +17,14 @@ assets and 1,466 lines of skill markdown.
 
 ## What the repository was on day one
 
-The first commit (2026-02-09) already contained: the CLI, the node pipeline
+The first commit (2026-02-09) already contained the CLI, the node pipeline
 (`intake`, `analysis`, `modeling`, `fitting`, `evaluation`), the workflow runner
-and checkpoints, the feature-extraction tools, the materials database, the web
-UI, and the MCP server.
+and checkpoints, the feature-extraction tools, and the web UI.
 
-That matters for reading the "arrived" column. The web UI was **not** a later
-accretion, and neither was MCP — being in the first commit is not by itself an
-argument for keeping something, as the MCP removal in the table below shows.
-What accreted afterwards is a different set of things, and the dates separate
-them.
+That matters for reading the "arrived" column: the web UI was **not** a later
+accretion. What accreted afterwards is a different set of things, and the dates
+separate them. Being in the first commit is not by itself an argument for
+keeping something.
 
 Retirements to date, which establish that pruning is normal here:
 
@@ -40,8 +36,8 @@ Retirements to date, which establish that pruning is normal here:
 | 2026-09-07 | `mcp_server.py`, `nodes/refinement.py` | `c22b994`, `265ef0a` |
 | 2026-09-08 | `cli.py` `evaluate` command | `89d2156` |
 | 2026-09-08 | `cli.py` `lookup-sld`/`list-materials`, then `database/` | `2d5e1f1` |
-| 2026-09-08 | `cli.py` `plot-results` | never worked; see the use-case pass |
-| 2026-09-08 | `cli.py` `extract-features` | never worked; see the use-case pass |
+| 2026-09-08 | `cli.py` `plot-results` | never worked; no test |
+| 2026-09-08 | `cli.py` `extract-features` | never worked; no test |
 
 ---
 
@@ -82,11 +78,9 @@ the use-case as stated does not draw: whether the relation between states is an
 equality or a function.**
 
 - **Equality ties from prose — viable, and working.** Keep U3 as stated.
-- **Functional relations from prose — not viable, and currently unsafe**, because
-  the prose path silently substitutes an untie. Either narrow U3 to exclude them
-  or make the substitution refuse.
-- **Functional relations from a config file — viable today**, with an awkward
-  idiom and no prose route to it.
+- **Functional relations — out of scope, and the fallback is unsafe**, because
+  the prose path silently substitutes an untie. U3 is narrowed to exclude them;
+  making the substitution refuse is the outstanding fix.
 
 #### What works
 
@@ -135,41 +129,26 @@ parameter, and nothing in the run says so — the fit then reports a χ² for a
 model the description did not ask for. That is worse than refusing, and it is
 the substantive finding of this assessment.
 
-The second row is the case a reparametrization would have expressed, which
-makes the failure precise: prose states a relation the schema cannot hold, and
-the fallback quietly contradicts it.
+The second row makes the failure precise: prose states a relation the schema
+cannot hold, and the fallback quietly contradicts it.
 
-#### Functional constraints: retired, deferred to an add-on
+#### Functional constraints: out of scope, deferred to an add-on
 
-`derived_parameters` — declaring one parameter as a function of others — was
-**removed on 2026-09-08**, and U3 is narrowed to equality ties as a result.
+U3 covers equality ties only. `shared_parameters` / `unshared_parameters` can
+tie a parameter across states or leave it free in each, and nothing anywhere
+declares one parameter as a function of others — so the two rows above are the
+whole cost of the boundary: a stated relation is replaced by a free parameter.
 
-It worked, and more than the earlier note credited: a cross-state ratio was
-expressible with an auxiliary tied handle plus one scoped assignment per state,
-verified end to end, and `bumps` 1.0.x round-trips the resulting expressions
-and constraints through `problem.json` intact — so the export refusal it
-carried was over-conservative. The reasons to retire it were not that it failed
-to work:
-
-- **It has to survive AuRE's own iteration and does not.** A declaration is
-  written against layers; the refinement loop adds and removes them. The
-  response was to prune the declaration and log it — a workaround for the hard
-  problem, not an answer to it, and the mechanism that most needed designing.
-- **No prose route, and the fallback is unsafe.** The two rows above are the
-  evidence: the one mechanism that could express those relations was reachable
-  only from a config file, while the description path silently substituted an
-  untie.
-- **It was never used.** Added to support benchmarking and not used for it.
-  Off by default was the tell.
-
-The design constraints established here are recorded as a wish in
-[TODO.md](../TODO.md), so a future add-on starts from them rather than
-rediscovering them.
+An add-on has two bars to clear. It must **survive AuRE's own iteration** — a
+declaration is written against layer names and the refinement loop adds and
+removes layers — and it must either **have a prose route or refuse loudly**,
+since U3 is stated as "from a textual description". The design constraints are
+recorded as a wish in [TODO.md](../TODO.md) so it starts from them.
 
 #### What gates it
 
-Five recorded defects sit on this path, all in [TODO.md](../TODO.md) except
-where noted:
+Four recorded defects sit on this path, each with an entry in
+[TODO.md](../TODO.md):
 
 1. **Tie names do not exist when the user has to write them.** A tie spec
    matches layer names exactly, and for a description-driven run those names
@@ -190,16 +169,15 @@ Only (1) is a design question. (2)–(4) are bounded fixes.
 #### Recommendation
 
 Keep U3 for equality ties; it works and the prose mapping is good. Before
-functional constraints return as an add-on:
+functional constraints arrive as an add-on:
 
 - make the untie substitution **refuse** rather than approximate — if a
   description states a relation the schema cannot express, that belongs in
   `issues` and in front of the user, not in a silently different model;
 - fix (2)–(4);
-- design the add-on around surviving structural iteration, which is the
-  constraint the retired mechanism did not meet, and decide whether it has a
-  prose surface at all — "from a textual description" could not reach the old
-  one.
+- design the add-on around surviving structural iteration, and decide whether
+  it has a prose surface at all — "from a textual description" has to be able
+  to reach it.
 
 ### What serves what
 
@@ -231,10 +209,8 @@ different purpose.
 
 **U11 is UI-only by design — decided, not a gap.** Worth stating explicitly
 because the absence of a CLI export otherwise reads as an oversight, and
-because row 20 used to invite that reading: it listed the export as "Exposed
-via `EXPORT_FORMAT`, web button", as though the env var were a CLI trigger.
-It is not, and the row now says so. `EXPORT_FORMAT` only *selects* which
-exporter the web button uses, and
+because `EXPORT_FORMAT` looks like a CLI trigger and is not: it only *selects*
+which exporter the web button uses.
 `exporters.get_exporter()` is called from exactly two places, both web routes
 ([`web/routes.py:1797`](../src/aure/web/routes.py#L1797),
 [`:1817`](../src/aure/web/routes.py#L1817)). Neither the CLI nor the workflow
@@ -254,28 +230,7 @@ code undocumented.
 ### Capabilities no listed use-case asks for
 
 Four inventory rows serve nothing in the list above, and **none of them is a
-CLI command any more**. That is the result of asking the question, not the
-state it started in:
-
-- Of the five candidates this list first produced, **three became use-cases** —
-  batch, `prepare` and the ISAAC export are U10, U9 and U11.
-- **Two were retired, both because they had never worked.** `plot-results`
-  globbed `refl1d_output/fit_iter*_*/problem.json`, but bumps names that export
-  `<model_name>.json` — the same fact `CheckpointManager._find_problem_json`
-  exists to handle and which `plot-results` never consulted; 297 lines, no
-  test, five months. `extract-features` unpacked `load_reflectivity_data` as a
-  3-tuple when it returns a dict, so a 4-column file raised "Error loading
-  data" (blaming a file that had loaded) and a 3-column file bound the strings
-  `'Q'`, `'R'`, `'dR'` and crashed later; 108 lines, no test, and broken since
-  the **first commit**.
-
-  Neither capability was redundant in principle — one showed every iteration on
-  one axis, the other reported what the data says before a model exists. Both
-  were dead code advertising a feature. The underlying feature extraction is
-  untouched and heavily used: the `analysis` node calls
-  `extract_all_features`, which the retired command did not.
-
-What remains unclaimed:
+CLI command**:
 
 - **13 (thin-layer mode enumeration), 14 (`roughness_tie`)** — fit strategy
   rather than user-facing capability; they serve U1–U3 indirectly and are
@@ -318,10 +273,9 @@ Footprint is what would be deleted, not what would be touched.
 | 24 | Docker image | `ghcr.io/neutrons-ai/aure` | Dockerfile + CI | grown |
 | 25 | **AuRE as an importable library** | `import aure` — no dedicated code | `__all__` names 3 of them | 02-09 |
 
-10 CLI commands remain.
+The CLI has 10 commands.
 
-Row 25 is the one surface this inventory previously missed, and it has a
-consumer. `__all__` declares `ReflectivityState`, `create_initial_state` and
+Row 25 is a surface with an out-of-tree consumer. `__all__` declares `ReflectivityState`, `create_initial_state` and
 `run_analysis` ([`__init__.py:33`](../src/aure/__init__.py#L33)). nr-workbench
 pins twelve callables across four modules in its own contract table — so a
 rename here breaks its CI rather than a scientist's fit — and reaches three more
@@ -395,17 +349,15 @@ Sorting the inventory by arrival, the pattern is not "features added randomly".
 It is a steady outward drift from one curve:
 
 - **Feb** — the core, plus its two alternative front-ends.
-- **Mar–Apr** — model representation replaced (scripts → JSON); ISAAC export;
-  the skill library opens.
+- **Mar–Apr** — the JSON model representation; ISAAC export; the skill library
+  opens.
 - **May** — the declaration surface (`setup.py`, `config.py` states) and
   `import-refl1d`, i.e. two large capabilities in one month, both about
   *getting other people's structure in*.
 - **Jun–Jul** — hypothesis machinery, finalize, final_fit: the loop learning to
   stop well.
 - **Aug–Sep** — `instruments/`, the first addition that *removed* coupling
-  rather than adding capability, and the newest code in the repo. (A
-  reparametrization mechanism arrived here too and was retired in the same
-  month; see **Use-cases**.)
+  rather than adding capability, and the newest code in the repo.
 
 The three largest single blocks that are not the core loop are still the **web
 UI (6,890)**, **`refl1d_import.py` (1,740)** and the **skill library (1,867

@@ -169,27 +169,26 @@ SLD is `phi * rho_dry + (1 - phi) * rho_solvent`, so it **differs in every
 contrast** — the invariants are `phi` and `rho_dry`. Tying `film.material.rho`
 across contrasts asserts something false; untying it throws the coupling away.
 
-Declare the invariant with `derived_parameters` instead. It is tied across
-states by default, and its `assign` is re-evaluated in each state's own
-namespace, so each state's SLD follows from *its* solvent:
+**The tie set cannot express this**, and no other mechanism can either: a
+parameter is either tied across states or free in each, and there is no way to
+declare one as a function of others. So do not tie the film SLD, and do not
+present the untied fit as though the invariant were held:
 
-```yaml
-derived_parameters:
-  - name: phi
-    free: {init: 0.30, min: 0.05, max: 1.0}
-    assign:
-      film.rho: "phi * rho_dry + (1 - phi) * solvent.rho"
-    keep_physical: ["film.rho > -1.0", "film.rho < 6.5"]
-  - name: rho_dry
-    free: {init: 2.0, min: 0.5, max: 4.0}
-```
+- **Untie the affected SLD** (`unshared_parameters: [film.material.rho]`, or
+  leave it out of the whitelist) so each contrast fits its own value. This is
+  the honest model of what the fit can do, and it stays coupled through every
+  thickness and roughness that *is* tied.
+- **Say what was dropped, in `issues`.** The user asked for one shared volume
+  fraction and is getting two free SLDs. Report the per-state values, and
+  whether they are consistent with a single `phi` — if `phi` recovered from
+  each contrast agrees, that is the evidence the invariant holds, arrived at
+  after the fit rather than imposed during it.
 
-`film.rho` stops being a fitted parameter and is excluded from cross-state
-tying automatically — no `shared_parameters` / `unshared_parameters` edit is
-needed. Reach for this when a per-state SLD is pinned at a bound, when
-untying an SLD across contrasts leaves the states effectively uncoupled, or
-whenever the quantity the experiment is actually about (an adsorbed amount, a
-swelling ratio, a coverage) is a combination rather than a coordinate.
+Watch for the failure this predicts: a per-state SLD pinned at a bound, or an
+untied SLD leaving the states effectively uncoupled. Both mean the quantity the
+experiment is about (an adsorbed amount, a swelling ratio, a coverage) is a
+combination the model has no coordinate for — worth stating plainly in the
+evaluation rather than absorbing into a free parameter.
 
 ## What the workflow does
 

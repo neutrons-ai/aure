@@ -728,8 +728,8 @@ def data_chisq(problem) -> float:
 def penalty_nllf(problem) -> float:
     """The prior/constraint part of the nllf — what ``data_chisq`` leaves out.
 
-    Reported alongside χ² so a fit dragged around by a ``keep_physical`` guard
-    is visible rather than merely worse.
+    Reported alongside χ² so a fit dragged around by a prior or a bumps
+    constraint is visible rather than merely worse.
     """
     try:
         pparameter, pconstraints, _pmodel, _failing = problem._nllf_components()

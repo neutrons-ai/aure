@@ -139,6 +139,7 @@ or resume a run from any point.
 |----------|----------------|
 | **[docs/approach.md](docs/approach.md)** | The narrative introduction: reflectometry and LLM primers, the workflow node by node, Agent Skills, the ranked-hypothesis refinement loop, co-refinement, and how to read a run's output. Start here. |
 | **[architecture.md](architecture.md)** | The design decisions and the invariants not to break. Read before changing the workflow. |
+| **[docs/launching.md](docs/launching.md)** | The CLI routes into a run: the ad-hoc positional form versus the setup YAML, which of them can express a single curve, a multi-file co-refinement and a multi-state co-refinement, how the two are merged, and where each run control comes from. |
 | **[docs/metrics.md](docs/metrics.md)** | Every number that judges a fit, with the math: χ² (what is and is not in it), the acceptance window, BIC and how `n` and `k` are counted, the regression guardrails, the deterministic feature-extraction formulas, residual-fringe analysis, profile-artifact detection, and final model selection. |
 | **[docs/finalization.md](docs/finalization.md)** | What happens after the loop stops: how the reported model is selected, the optional uncertainty polish, and the artifacts a run writes. |
 | **[CLAUDE.md](CLAUDE.md)** | Orientation for coding agents working in this repository. |
@@ -323,12 +324,12 @@ implies, with the finding recorded as an issue on the fit result (so it reaches
 `final_state.json`) and repeated in the success message. Standing down is not a
 veto: a χ² of 0.004 does not block completion, because a genuinely conservative
 `dR` column is a real case. The default `0.5` is the number AuRE's own heuristic
-evaluator has always flagged as "possible overfitting". Use `chi2_min: 0` (or
+evaluator flags as "possible overfitting". Use `chi2_min: 0` (or
 `CHI2_MIN=0`) to disable it; otherwise it must be finite, ≥ 0 and **strictly
 below** `chi2_max`, since a floor at or above the ceiling admits no χ² at all.
 
 **χ² alone never *forces* acceptance.** The stop stands down — leaving the
-evaluator's verdict to decide, as before the stop existed — when the SLD profile
+evaluator's verdict to decide — when the SLD profile
 shows a non-physical excursion (an erf tail leaving the range its bounding media
 can produce; back to refinement however low χ² is); when the profile could not be
 *verified* — none was exported (refl1d writes one only when the run has an output

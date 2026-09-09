@@ -139,6 +139,48 @@ decide that first.
 
 ---
 
+## `intensity: true` loads, then kills the fit with a TypeError
+
+**Where:** [`src/aure/config.py`](src/aure/config.py) — `_TRIPLET_DEFAULTS` /
+`_normalise_nuisance`, against
+[`src/aure/nodes/model_builder.py`](src/aure/nodes/model_builder.py) —
+`build_states_problem`.
+
+**What is wrong.** Three of the four per-state nuisance keys accept `true` as
+"fit this over the default range": `_normalise_nuisance` expands it from
+`_TRIPLET_DEFAULTS`. `intensity` is not in that table, so `true` is passed
+through verbatim as a Python bool, the setup loads clean, and the run dies in
+the builder several nodes later:
+
+```
+$ aure analyze -c setup.yaml        # states[0].intensity: true
+TypeError: 'bool' object is not a mapping
+```
+
+from `{**intensity, **ds_intensity}` — `intensity` is `True`. The state loads,
+intake runs, modeling runs, the first fit builds, and only then does the run
+end, on a message that names neither the key nor the file.
+
+`intensity` is the one nuisance key with a good implicit default already
+(`init` 1.0 over `[0.7, 1.1]`, applied when the key is absent), so a user
+writing `intensity: true` is asking for exactly that. It reads as the same
+shorthand the neighbouring keys accept, and nothing at load time says it is
+not.
+
+**The change.** Give `intensity` a `_TRIPLET_DEFAULTS` row —
+`{"init": 1.0, "min": 0.7, "max": 1.1}`, the values the builder already
+falls back to — so `true` expands like the others and `false` disables it.
+The builder reads `init` as well as `value`, so the expanded mapping needs no
+change there. Either way `_normalise_nuisance` should reject a bare non-mapping
+for any nuisance key rather than passing it through: the current failure mode
+is a load-time typo surfacing as a fit-time `TypeError`.
+
+Documented meanwhile in
+[docs/launching.md](docs/launching.md#nuisance-parameters) — the mapping form
+is spelled out and the `true` shorthand is called out as not applying here.
+
+---
+
 ## Tie a shared layer to the first state that *has* it, not always to state 0
 
 **Where:** [`src/aure/nodes/model_builder.py`](src/aure/nodes/model_builder.py) —

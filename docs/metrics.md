@@ -500,9 +500,9 @@ parametrizes a graded profile rather than a discrete slab.
 `checked=False` means **unknown**, not clean. It is returned on every "cannot
 check" path: fewer than 5 profile points, mismatched `z`/`rho` lengths, fewer
 than 2 media, a **non-finite** sample anywhere, or a zero SLD span. The
-non-finite gate matters: every comparison against NaN is False, so an all-NaN
-profile from a diverged fit used to yield no extrema and report a clean bill of
-health. Callers gating a decision on a clean profile must read `checked`.
+non-finite gate matters: every comparison against NaN is False, so without it
+an all-NaN profile from a diverged fit finds no extrema and reads as a clean
+bill of health. Callers gating a decision on a clean profile must read `checked`.
 
 An excursion **vetoes acceptance** (§2) and sets aside the fit in final
 selection (§10), with a two-branch remedy suggestion: tie the roughness, or

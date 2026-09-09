@@ -4,9 +4,10 @@ AuRE reads reflectivity data from ORNL's REF_L and from ORSO `.ort` files out
 of the box. Anything else needs an **instrument**: a small class that answers
 four questions about a data file. Nothing else in AuRE has to change.
 
-This exists because the REF_L conventions used to be hard-coded in three
-modules. They now live in [`src/aure/instruments/`](../src/aure/instruments/)
-behind the protocol below.
+Every format-specific convention lives in
+[`src/aure/instruments/`](../src/aure/instruments/) behind the protocol below,
+so adding a format is a new class and a registration — not an edit to the
+nodes that consume the data.
 
 ## What an instrument is for
 
