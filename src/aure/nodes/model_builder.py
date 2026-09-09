@@ -214,22 +214,69 @@ def _outer_roughness_max(layers_info: list) -> float:
     The default is unchanged, so behaviour only differs when a model (or the
     environment) explicitly asks for a wider bound.
     """
+    declared = None
+    if layers_info:
+        try:
+            declared = float(
+                layers_info[-1].get("roughness_max", _OUTER_ROUGHNESS_MAX_DEFAULT)
+            )
+        except (TypeError, ValueError):
+            declared = None
+
     override = os.environ.get("ROUGHNESS_MAX_OUTER")
     if override:
         try:
-            return float(override)
+            forced = float(override)
         except ValueError:
             logger.warning(
                 "[MODEL] Ignoring non-numeric ROUGHNESS_MAX_OUTER=%r", override
             )
-    if layers_info:
-        try:
-            return float(
-                layers_info[-1].get("roughness_max", _OUTER_ROUGHNESS_MAX_DEFAULT)
-            )
-        except (TypeError, ValueError):
-            pass
-    return _OUTER_ROUGHNESS_MAX_DEFAULT
+        else:
+            # The override REPLACES the model's ceiling rather than widening it,
+            # and that is deliberate: on the reference corpus the outer
+            # roughness runs to the cap in 108 of 835 fits where the expert
+            # value is 46-200 Å, so the cap is a regularizer the fits lean on.
+            # Say when it displaces a declaration, though — otherwise a model
+            # asking for 400 Å gets 250 with nothing anywhere admitting it.
+            if declared is not None and abs(declared - forced) > 1e-9:
+                logger.info(
+                    "[MODEL] outer interface ceiling %g Å from "
+                    "ROUGHNESS_MAX_OUTER, displacing the %g Å declared on %r. "
+                    "To set it from the model, name the interface explicitly "
+                    "(see ModelDefinition.interfaces).",
+                    forced,
+                    declared,
+                    (layers_info[-1] or {}).get("name", "the outermost layer"),
+                )
+            return forced
+
+    return declared if declared is not None else _OUTER_ROUGHNESS_MAX_DEFAULT
+
+
+def outer_ceiling_displacement(definition: dict) -> tuple | None:
+    """``(forced, declared, layer_name)`` when the env displaces a declared
+    outer ceiling; ``None`` otherwise.
+
+    The displacement itself is deliberate — see :func:`_outer_roughness_max` —
+    but it is invisible from inside a run: the model declares one ceiling and
+    the fit uses another. `evaluation` reports this as an issue so the refiner
+    is told its declaration had no effect, instead of re-raising it every
+    iteration against a bound it cannot move.
+    """
+    override = os.environ.get("ROUGHNESS_MAX_OUTER")
+    if not override:
+        return None
+    layers = definition.get("layers") or []
+    if not layers:
+        return None
+    try:
+        forced = float(override)
+        declared = float(layers[-1]["roughness_max"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if abs(forced - declared) <= 1e-9:
+        return None
+    return forced, declared, str(layers[-1].get("name", "the outermost layer"))
 
 
 #: Lower bound applied to a layer interface when the model declares none.

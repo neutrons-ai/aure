@@ -431,3 +431,70 @@ def test_a_malformed_interface_declaration_is_refused(data_file, entry, message)
     remove."""
     with pytest.raises(ValueError, match=message):
         _stack_roughness(data_file, back=True, interfaces=[entry])
+
+
+# ---------------------------------------------------------------------------
+# ROUGHNESS_MAX_OUTER displaces the model's ceiling — say so
+# ---------------------------------------------------------------------------
+
+
+def test_the_override_replaces_rather_than_widens(monkeypatch):
+    """Deliberate: on the reference corpus the outer roughness reaches the cap
+    in 108 of 835 fits where the expert value is 46-200 Å, so widening it would
+    let those fits run further from the reference, not closer."""
+    from aure.nodes.model_builder import _outer_roughness_max
+
+    monkeypatch.setenv("ROUGHNESS_MAX_OUTER", "250")
+    assert _outer_roughness_max([{"name": "SEI", "roughness_max": 400.0}]) == 250.0
+
+
+@pytest.mark.parametrize(
+    "layers,env,expected",
+    [
+        ([{"name": "SEI", "roughness_max": 400.0}], None, 400.0),
+        ([{"name": "SEI"}], None, 30.0),
+        ([], None, 30.0),
+        ([{"name": "SEI", "roughness_max": "wide"}], None, 30.0),
+        ([{"name": "SEI", "roughness_max": 400.0}], "not-a-number", 400.0),
+    ],
+    ids=["declared", "default", "no-layers", "junk-declared", "junk-env"],
+)
+def test_outer_ceiling_fallbacks_are_unchanged(monkeypatch, layers, env, expected):
+    from aure.nodes.model_builder import _outer_roughness_max
+
+    monkeypatch.delenv("ROUGHNESS_MAX_OUTER", raising=False)
+    if env is not None:
+        monkeypatch.setenv("ROUGHNESS_MAX_OUTER", env)
+    assert _outer_roughness_max(layers) == expected
+
+
+def test_the_displacement_is_detectable(monkeypatch):
+    """`evaluation` turns this into an issue, so a refiner is told its
+    declaration had no effect instead of re-raising it every iteration."""
+    from aure.nodes.model_builder import outer_ceiling_displacement
+
+    monkeypatch.setenv("ROUGHNESS_MAX_OUTER", "250")
+    model = {"layers": [{"name": "Cu"}, {"name": "SEI", "roughness_max": 400.0}]}
+    assert outer_ceiling_displacement(model) == (250.0, 400.0, "SEI")
+    # Silent when the two agree, when nothing is declared, and with no env.
+    assert outer_ceiling_displacement({"layers": [{"roughness_max": 250.0}]}) is None
+    assert outer_ceiling_displacement({"layers": [{"name": "SEI"}]}) is None
+    monkeypatch.delenv("ROUGHNESS_MAX_OUTER")
+    assert outer_ceiling_displacement(model) is None
+
+
+def test_an_explicit_interface_beats_the_override(data_file, monkeypatch):
+    """The model-side route: naming the outer boundary sets both its bounds,
+    which the env cannot reach — and fixes the hardcoded floor of 0 with it."""
+    monkeypatch.setenv("ROUGHNESS_MAX_OUTER", "250")
+    declared = [
+        {"below": "Cu", "above": "dTHF", "roughness": 40.0, "roughness_max": 400.0}
+    ]
+    defn = _defn(data_file, dict(_CU_LAYER))
+    defn["ambient"] = {"name": "dTHF", "sld": 6.2}
+    defn["back_reflection"] = True
+    capped = list(build_problem(dict(defn)).models)[0].sample[0].interface
+    assert tuple(float(x) for x in capped.prior.limits) == (0.0, 250.0)
+    defn["interfaces"] = declared
+    named = list(build_problem(defn).models)[0].sample[0].interface
+    assert float(named.prior.limits[1]) == pytest.approx(400.0)

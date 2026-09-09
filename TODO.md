@@ -5,61 +5,71 @@ what is wrong, what it costs, and what the change would be.
 
 ---
 
-## `ROUGHNESS_MAX_OUTER` silently displaces a declared `roughness_max`
+## The outer interface can only be bounded from outside the model
 
 **Where:** [`src/aure/nodes/model_builder.py`](src/aure/nodes/model_builder.py)
-— `_outer_roughness_max`.
+— `_outer_roughness_max`, and the `roughness_tie` branch of `_build_sample`.
 
-**What is wrong.** The env override is checked first and returns immediately,
-so the model's own declaration is never read:
+**What this entry used to say, and why it was wrong.** It proposed making
+`ROUGHNESS_MAX_OUTER` a floor on the ceiling — `max(override, declared)` —
+"probably right", on the grounds that its purpose is to stop a low default
+capping a diffuse interface. The corpus refutes that:
 
-```python
-override = os.environ.get("ROUGHNESS_MAX_OUTER")
-if override:
-    return float(override)          # never reaches the layer
-if layers_info:
-    return float(layers_info[-1].get("roughness_max", _OUTER_ROUGHNESS_MAX_DEFAULT))
+| | |
+|---|---|
+| outer-interface fits within 2 % of the 250 Å cap | **108 of 835**, across **32 runs**, several at exactly 250.0 |
+| expert reference roughness in those runs | **46–200 Å, median 79** |
+| model declarations exceeding the cap | 16, up to 400 Å |
+
+Where the cap binds, the fit is already running 2–4× past the expert value and
+the cap is the only thing stopping it. Widening it lets those 32 runs travel
+*further* from the reference. The cap is a regularizer the corpus leans on, not
+a safety margin — so the precedence stays as it is, and
+`outer_ceiling_displacement` + a log line now make it visible instead
+(`7e15c10`, this entry's phases 1 and 2).
+
+**The real defect is that no model-side tool can bound that interface.**
+
+`roughness_tie` is the principled bound — σ = fraction × thickness, so an
+interface can never outgrow its layer — and it **cannot reach the outer
+surface**. Applied to the outermost layer it rewrites that layer's *own*
+interface and leaves the outer one free:
+
+```
+stack: ['dTHF', 'SEI', 'Cu', 'Si']          # back reflection, tie on SEI
+  [0] dTHF   interface=Parameter   bounds=(0.0, 250.0)   <- the outer surface, untouched
+  [1] SEI    interface=Expression  (fraction x thickness) <- the tie landed here
 ```
 
-Nothing logs that it happened. A model that declares a ceiling on its outermost
-layer, and a prompt that instructs the LLM to declare one, both look satisfied
-while the number in force comes from the environment.
+The outer surface lives on the *ambient* slab, and `roughness_tie` only
+rewrites layer slabs. So the only instrument that can bound it is a global
+constant supplied from the environment — which is exactly why
+`ROUGHNESS_MAX_OUTER` exists, and why it has to be blunt.
 
-**What it costs.** `aure-validation/config/providers.yaml` sets
-`ROUGHNESS_MAX_OUTER: "250"` for every sweep run, so the whole corpus fits its
-outer interface against `(0, 250)` regardless of the model. In
-`single-de/azure/cu_film__Cu_0__201334` the three iterations declared
-`roughness_max` of 30, 30 and 60 on their outermost layer and every one of them
-built `dTHF interface bounds=[0.0, 250.0]`.
+**And neither guard catches the runaway reliably.** Of the 108 pinned fits, 90
+are vetoed by the SLD-profile artifact check — but **12 were verified clean**
+(`profile_checked=True, profile_artifact=False`) at 246–250 Å with χ² of
+1.3–2.9, against references of 66–124 Å. A good χ², a clean profile, and an
+outer roughness 2–4× the expert value. So χ² actively rewards the runaway in
+those cases, presumably because a very wide erf tail mimics a diffuse layer or
+density gradient the model is missing — and nothing in the loop objects.
 
-That run's hypothesis text says, in as many words, "Set roughness_max on the SEI
-**and on the solvent-facing interface** high enough to allow that — a 30 Å
-ceiling there cannot fit these data." The LLM complied, raising the outermost
-layer's `roughness_max` from 30 to 60 at iteration 2. It had no effect, and no
-line anywhere says so. Any attempt to tune that instruction against outcomes is
-measuring the environment, not the prompt.
+**The change.** Give the outer surface the same principled bound the layers
+have: extend `roughness_tie` (or an equivalent) to it, so in back reflection
+`sample[0].interface` becomes `fraction × <outermost layer>.thickness` rather
+than a free parameter under a global cap. A 250 Å tail on a 200 Å layer is
+unphysical whatever any env var says, and this is the bound that says so from
+inside the model.
 
-**The change.** Two candidates, and the second is probably right:
+That would make `ROUGHNESS_MAX_OUTER` redundant for its stated purpose, and it
+would remove the cases where the profile check passes a runaway. It changes
+what the 32 pinned runs fit, so it costs a re-sweep.
 
-- **Log the displacement.** When the override is set and the outermost layer
-  declares a different `roughness_max`, say which one won. One line, no
-  behaviour change, and it makes the corpus's outer bound self-evident in any
-  run's log.
-- **Make the override a floor on the ceiling** — `max(override, declared)` —
-  rather than a replacement. Its stated purpose is to stop a 30 Å default
-  capping genuinely diffuse interfaces; that purpose is served by raising a low
-  ceiling and not by lowering a high one. A model that asks for more than the
-  override presumably has a reason. This changes behaviour only for a model
-  declaring *more* than the override, which the corpus never does — its
-  declarations are 30 and 60 against an override of 250 — so it is free there.
-
-Note what this interacts with: the outer interface's *seed* comes from
-`layers_info[-1]["roughness"]` and its *floor* is a hardcoded `0` (see the entry
-above). So of the three numbers describing the interface most likely to be
-genuinely rough, one comes from the model, one from the environment, and one
-from a literal.
-
----
+**Available today, and cheaper:** an explicit `interfaces` entry names the
+outer boundary and sets both its bounds, beating the env override and the
+hardcoded floor of 0 in one step — verified: `(0, 250)` becomes `(5, 400)`. It
+sets fixed numbers rather than σ ≤ k·t, so it is a workaround rather than the
+fix, and nothing emits it yet (see `InterfaceInfo`).
 
 ## The bottom medium's interface is the one interface with no floor
 

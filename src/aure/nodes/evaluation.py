@@ -760,6 +760,25 @@ def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
                     f"Range has been auto-expanded."
                 )
 
+    # ========== Outer Ceiling Displaced by the Environment ==========
+    # `ROUGHNESS_MAX_OUTER` replaces the model's outer ceiling rather than
+    # widening it, which is deliberate. It is also silent, so a refiner that
+    # declares a wider `roughness_max` on the outermost layer sees no effect and
+    # declares it again next iteration. Tell it once, per fit.
+    from .model_builder import outer_ceiling_displacement
+
+    displaced = outer_ceiling_displacement(state.get("current_model") or {})
+    if displaced:
+        forced, declared, layer_name = displaced
+        analysis["issues"].append(
+            f"The outermost interface ceiling is fixed at {forced:g} Å by this "
+            f"run's environment (ROUGHNESS_MAX_OUTER), not by the model — the "
+            f"{declared:g} Å declared as roughness_max on '{layer_name}' does "
+            f"not reach it. That declaration still bounds '{layer_name}'s own "
+            f"buried interface, so it is not wasted, but raising it further "
+            f"will not widen the outer surface."
+        )
+
     latest_fit["issues"] = analysis["issues"]
     latest_fit["suggestions"] = analysis["suggestions"]
     # Persist the verdict the clamp just read, so finalize and the report can tell
