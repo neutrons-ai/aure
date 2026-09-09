@@ -7,7 +7,7 @@ name = "aure"
 version = "0.9.0"
 description = "Thin film reflectivity sample builder with neural network foundation model"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 authors = [{ name = "Oak Ridge National Laboratory" }]
 
 dependencies = [
@@ -25,8 +25,6 @@ dependencies = [
   "langchain>=1.0",
   "langchain-openai>=1.0",
   "langchain-google-genai>=2.0.0",
-  # MCP server (aure mcp-server)
-  "fastmcp>=2.0",
   # Science helpers
   "periodictable>=2.0",
   "regex>=2023.0.0",
@@ -36,11 +34,10 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "pytest-cov>=4.0"]
-alcf = ["globus-sdk>=3.0"]
 export = [
   "nr-isaac-format @ git+https://github.com/isaac-neutrons/nr-isaac-format.git",
 ]
-all = ["aure[dev,alcf,export]"]
+all = ["aure[dev,export]"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

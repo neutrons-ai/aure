@@ -256,41 +256,6 @@ _NO_STATES = (
 )
 
 
-_DERIVED_PARAMETERS_RULE = """\
-14. REPARAMETRIZED PARAMETERS (`derived_parameters`). If the model carries a
-    top-level `derived_parameters` block, the model has been REPARAMETRIZED:
-    each entry makes a combination of parameters free (a surface excess, a
-    volume fraction) and DERIVES a raw one from it. Consequences:
-    - A layer attribute named in an entry's `assign` is NOT a fit parameter.
-      Its number in `layers` is computed from the expression, not fitted. Do
-      not "correct" it, do not widen its bounds to make it move, and do not
-      read it being stuck as a fit problem — it is supposed to follow.
-    - DO NOT remove or rename any layer an entry references. That is the one
-      structural edit forbidden here. If the evidence really points at removing
-      such a layer, do something else this iteration and say why in `issues`.
-    - The block is the scientist's declaration, carried over verbatim
-      regardless of what you emit. Do not add, edit or delete entries — an
-      added one is discarded, so emitting it only wastes the iteration. If you
-      believe a reparametrization would help (see the `functional-constraints`
-      skill for when it would), SAY SO in your reasoning so it reaches the
-      person running the analysis; do not try to install it yourself.
-"""
-
-
-def _format_derived_parameters_rule(model: dict | None) -> str:
-    """Render the reparametrization rule only for a model that has one.
-
-    Reparametrization is off by default, so for almost every run this would be
-    instructions about a feature the model will never meet — prompt weight that
-    buys nothing and gives a smaller model one more thing to misapply. Keyed
-    off the model rather than the flag: what matters to the refiner is whether
-    the JSON in front of it actually contains the block.
-    """
-    if not isinstance(model, dict) or not model.get("derived_parameters"):
-        return ""
-    return _DERIVED_PARAMETERS_RULE
-
-
 def _format_states_section(state_names: list | None) -> str:
     """Render the run's measurement states for the hypothesis prompts.
 
@@ -643,10 +608,16 @@ def _format_complexity_assessment(
             )
     lines.append("")
     lines.append(
-        "  BIC penalizes unnecessary model parameters. A lower BIC is better. "
-        "Adding a layer (3 extra parameters) must produce a substantial χ² "
-        "improvement to lower BIC. Do NOT suggest adding layers unless the "
-        "BIC would clearly improve."
+        "  BIC penalizes unnecessary model parameters. A lower BIC is better; "
+        "it is computed for you, so do not try to evaluate the formula "
+        "yourself. How much χ² improvement a new parameter has to buy depends "
+        "on how well the model already fits: on a poor fit a small relative χ² "
+        "improvement is a large absolute one and can justify a layer, while on "
+        "an already-good fit it takes proportionally more. Judge the added "
+        "structure on the physical evidence (residual structure, features, the "
+        "hypothesis list) rather than on a fixed χ² threshold — and if BIC does "
+        "regress, the guardrail reverts the change and marks the hypothesis "
+        "rejected."
     )
     return "\n".join(lines)
 
@@ -1273,6 +1244,7 @@ You must output a COMPLETE, valid JSON object matching this schema:
       "thickness_min": <min thickness Å>,
       "thickness_max": <max thickness Å>,
       "roughness": <roughness Å>,
+      "roughness_min": <min roughness Å — omit unless the interface needs one>,
       "roughness_max": <max roughness Å>,
       "roughness_tie": {{"fraction_max": <≤ 0.5>}}
     }}
@@ -1318,6 +1290,14 @@ Rules:
 2. You may add layers, remove layers, change materials, adjust SLD values, or change parameter bounds.
 3. If parameters are hitting their bounds, widen those bounds (sld_min/sld_max, thickness_min/thickness_max).
 4. If there are systematic residuals, consider adding a layer.
+4a. `roughness_min` is OPTIONAL and should be OMITTED unless you mean it. Omitted,
+    a 5 Å floor applies — and that floor YIELDS to a smaller `roughness` you
+    declare, because a default must not override a stated value. So an interface
+    you believe is chemically sharp needs only `"roughness": 2` and no
+    `roughness_min`; writing `"roughness_min": 5` would pin it at 5 Å and no
+    later iteration could get below. Declare it only to raise a floor you can
+    justify — an interface known to be at least this rough — in which case a
+    smaller `roughness` is clamped up to it and the contradiction is logged.
 4b. `roughness_tie` is OPTIONAL and should be OMITTED for normal layers. Add it
     only when an issue reports a non-physical SLD-profile excursion (an
     erf-tail artifact — the profile dipping below or overshooting above the
@@ -1406,7 +1386,6 @@ Rules:
     simpler (lower-BIC) one. For ordinary ADDITIVE hypotheses (a genuinely
     missing layer), keep editing the Current Model as usual.
 
-{derived_parameters_rule}
 {user_constraints}
 
 IMPORTANT: If user feedback is provided below, it takes absolute priority over
@@ -1536,7 +1515,6 @@ def format_model_refinement_prompt_json(
             baseline_model_section=_format_baseline_model_section(
                 baseline_model, current_model
             ),
-            derived_parameters_rule=_format_derived_parameters_rule(current_model),
             next_action=next_action or "parameter_tweak",
             proposed_hypothesis_id=(
                 proposed_hypothesis_id if proposed_hypothesis_id is not None else "null"

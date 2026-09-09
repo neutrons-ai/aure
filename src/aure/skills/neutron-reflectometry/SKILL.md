@@ -104,9 +104,14 @@ For data files representing an individal run/segment, the table in the header wi
 
 ## Model Complexity (BIC)
 
-- BIC = n·ln(χ²) + k·ln(n), where n = number of data points, k = free parameters.
+- BIC = χ²_total + k·ln(n), where χ²_total is the **un-normalized** sum
+  Σ((R−R_model)/dR)², n = total data points across every dataset, and
+  k = free parameters. Note this uses the total χ², not the reduced χ²
+  reported elsewhere in the prompt.
 - Lower BIC is better.
-- Each layer adds 3 free parameters (thickness, SLD, roughness).
+- Each layer adds 3 free parameters (thickness, SLD, roughness); a fittable
+  background, θ-offset, sample broadening or solvation fraction each add one
+  more, and parameters tied across states are counted once.
 - Adding a layer must produce a substantial χ² improvement to lower BIC.
 - The workflow auto-reverts a structural change that worsens BIC, so you do
   not need to predict BIC impact perfectly. Propose the top-ranked
@@ -119,8 +124,17 @@ For data files representing an individal run/segment, the table in the header wi
 
 ## Roughness Constraints
 
-- Roughness must be ≥ 5 Å (values below are physically unrealistic).
-- Typical roughness range: 5–30 Å.
+- Roughness must be ≥ 5 Å (values below are physically unrealistic). This
+  matches the builder's default `roughness_min`.
+- Typical roughness range: 5–30 Å for a sharp, well-defined interface, which
+  is also the builder's default `roughness_max`.
+- **Do not treat 30 Å as a physical ceiling.** A genuinely diffuse interface —
+  a solvent-swollen SEI, a graded or intermixed boundary — is legitimately
+  rougher: against expert reference fits of Cu-in-THF electrodes the outer
+  roughness exceeded 30 Å in 40 of 51 measured runs, reaching 209 Å. When the
+  sample description or the residuals indicate a diffuse outer interface, set
+  that layer's `roughness_max` explicitly above 30 rather than leaving the
+  default to cap the fit in a systematically wrong basin.
 
 ### Two interpretations of a slab + roughness model
 

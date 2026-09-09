@@ -11,8 +11,8 @@ import numpy as np
 def _make_data_file(name_prefix: str, q_min=0.01, q_max=0.10, n=60) -> str:
     """Create a synthetic data file with a chosen filename prefix.
 
-    The basename is chosen so that ``_extract_set_id`` can decode a
-    REF_L set id (e.g. ``REFL_226642_combined_data_auto.txt``).
+    The basename is chosen so that the REF_L instrument can decode a
+    set id from it (e.g. ``REFL_226642_combined_data_auto.txt``).
     """
     Q = np.linspace(q_min, q_max, n)
     R = np.clip((0.0217 / (2 * np.maximum(Q, 0.001))) ** 4, 1e-10, 1.0)
@@ -50,26 +50,27 @@ def _ds(file_path: str, label: str | None = None) -> dict:
 
 
 # ----------------------------------------------------------------------
-# _extract_set_id
+# Measurement-set identity (was intake._extract_set_id; now the instrument
+# registry's group_key — see tests/test_instruments.py for the full table)
 # ----------------------------------------------------------------------
 
 
-def test_extract_set_id_combined():
-    from aure.nodes.intake import _extract_set_id
+def test_group_key_combined():
+    from aure.instruments import group_key
 
-    assert _extract_set_id("/tmp/REFL_226642_combined_data_auto.txt") == "226642"
-
-
-def test_extract_set_id_partial():
-    from aure.nodes.intake import _extract_set_id
-
-    assert _extract_set_id("/tmp/REFL_226642_3_2003_partial.txt") == "226642"
+    assert group_key("/tmp/REFL_226642_combined_data_auto.txt") == "226642"
 
 
-def test_extract_set_id_unknown():
-    from aure.nodes.intake import _extract_set_id
+def test_group_key_partial():
+    from aure.instruments import group_key
 
-    assert _extract_set_id("/tmp/random.dat") is None
+    assert group_key("/tmp/REFL_226642_3_2003_partial.txt") == "226642"
+
+
+def test_group_key_unknown():
+    from aure.instruments import group_key
+
+    assert group_key("/tmp/random.dat") is None
 
 
 # ----------------------------------------------------------------------

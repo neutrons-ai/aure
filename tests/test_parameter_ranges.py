@@ -167,3 +167,334 @@ def test_back_reflection_states_do_not_share_an_ambient_interface_name(data_file
     dupes = [n for n in names if names.count(n) > 1]
     assert len(names) == len(set(names)), f"duplicates: {dupes}"
     assert {"a dTHF interface", "b dTHF interface"} <= set(names)
+
+
+# ---------------------------------------------------------------------------
+# An unknown SLD must not be fenced into one half of a bimodal distribution
+# ---------------------------------------------------------------------------
+
+
+def test_an_unparsed_sld_gets_bounds_spanning_both_hd_clusters():
+    """A layer whose SLD nothing supplied must be free to reach either cluster.
+
+    Neutron SLDs are bimodal — protiated organics near 0.4, deuterated near
+    5.5, nothing in between. The seed lands mid-gap by necessity, so applying
+    the usual ±2.5 window to it produced (-0.5, 4.5) and excluded every
+    deuterated material. The bound, not the data, then decided what the layer
+    was made of.
+    """
+    from aure.nodes.modeling import _build_layers
+
+    layer = _build_layers({"layers": [{"name": "unknown", "thickness": 100.0}]}, {})[0]
+    assert layer["sld_min"] <= -0.5, layer
+    assert layer["sld_max"] >= 7.0, layer
+    # Both clusters reachable: a protiated organic and its deuterated form.
+    assert layer["sld_min"] < 0.4 < layer["sld_max"]
+    assert layer["sld_min"] < 6.4 < layer["sld_max"]
+
+
+def test_a_parsed_sld_keeps_the_narrow_window():
+    """The wide span is for ignorance only; a stated SLD still gets ±2.5."""
+    from aure.nodes.modeling import _build_layers
+
+    layer = _build_layers({"layers": [{"name": "dPS", "sld": 6.4}]}, {})[0]
+    assert layer["sld_min"] == pytest.approx(3.9)
+    assert layer["sld_max"] == pytest.approx(8.9)
+
+
+def test_feature_estimated_layers_span_both_clusters_too():
+    """Fringe counting says how many layers and how thick, not what they are."""
+    from aure.nodes.modeling import _build_layers
+
+    layer = _build_layers(
+        {}, {"estimated_n_layers": 1, "estimated_total_thickness": 200.0}
+    )[0]
+    assert layer["sld_min"] < 0.4 < layer["sld_max"]
+    assert layer["sld_min"] < 6.4 < layer["sld_max"]
+
+
+def test_the_default_substrate_needs_no_materials_database():
+    """`_get_substrate` used to import `aure.database` to look up a constant."""
+    import aure.nodes.modeling as modeling
+    from aure.nodes.modeling import _get_substrate
+
+    assert not hasattr(modeling, "get_sld")
+    assert _get_substrate({}, {})["sld"] == pytest.approx(2.07, abs=0.01)
+
+
+# ---------------------------------------------------------------------------
+# The 5 Å roughness floor is a default, not an assertion
+# ---------------------------------------------------------------------------
+
+
+def test_build_layers_does_not_inject_a_roughness_floor():
+    """`_build_layers` used to write `roughness_min: 5.0` into every layer.
+
+    That turned the builder's *default* floor into a *declared* bound, and
+    `_ranged` treats the two differently on purpose: a default yields to a
+    smaller declared roughness, a declared bound clamps it. So a parse that
+    said 2 Å was silently refitted from 5 Å with (5, 30) bounds, and no
+    iteration could get below the floor.
+    """
+    from aure.nodes.modeling import _build_layers
+
+    parsed = {"name": "SiO2", "sld": 3.47, "thickness": 15.0, "roughness": 2.0}
+    layer = _build_layers({"layers": [parsed]}, {})[0]
+    assert "roughness_min" not in layer, layer
+    assert layer["roughness"] == pytest.approx(2.0)
+
+
+def test_feature_estimated_layers_do_not_inject_a_floor_either():
+    from aure.nodes.modeling import _build_layers
+
+    layer = _build_layers(
+        {}, {"estimated_n_layers": 1, "estimated_total_thickness": 200.0}
+    )[0]
+    assert "roughness_min" not in layer, layer
+
+
+def test_a_sharp_parsed_interface_survives_into_the_fit(data_file):
+    """The default floor must yield to it, start value and bound together."""
+    from aure.nodes.modeling import _build_layers
+
+    parsed = {"name": "SiO2", "sld": 3.47, "thickness": 15.0, "roughness": 2.0}
+    layer = _build_layers({"layers": [parsed]}, {})[0]
+    problem = build_problem(_defn(data_file, layer))
+    par = _param(problem, "SiO2 interface")
+    assert par.value == pytest.approx(2.0)
+    assert par.prior.limits[0] == pytest.approx(2.0)
+
+
+def test_the_floor_still_binds_an_ordinary_interface(data_file):
+    """Dropping the hardcode must not drop the floor where it does not conflict."""
+    from aure.nodes.modeling import _build_layers
+
+    parsed = {"name": "film", "sld": 3.47, "thickness": 100.0, "roughness": 8.0}
+    layer = _build_layers({"layers": [parsed]}, {})[0]
+    problem = build_problem(_defn(data_file, layer))
+    assert _param(problem, "film interface").prior.limits[0] == pytest.approx(5.0)
+
+
+# ---------------------------------------------------------------------------
+# The ambient: bounded SLD, and no roughness of its own
+# ---------------------------------------------------------------------------
+
+
+#: One ordinary layer, so these tests can vary only the ambient.
+_CU_LAYER = {
+    "name": "Cu",
+    "sld": 6.5,
+    "thickness": 500.0,
+    "roughness": 7.0,
+    "roughness_max": 25.0,
+}
+
+
+def test_ambient_sld_bounds_are_honoured(data_file):
+    """`AmbientInfo` did not declare these, but `_build_sample` has always read
+    them — the ambient SLD is a fitted parameter whenever the ambient is not
+    air and its SLD is non-zero."""
+    defn = _defn(data_file, dict(_CU_LAYER))
+    defn["ambient"] = {"name": "dTHF", "sld": 6.2, "sld_min": 5.8, "sld_max": 6.5}
+    problem = build_problem(defn)
+    par = _param(problem, "dTHF rho")
+    assert par.prior.limits[0] == pytest.approx(5.8)
+    assert par.prior.limits[1] == pytest.approx(6.5)
+
+
+@pytest.mark.parametrize("back", [False, True], ids=["normal", "back_reflection"])
+def test_a_roughness_on_the_ambient_warns_rather_than_vanishing(
+    data_file, back, caplog
+):
+    """Nothing reads `ambient["roughness"]` in either geometry: an interface
+    belongs to the slab below it, so the outer surface is the outermost
+    layer's. A declaration that disappears without comment is the worst option.
+    """
+    defn = _defn(data_file, dict(_CU_LAYER))
+    defn["ambient"] = {"name": "dTHF", "sld": 6.2, "roughness": 22.0}
+    defn["back_reflection"] = back
+    with caplog.at_level("WARNING"):
+        build_problem(defn)
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("declares roughness" in m for m in messages), messages
+    # It must name the layer that actually owns the outer surface.
+    assert any("Cu" in m for m in messages), messages
+
+
+def test_a_clean_ambient_warns_about_nothing(data_file, caplog):
+    defn = _defn(data_file, dict(_CU_LAYER))
+    defn["ambient"] = {"name": "dTHF", "sld": 6.2, "sld_min": 5.8, "sld_max": 6.5}
+    with caplog.at_level("WARNING"):
+        build_problem(defn)
+    assert not [r for r in caplog.records if "ambient" in r.getMessage()]
+
+
+# ---------------------------------------------------------------------------
+# `interfaces`: naming a boundary instead of attaching it to a layer
+# ---------------------------------------------------------------------------
+
+
+def _layer(name, sld, thickness, roughness):
+    return {
+        "name": name,
+        "sld": sld,
+        "thickness": thickness,
+        "roughness": roughness,
+        "roughness_max": 40.0,
+    }
+
+
+_THREE_LAYERS = [
+    _layer("SiO2", 3.47, 15.0, 1.0),
+    _layer("Ti", -1.95, 40.0, 2.0),
+    _layer("Cu", 6.5, 500.0, 3.0),
+]
+
+
+def _stack_roughness(data_file, *, back, interfaces=None):
+    """Every slab's interface value, keyed by material, in stack order."""
+    defn = {
+        "substrate": {
+            "name": "Si",
+            "sld": 2.07,
+            "roughness": 9.0,
+            "roughness_max": 40.0,
+        },
+        "layers": _THREE_LAYERS,
+        "ambient": {"name": "dTHF", "sld": 6.2},
+        "data_file": data_file,
+        "back_reflection": back,
+        "intensity": {"value": 1.0, "min": 0.7, "max": 1.1, "fixed": False},
+    }
+    if interfaces is not None:
+        defn["interfaces"] = interfaces
+    sample = list(build_problem(defn).models)[0].sample
+    return {s.material.name: round(float(s.interface.value), 2) for s in sample}
+
+
+@pytest.mark.parametrize("back", [False, True], ids=["normal", "back_reflection"])
+def test_no_interfaces_block_changes_nothing(data_file, back):
+    """The block is opt-in. Every model that exists today omits it, so its
+    presence in the builder must be inert — including for the corpus, whose
+    layer-attached roughness compares like-for-like against reference refl1d
+    fits built with the same convention."""
+    assert _stack_roughness(data_file, back=back) == _stack_roughness(
+        data_file, back=back, interfaces=[]
+    )
+
+
+def test_a_named_interface_lands_on_the_owning_layer_either_way(data_file):
+    """The point of the block: one declaration, correct in both geometries.
+
+    `Ti.interface` is the Ti/Cu boundary in a normal stack; in back reflection
+    the stack is ambient-first and that same boundary is `Cu.interface`.
+    """
+    declared = [
+        {"below": "Ti", "above": "Cu", "roughness": 30.0, "roughness_max": 60.0}
+    ]
+    front = _stack_roughness(data_file, back=False, interfaces=declared)
+    back = _stack_roughness(data_file, back=True, interfaces=declared)
+    assert front["Ti"] == pytest.approx(30.0)
+    assert front["Cu"] == pytest.approx(3.0)  # untouched
+    assert back["Cu"] == pytest.approx(30.0)
+    assert back["Ti"] == pytest.approx(2.0)  # untouched
+
+
+def test_the_substrate_interface_becomes_reachable_in_back_reflection(data_file):
+    """`substrate.roughness` is discarded in back reflection — the substrate's
+    slab is the unused top one — so that boundary has no other route."""
+    declared = [
+        {
+            "below": "Si",
+            "above": "SiO2",
+            "roughness": 0.5,
+            "roughness_min": 0.0,
+            "roughness_max": 5.0,
+        }
+    ]
+    back = _stack_roughness(data_file, back=True, interfaces=declared)
+    assert back["SiO2"] == pytest.approx(0.5)
+
+
+@pytest.mark.parametrize(
+    "entry,message",
+    [
+        ({"below": "Ti", "above": "Cu"}, "declares no `roughness`"),
+        ({"below": "Ti", "roughness": 5.0}, "needs both `below` and `above`"),
+        ({"below": "gold", "above": "Cu", "roughness": 5.0}, "not in this model"),
+        ({"below": "SiO2", "above": "Cu", "roughness": 5.0}, "not adjacent"),
+    ],
+    ids=["no-roughness", "one-sided", "unknown-material", "non-adjacent"],
+)
+def test_a_malformed_interface_declaration_is_refused(data_file, entry, message):
+    """Silently ignoring one would be the failure mode this block exists to
+    remove."""
+    with pytest.raises(ValueError, match=message):
+        _stack_roughness(data_file, back=True, interfaces=[entry])
+
+
+# ---------------------------------------------------------------------------
+# ROUGHNESS_MAX_OUTER displaces the model's ceiling — say so
+# ---------------------------------------------------------------------------
+
+
+def test_the_override_replaces_rather_than_widens(monkeypatch):
+    """Deliberate: on the reference corpus the outer roughness reaches the cap
+    in 108 of 835 fits where the expert value is 46-200 Å, so widening it would
+    let those fits run further from the reference, not closer."""
+    from aure.nodes.model_builder import _outer_roughness_max
+
+    monkeypatch.setenv("ROUGHNESS_MAX_OUTER", "250")
+    assert _outer_roughness_max([{"name": "SEI", "roughness_max": 400.0}]) == 250.0
+
+
+@pytest.mark.parametrize(
+    "layers,env,expected",
+    [
+        ([{"name": "SEI", "roughness_max": 400.0}], None, 400.0),
+        ([{"name": "SEI"}], None, 30.0),
+        ([], None, 30.0),
+        ([{"name": "SEI", "roughness_max": "wide"}], None, 30.0),
+        ([{"name": "SEI", "roughness_max": 400.0}], "not-a-number", 400.0),
+    ],
+    ids=["declared", "default", "no-layers", "junk-declared", "junk-env"],
+)
+def test_outer_ceiling_fallbacks_are_unchanged(monkeypatch, layers, env, expected):
+    from aure.nodes.model_builder import _outer_roughness_max
+
+    monkeypatch.delenv("ROUGHNESS_MAX_OUTER", raising=False)
+    if env is not None:
+        monkeypatch.setenv("ROUGHNESS_MAX_OUTER", env)
+    assert _outer_roughness_max(layers) == expected
+
+
+def test_the_displacement_is_detectable(monkeypatch):
+    """`evaluation` turns this into an issue, so a refiner is told its
+    declaration had no effect instead of re-raising it every iteration."""
+    from aure.nodes.model_builder import outer_ceiling_displacement
+
+    monkeypatch.setenv("ROUGHNESS_MAX_OUTER", "250")
+    model = {"layers": [{"name": "Cu"}, {"name": "SEI", "roughness_max": 400.0}]}
+    assert outer_ceiling_displacement(model) == (250.0, 400.0, "SEI")
+    # Silent when the two agree, when nothing is declared, and with no env.
+    assert outer_ceiling_displacement({"layers": [{"roughness_max": 250.0}]}) is None
+    assert outer_ceiling_displacement({"layers": [{"name": "SEI"}]}) is None
+    monkeypatch.delenv("ROUGHNESS_MAX_OUTER")
+    assert outer_ceiling_displacement(model) is None
+
+
+def test_an_explicit_interface_beats_the_override(data_file, monkeypatch):
+    """The model-side route: naming the outer boundary sets both its bounds,
+    which the env cannot reach — and fixes the hardcoded floor of 0 with it."""
+    monkeypatch.setenv("ROUGHNESS_MAX_OUTER", "250")
+    declared = [
+        {"below": "Cu", "above": "dTHF", "roughness": 40.0, "roughness_max": 400.0}
+    ]
+    defn = _defn(data_file, dict(_CU_LAYER))
+    defn["ambient"] = {"name": "dTHF", "sld": 6.2}
+    defn["back_reflection"] = True
+    capped = list(build_problem(dict(defn)).models)[0].sample[0].interface
+    assert tuple(float(x) for x in capped.prior.limits) == (0.0, 250.0)
+    defn["interfaces"] = declared
+    named = list(build_problem(defn).models)[0].sample[0].interface
+    assert float(named.prior.limits[1]) == pytest.approx(400.0)

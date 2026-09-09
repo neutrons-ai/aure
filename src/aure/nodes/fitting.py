@@ -23,9 +23,16 @@ from .model_builder import (
     build_multi_problem,
     build_states_problem,
     data_chisq,
+    bic_inputs,
     needs_states_problem,
 )
-from .evaluation import _count_free_params, _compute_bic, _get_chi2_min
+from .evaluation import (
+    BIC_FORMULA,
+    _compute_bic,
+    _get_chi2_min,
+    bic_baseline_is_stale,
+    bic_inputs_for,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -128,31 +135,28 @@ def fitting_node(state: ReflectivityState) -> Dict[str, Any]:
             updates["best_model"] = copy.deepcopy(model)
             logger.info(f"[FITTING] New best χ² = {result['chi_squared']:.3f}")
 
-        # Update best BIC (complexity-penalized score)
+        # Update best BIC (complexity-penalized score).
+        # n and k come off the fit result, which the extractor stamped from the
+        # bumps problem: `n` is every point of every dataset of every state and
+        # `k` is bumps' own free-parameter count. The single source matters —
+        # `evaluation` resolves them the same way, and the two nodes used to
+        # derive them differently and then compare the results.
         if isinstance(model, dict):
-            if is_multi_state:
-                # Multi-state: count unique free Parameters across all states
-                # (avoid double-counting tied params); count data points
-                # across every dataset of every state.
-                n_params = result.get("_n_free_params") or _count_free_params(model)
-                n_data = 0
-                for st in model.get("states") or []:
-                    for ds in st.get("data_files") or []:
-                        q = ds.get("Q") or []
-                        n_data += len(q)
-                # Fall back to flattened state['Q'] when per-state Q not loaded
-                if n_data == 0:
-                    n_data = len(state.get("Q", []))
-            else:
-                n_data = len(state.get("Q", []))
-                n_params = _count_free_params(model)
-            bic = _compute_bic(result["chi_squared"], n_data, n_params)
+            chi2_total, n_data, n_params = bic_inputs_for(result, state, model)
+            bic = _compute_bic(chi2_total, n_data, n_params)
             result["bic"] = bic
-            logger.info(f"[FITTING] BIC = {bic:.1f} (k={n_params}, n={n_data})")
+            logger.info(
+                f"[FITTING] BIC = {bic:.1f} "
+                f"(χ²_total={chi2_total:.1f}, k={n_params}, n={n_data})"
+            )
             # BIC is monotone in χ², so a sub-floor fit wins here for the same
             # untrustworthy reason — and this guardrail has no slack and marks the
             # tried hypothesis `rejected`, so it does more damage than the χ² one.
             best_bic = state.get("best_bic")
+            if bic_baseline_is_stale(state):
+                # Resumed across a change of BIC convention — the stored value is
+                # on a different scale, so this fit re-establishes the baseline.
+                best_bic = None
             if _wins_baseline(
                 result["chi_squared"],
                 state.get("best_bic_chi2"),
@@ -163,6 +167,7 @@ def fitting_node(state: ReflectivityState) -> Dict[str, Any]:
                 updates["best_bic"] = bic
                 updates["best_bic_model"] = copy.deepcopy(model)
                 updates["best_bic_chi2"] = result["chi_squared"]
+                updates["bic_formula"] = BIC_FORMULA
                 logger.info(f"[FITTING] New best BIC = {bic:.1f}")
 
         # Format message
@@ -759,7 +764,7 @@ def _extract_bumps_results(
         except Exception as e:
             logger.debug(f"[FITTING] Could not compute residuals: {e}")
 
-    return FitResult(
+    fr = FitResult(
         iteration=iteration,
         method=method,
         chi_squared=chi_squared,
@@ -777,6 +782,11 @@ def _extract_bumps_results(
         issues=[],
         suggestions=[],
     )
+    # Everything BIC needs, read straight off the problem (see
+    # model_builder.bic_inputs). Recorded rather than re-derived downstream so
+    # `evaluation` scores this fit with the same n and k that produced it.
+    fr.update(bic_inputs(problem))  # type: ignore[typeddict-item]
+    return fr
 
 
 def _extract_multi_bumps_results(
@@ -917,7 +927,7 @@ def _extract_multi_bumps_results(
     # Read SLD profile
     sld_z, sld_rho = _read_profile_dat(export_dir, getattr(problem, "name", None))
 
-    return FitResult(
+    fr = FitResult(
         iteration=iteration,
         method=method,
         chi_squared=chi_squared,
@@ -935,6 +945,11 @@ def _extract_multi_bumps_results(
         issues=[],
         suggestions=[],
     )
+    # Everything BIC needs, read straight off the problem (see
+    # model_builder.bic_inputs). Recorded rather than re-derived downstream so
+    # `evaluation` scores this fit with the same n and k that produced it.
+    fr.update(bic_inputs(problem))  # type: ignore[typeddict-item]
+    return fr
 
 
 def _extract_states_bumps_results(
@@ -1105,8 +1120,12 @@ def _extract_states_bumps_results(
         issues=[],
         suggestions=[],
     )
-    # Pass dedup'd free-param count through to fitting_node for BIC.
-    fr["_n_free_params"] = n_free_params  # type: ignore[typeddict-unknown-key]
+    # Everything BIC needs, read straight off the problem. `_n_free_params`
+    # from bic_inputs is bumps' own free-parameter vector length, which agrees
+    # with the id()-dedup above and additionally excludes expression-derived
+    # parameters.
+    fr.update(bic_inputs(problem))  # type: ignore[typeddict-item]
+    fr.setdefault("_n_free_params", n_free_params)  # type: ignore[typeddict-item]
     return fr
 
 

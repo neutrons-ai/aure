@@ -11,10 +11,6 @@ An optional YAML file (``--config config.yaml``) lets the user inject:
   (each grouping data files that share one physical sample).
 * **shared_parameters** / **unshared_parameters** – whitelist or
   blacklist of layer attributes tied across states. Mutually exclusive.
-* **derived_parameters** – reparametrization: fit a combination of raw
-  parameters (a surface excess, a volume fraction) and derive a raw one
-  from it. See ``aure.state.DerivedParameter``. Gated by
-  **allow_derived_parameters** (default off) / ``ALLOW_DERIVED_PARAMETERS``.
 
 See ``aure_config.example.yaml`` in the repository root for the full schema.
 """
@@ -22,9 +18,10 @@ See ``aure_config.example.yaml`` in the repository root for the full schema.
 from __future__ import annotations
 
 import logging
-import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TypedDict
+
+from . import instruments
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +36,6 @@ class UserConfig(TypedDict, total=False):
     shared_parameters: List[str]
     unshared_parameters: List[str]
     distinct_sample: bool  # co-refined states are distinct physical samples
-    derived_parameters: List[dict]  # reparametrization (DerivedParameter-shaped)
-    allow_derived_parameters: bool  # opt-in gate for the above (default False)
 
 
 _EMPTY: UserConfig = {
@@ -51,8 +46,6 @@ _EMPTY: UserConfig = {
     "shared_parameters": [],
     "unshared_parameters": [],
     "distinct_sample": False,
-    "derived_parameters": [],
-    "allow_derived_parameters": False,
 }
 
 
@@ -107,13 +100,6 @@ def load_user_config(path: Optional[str | Path] = None) -> UserConfig:
 
     cfg["shared_parameters"] = _as_str_list(raw.get("shared_parameters"))
     cfg["unshared_parameters"] = _as_str_list(raw.get("unshared_parameters"))
-    cfg["derived_parameters"] = _parse_derived_parameters(
-        raw.get("derived_parameters")
-    )
-    cfg["allow_derived_parameters"] = derived_parameters_enabled(
-        raw.get("allow_derived_parameters")
-    )
-    check_derived_parameters_allowed(cfg, source=str(path))
     if cfg["shared_parameters"] and cfg["unshared_parameters"]:
         raise ConfigError(
             "shared_parameters and unshared_parameters are mutually exclusive; "
@@ -131,7 +117,10 @@ def load_user_config(path: Optional[str | Path] = None) -> UserConfig:
     if cfg["model_constraints"]:
         logger.info("[CONFIG]   %d model constraints", len(cfg["model_constraints"]))
     if cfg["states"]:
-        kinds = ", ".join(f"{s['name']}({s['_kind']})" for s in cfg["states"])
+        kinds = ", ".join(
+            f"{s['name']}({s['_kind']}/{s.get('_instrument') or 'generic'})"
+            for s in cfg["states"]
+        )
         logger.info("[CONFIG]   %d states: %s", len(cfg["states"]), kinds)
 
     return cfg
@@ -154,11 +143,10 @@ def _empty_config() -> UserConfig:
 # ------------------------------------------------------------------
 
 
-# Filename heuristics (REF_L convention) — keep loose; intake re-validates
-# from the actual file headers.
-_COMBINED_RE = re.compile(r"_combined_data_auto\.txt$", re.IGNORECASE)
-_PARTIAL_RE = re.compile(r"_(\d+)_(\d+)_partial\.txt$", re.IGNORECASE)
-_PARTIAL_SETID_RE = re.compile(r"REFL_(\d+)_\d+_\d+_partial\.txt$", re.IGNORECASE)
+# File classification is delegated to the instrument registry
+# (:mod:`aure.instruments`) so a facility can add its own conventions without
+# editing this module. The REF_L patterns that used to live here are in
+# ``instruments/ref_l.py``, unchanged.
 
 _NUISANCE_KEYS = ("theta_offset", "sample_broadening")
 
@@ -273,19 +261,65 @@ def _parse_states(
 
         kind = _detect_kind(name, data_files)
 
-        # Per-state nuisance parameters are partials-only.
+        # Per-state nuisance parameters describe one angle's optics, so they
+        # are only meaningful on a file the instrument classifies as a single
+        # measurement. Ask the instrument rather than the filename: that is
+        # what lets another facility declare its own rule, and it turns the
+        # previously silent "no instrument recognised this file" case into an
+        # error that says so.
+        resolved = [
+            (Path(ds["file"]).name, instruments.resolve_by_name(ds["file"]))
+            for ds in data_files
+        ]
+        roles = [(fn, inst, inst.file_role(fn)) for fn, inst in resolved]
         for key in _NUISANCE_KEYS:
             if key in entry and entry[key] not in (False, None):
-                if kind != "partials":
-                    raise ConfigError(
-                        f"State {name!r}: `{key}` is only valid for partials states "
-                        f"(detected kind: {kind})."
+                offenders = [
+                    (fn, inst.name, role)
+                    for fn, inst, role in roles
+                    if not inst.role_supports_nuisance(role)
+                ]
+                if offenders:
+                    detail = "; ".join(
+                        f"{fn} → {iname} reports {role!r}"
+                        for fn, iname, role in offenders
                     )
+                    hint = ""
+                    if all(role == instruments.UNKNOWN for _, _, role in offenders):
+                        hint = (
+                            " No registered instrument recognises these files, so "
+                            "AuRE cannot tell whether they are single-angle "
+                            "measurements. Add an instrument for this format (see "
+                            "docs/instruments.md) or set AURE_INSTRUMENT."
+                        )
+                    raise ConfigError(
+                        f"State {name!r}: `{key}` is only valid for partials "
+                        f"(single-angle) files: {detail}.{hint}"
+                    )
+
+        # The unrecognised-file branch used to be silent: an unknown filename
+        # was quietly counted as combined. Say it out loud — a run whose data
+        # no instrument claims is getting default conventions, and that is
+        # worth knowing before the fit rather than after.
+        unclaimed = [fn for fn, inst, role in roles if role == instruments.UNKNOWN]
+        if unclaimed:
+            logger.warning(
+                "[CONFIG] State %r: no registered instrument recognises %s — "
+                "treating as a combined curve with default conventions "
+                "(dQ as FWHM, no incident angle). Known instruments: %s.",
+                name,
+                ", ".join(unclaimed),
+                ", ".join(i.name for i in instruments.registered()),
+            )
 
         state: dict = {
             "name": name,
             "data_files": data_files,
             "_kind": kind,
+            # Which instrument(s) claimed this state's files. Private, so it
+            # is stripped on setup dump, but it is checkpointed with the state
+            # — a run's own record of how its data was interpreted.
+            "_instrument": ",".join(sorted({inst.name for _, inst in resolved})),
         }
         for opt in (
             "extra_description",
@@ -312,22 +346,28 @@ def _parse_states(
 
 
 def _detect_kind(state_name: str, data_files: List[dict]) -> str:
-    """Heuristically classify a state's files as combined or partials.
+    """Classify a state's files as ``combined`` or ``partials``.
 
-    Mixed kinds within one state raise ConfigError.  Multiple partial
-    files must share a single set_id.  Unknown filenames are tolerated
-    (treated as combined) since intake re-validates from headers.
+    The per-file role comes from the file's resolved instrument
+    (:func:`aure.instruments.file_role`), by filename only — this runs while
+    parsing a setup file, so the data need not be readable yet, and intake
+    re-validates from the actual headers later.
+
+    Mixed roles within one state raise ConfigError. Partial files must share
+    one group key (a REF_L set id, or whatever the instrument uses). A file no
+    instrument claims reports :data:`~aure.instruments.UNKNOWN` and is counted
+    as combined, which is what an unrecognised filename has always done.
     """
     combined = []
     partials = []
     for ds in data_files:
-        name = Path(ds["file"]).name
-        if _PARTIAL_RE.search(name):
-            partials.append(name)
-        elif _COMBINED_RE.search(name):
-            combined.append(name)
+        path = ds["file"]
+        role = instruments.file_role(path)
+        if role == instruments.PARTIAL:
+            partials.append(path)
         else:
-            combined.append(name)  # tolerate unknown — let intake decide
+            # COMBINED, or UNKNOWN — tolerated as combined; intake decides.
+            combined.append(path)
 
     if combined and partials:
         raise ConfigError(
@@ -335,15 +375,15 @@ def _detect_kind(state_name: str, data_files: List[dict]) -> str:
         )
 
     if partials:
-        set_ids = set()
-        for name in partials:
-            m = _PARTIAL_SETID_RE.search(name)
-            if m:
-                set_ids.add(m.group(1))
-        if len(set_ids) > 1:
+        group_keys = {
+            key
+            for key in (instruments.group_key(path) for path in partials)
+            if key is not None
+        }
+        if len(group_keys) > 1:
             raise ConfigError(
                 f"State {state_name!r}: partial files must share one set_id "
-                f"(found: {sorted(set_ids)})."
+                f"(found: {sorted(group_keys)})."
             )
         return "partials"
 
@@ -424,122 +464,6 @@ def states_from_config(cfg: Optional[UserConfig]) -> List[dict]:
         return []
     states = cfg.get("states") or []
     return [dict(s) for s in states]
-
-
-_DERIVED_FLAG_ENV = "ALLOW_DERIVED_PARAMETERS"
-_TRUTHY = ("1", "true", "yes", "on")
-
-
-def derived_parameters_enabled(explicit: Any = None) -> bool:
-    """Is reparametrization (``derived_parameters``) enabled for this run?
-
-    **Off by default.** A reparametrized model asks more of the LLM than a
-    plain layer stack: derived layer attributes are not fit parameters, their
-    numbers are computed rather than fitted, and the layers they reference must
-    not be removed. A model that does not hold all that in mind will "fix" a
-    derived SLD or refine the layer away, and the run degrades in a way that is
-    hard to read from the outside. So the whole feature — the config key, the
-    prompt rule, the skill — stays out of the way unless it is asked for.
-
-    An explicit ``allow_derived_parameters`` in the config wins; otherwise the
-    ``ALLOW_DERIVED_PARAMETERS`` environment variable; otherwise False.
-    """
-    if explicit is not None:
-        return bool(explicit)
-    import os
-
-    return os.environ.get(_DERIVED_FLAG_ENV, "").strip().lower() in _TRUTHY
-
-
-def check_derived_parameters_allowed(cfg: Any, *, source: str = "config") -> None:
-    """Refuse a config that declares reparametrizations while the gate is off.
-
-    Ignoring the block would be worse than refusing it: the run would fit a
-    model measurably different from the one that was described, and nothing in
-    the report would say why the excess it was supposed to constrain came out
-    unconstrained.
-    """
-    if not (cfg or {}).get("derived_parameters"):
-        return
-    if (cfg or {}).get("allow_derived_parameters"):
-        return
-    names = ", ".join(
-        str(d.get("name")) for d in cfg["derived_parameters"]  # type: ignore[index]
-    )
-    raise ConfigError(
-        f"{source}: derived_parameters ({names}) are declared, but "
-        f"reparametrization is off by default because it asks more of the "
-        f"model than a plain layer stack does. Enable it with "
-        f"`allow_derived_parameters: true` in this file, or "
-        f"{_DERIVED_FLAG_ENV}=1 in the environment."
-    )
-
-
-def _parse_derived_parameters(raw: Any) -> List[dict]:
-    """Shape-check the ``derived_parameters:`` block.
-
-    Only the shape is checked here — whether the names and expressions resolve
-    against the model is checked in the modeling node, which is the first point
-    that knows the layer stack. What is caught here is what would otherwise
-    produce a confusing failure much later: a scalar where a list belongs, a
-    missing ``name``, a range that is not a range.
-    """
-    if not raw:
-        return []
-    if not isinstance(raw, list):
-        raise ConfigError("`derived_parameters:` must be a list of mappings.")
-    out: List[dict] = []
-    seen: set[str] = set()
-    for i, entry in enumerate(raw):
-        if not isinstance(entry, dict):
-            raise ConfigError(
-                f"derived_parameters[{i}] must be a mapping, got "
-                f"{type(entry).__name__}."
-            )
-        name = entry.get("name")
-        if not name or not isinstance(name, str):
-            raise ConfigError(f"derived_parameters[{i}] is missing a non-empty `name`.")
-        if name in seen:
-            raise ConfigError(f"Duplicate derived parameter name: {name!r}.")
-        seen.add(name)
-        free = entry.get("free") or {}
-        if not isinstance(free, dict):
-            raise ConfigError(f"derived_parameters[{name}].free must be a mapping.")
-        for key in ("min", "max"):
-            if key not in free:
-                raise ConfigError(
-                    f"derived_parameters[{name}].free is missing `{key}` — a "
-                    f"derived parameter has no bounds of its own to fall back on."
-                )
-        try:
-            lo, hi = float(free["min"]), float(free["max"])
-        except (TypeError, ValueError) as exc:
-            raise ConfigError(
-                f"derived_parameters[{name}].free min/max must be numbers."
-            ) from exc
-        if lo >= hi:
-            raise ConfigError(f"derived_parameters[{name}]: free.min must be < max.")
-        assign = entry.get("assign") or {}
-        if not isinstance(assign, dict):
-            raise ConfigError(
-                f"derived_parameters[{name}].assign must be a mapping of "
-                f'"<layer>.<attr>" to an expression.'
-            )
-        guards = entry.get("keep_physical") or []
-        if isinstance(guards, str):
-            guards = [guards]
-        if not isinstance(guards, list):
-            raise ConfigError(
-                f"derived_parameters[{name}].keep_physical must be a list."
-            )
-        spec: dict = {"name": name, "free": dict(free), "assign": dict(assign)}
-        if guards:
-            spec["keep_physical"] = [str(g) for g in guards]
-        for opt in ("source", "tied", "states"):
-            if opt in entry:
-                spec[opt] = entry[opt]
-        out.append(spec)
-    return out
 
 
 def _as_str_list(value: Any) -> List[str]:

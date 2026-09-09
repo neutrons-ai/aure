@@ -77,8 +77,8 @@
     <rect width="340" height="32" rx="10" fill="#7c3aed"/>
     <rect y="22" width="340" height="10" fill="#7c3aed"/>
     <text x="16" y="22" font-size="13" font-weight="700" fill="#ffffff">ITERATION / COMPLEXITY CONTEXT</text>
-    <text x="16" y="54" font-size="11" font-family="ui-monospace, 'SF Mono', Menlo, monospace" fill="#0f172a">_compute_bic = n·ln(χ²) + k·ln(n)</text>
-    <text x="16" y="68" font-size="10" fill="#64748b">  → BIC, with k = _count_free_params()</text>
+    <text x="16" y="54" font-size="11" font-family="ui-monospace, 'SF Mono', Menlo, monospace" fill="#0f172a">_compute_bic = χ²_total + k·ln(n)</text>
+    <text x="16" y="68" font-size="10" fill="#64748b">  → BIC, inputs via bic_inputs_for()</text>
     <text x="16" y="86" font-size="11" font-family="ui-monospace, 'SF Mono', Menlo, monospace" fill="#0f172a">best_bic, n_params, n_layers</text>
     <text x="16" y="104" font-size="11" font-family="ui-monospace, 'SF Mono', Menlo, monospace" fill="#0f172a">_format_trajectory(fit_results)</text>
     <text x="16" y="118" font-size="10" fill="#64748b">  → χ²/BIC per past iteration</text>

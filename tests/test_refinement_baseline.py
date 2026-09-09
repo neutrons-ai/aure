@@ -205,3 +205,35 @@ def test_build_initial_model_snapshots_baseline_deepcopied():
     # Deepcopy: mutating current_model must not reach the baseline snapshot.
     out["current_model"]["layers"][0]["thickness"] = 9999.0
     assert out["baseline_model"]["layers"][0]["thickness"] == 500.0
+
+
+# ---------------------------------------------------------------------------
+# `roughness_min` is declarable from a refinement
+# ---------------------------------------------------------------------------
+
+
+def test_refinement_schema_offers_roughness_min():
+    """It was absent, so no iteration could state a floor even though the
+    builder honours one. `roughness_max` was there all along."""
+    prompt = format_model_refinement_prompt_json(
+        current_model=_baseline(),
+        sample_description="Cu on Si in electrolyte",
+        fit_result=_fit_result(),
+        features={},
+    )
+    assert '"roughness_min"' in prompt
+    assert '"roughness_max"' in prompt
+
+
+def test_refinement_warns_against_pinning_a_sharp_interface():
+    """Handing the LLM the field invites `roughness_min: 5` "to be safe", which
+    is exactly the hardcoded floor that was just removed. Rule 4a says the
+    default already yields to a smaller declared roughness."""
+    prompt = format_model_refinement_prompt_json(
+        current_model=_baseline(),
+        sample_description="Cu on Si in electrolyte",
+        fit_result=_fit_result(),
+        features={},
+    )
+    assert "roughness_min` is OPTIONAL" in prompt
+    assert "YIELDS to a smaller `roughness`" in prompt

@@ -3,18 +3,13 @@ Command-line interface for the Reflectivity Analysis Workflow.
 
 Usage:
     python -m aure.cli analyze data.dat "100 nm polystyrene on silicon"
-    python -m aure.cli lookup-sld silicon gold D2O
-    python -m aure.cli mcp-server
 """
 
 import contextlib
 import json
 import logging
 import math
-import subprocess
 import sys
-import tempfile
-import urllib.request
 from pathlib import Path
 from typing import Any, Optional
 
@@ -32,64 +27,6 @@ from .llm import (  # noqa: E402
     LLMTimeoutError,
     get_llm_timeout,
 )
-
-
-_ALCF_AUTH_SCRIPT_URL = (
-    "https://raw.githubusercontent.com/argonne-lcf/inference-endpoints/"
-    "refs/heads/main/inference_auth_token.py"
-)
-
-
-def _alcf_authenticate() -> bool:
-    """Download the ALCF auth helper and run ``authenticate``.
-
-    Returns True if the script appeared to succeed.
-    """
-    with tempfile.TemporaryDirectory() as tmp:
-        script = Path(tmp) / "inference_auth_token.py"
-        click.echo()
-        click.echo("    Downloading inference_auth_token.py …", nl=False)
-        try:
-            urllib.request.urlretrieve(_ALCF_AUTH_SCRIPT_URL, script)
-            click.echo(click.style(" done", fg="green"))
-        except Exception as exc:
-            click.echo(click.style(f" failed: {exc}", fg="red"))
-            return False
-
-        click.echo("    Launching Globus authentication (a browser window may open)…")
-        click.echo()
-        result = subprocess.run(
-            [sys.executable, str(script), "authenticate"],
-        )
-        if result.returncode != 0:
-            click.echo()
-            click.echo(
-                click.style("    Authentication script exited with an error.", fg="red")
-            )
-            return False
-
-        click.echo()
-        click.echo(click.style("    ✓ Authentication complete.", fg="green"))
-        click.echo("    You can now obtain a token by running:")
-        click.echo(f"      python {script.name} get_access_token")
-        click.echo("    or set ALCF_ACCESS_TOKEN in your environment.")
-        return True
-
-
-def _show_alcf_auth_hint(*, offer_fix: bool = False) -> None:
-    """Print ALCF authentication instructions, optionally offering to run them."""
-    if offer_fix:
-        if click.confirm(
-            "    Download and run the ALCF auth script now?", default=True
-        ):
-            _alcf_authenticate()
-            return
-
-    click.echo("      # Download the authentication helper script")
-    click.echo(f"      wget {_ALCF_AUTH_SCRIPT_URL}")
-    click.echo()
-    click.echo("      # Authenticate with your Globus account")
-    click.echo("      python inference_auth_token.py authenticate")
 
 
 def _check_llm_status(
@@ -124,7 +61,7 @@ def _check_llm_status(
         if not quiet:
             click.echo("    Testing connection...", nl=False)
         # Suppress noisy provider-level warnings during the test call
-        # (e.g. ALCF globus_sdk fallback messages).
+        # (e.g. provider-level credential or retry warnings).
         _llm_logger = logging.getLogger("aure.llm")
         _old_level = _llm_logger.level
         _llm_logger.setLevel(logging.CRITICAL)
@@ -251,10 +188,7 @@ def cli():
 @cli.command("check-llm")
 @click.option("--json", "output_json", is_flag=True, help="Output as JSON")
 @click.option("--no-test", is_flag=True, help="Skip the live connection test")
-@click.option(
-    "--fix", is_flag=True, help="Attempt to fix issues (e.g. download ALCF auth script)"
-)
-def check_llm(output_json: bool, no_test: bool, fix: bool):
+def check_llm(output_json: bool, no_test: bool):
     """
     Check LLM configuration and connectivity.
 
@@ -262,13 +196,9 @@ def check_llm(output_json: bool, no_test: bool, fix: bool):
     are present, and (unless --no-test) sends a tiny test prompt to
     verify the connection works end-to-end.
 
-    Use --fix to automatically download and run the ALCF authentication
-    helper when the provider is 'alcf' and credentials are missing or
-    expired.
-
     \b
     Environment variables used:
-        LLM_PROVIDER     openai | gemini | alcf | local
+        LLM_PROVIDER     openai | gemini | local
         LLM_MODEL        model name (default depends on provider)
         LLM_API_KEY      API key (or OPENAI_API_KEY / GEMINI_API_KEY)
         LLM_BASE_URL     base URL (required for 'local' provider)
@@ -280,20 +210,13 @@ def check_llm(output_json: bool, no_test: bool, fix: bool):
         aure check-llm
         aure check-llm --json
         aure check-llm --no-test
-        aure check-llm --fix
     """
     from .llm.config import get_llm_config
-    import os
 
     config = get_llm_config()
     info = get_llm_info()
     has_key = bool(config.get("api_key"))
-
-    # For ALCF the credential is an access token, not an API key
-    if config["provider"] == "alcf":
-        has_credential = bool(os.environ.get("ALCF_ACCESS_TOKEN"))
-    else:
-        has_credential = has_key
+    has_credential = has_key
 
     if not output_json:
         click.echo()
@@ -302,19 +225,11 @@ def check_llm(output_json: bool, no_test: bool, fix: bool):
         click.echo()
         click.echo(f"    Provider:    {config['provider'] or '(not set)'}")
         click.echo(f"    Model:       {config['model']}")
-        if config["provider"] == "alcf":
-            has_token = bool(os.environ.get("ALCF_ACCESS_TOKEN"))
-            click.echo(
-                f"    Token:       {'••••' + os.environ['ALCF_ACCESS_TOKEN'][-4:] if has_token else click.style('NOT SET', fg='red')}"
-            )
-            click.echo(f"    ALCF cluster: {config.get('alcf_cluster', 'sophia')}")
-            click.echo(f"    Base URL:    {info.get('base_url', '(unknown)')}")
-        else:
-            click.echo(
-                f"    API key:     {'••••' + config['api_key'][-4:] if has_key else click.style('NOT SET', fg='red')}"
-            )
-            if config.get("base_url"):
-                click.echo(f"    Base URL:    {config['base_url']}")
+        click.echo(
+            f"    API key:     {'••••' + config['api_key'][-4:] if has_key else click.style('NOT SET', fg='red')}"
+        )
+        if config.get("base_url"):
+            click.echo(f"    Base URL:    {config['base_url']}")
         click.echo(f"    Timeout:     {get_llm_timeout()}s")
         click.echo(f"    Temperature: {config['temperature']}")
         click.echo()
@@ -326,22 +241,19 @@ def check_llm(output_json: bool, no_test: bool, fix: bool):
             ok, msg = False, "LLM not available"
             click.echo(click.style("  ✗ LLM not available", fg="red", bold=True))
             click.echo()
-            if config["provider"] == "alcf":
-                click.echo("    Authenticate with ALCF to obtain an access token:")
-                click.echo()
-                _show_alcf_auth_hint(offer_fix=fix)
-                click.echo()
-                click.echo("    Then set the token:")
-                click.echo("      export ALCF_ACCESS_TOKEN=<your-token>")
-            elif config["provider"] in ("openai", "gemini") and not has_key:
+            if config["provider"] in ("openai", "gemini") and not has_key:
                 click.echo("    Set an API key:")
                 click.echo("      export LLM_API_KEY=<your-key>")
                 click.echo("    or add to .env:")
                 click.echo(f"      LLM_PROVIDER={config['provider']}")
                 click.echo("      LLM_API_KEY=<your-key>")
             elif config["provider"] == "local" and not config.get("base_url"):
-                click.echo("    Set a base URL for local provider:")
+                click.echo("    Set a base URL for the local provider:")
                 click.echo("      export LLM_BASE_URL=http://localhost:11434/v1")
+                click.echo("    Any OpenAI-compatible endpoint works here, including a")
+                click.echo(
+                    "    remote facility inference API; set LLM_API_KEY to its token."
+                )
             click.echo()
     elif no_test:
         ok, msg = True, "Credentials present (skipped live test)"
@@ -359,16 +271,6 @@ def check_llm(output_json: bool, no_test: bool, fix: bool):
                 click.echo(click.style(" ✓ Connected", fg="green"))
             else:
                 click.echo(click.style(f" ✗ {msg}", fg="red"))
-                if config["provider"] == "alcf":
-                    click.echo()
-                    click.echo(
-                        click.style(
-                            "    ALCF tokens expire periodically. Re-authenticate:",
-                            fg="yellow",
-                        )
-                    )
-                    click.echo()
-                    _show_alcf_auth_hint(offer_fix=fix)
             click.echo()
 
     if output_json:
@@ -488,12 +390,6 @@ def analyze(
             format="%(message)s",
             stream=sys.stderr,
         )
-        for module in [
-            "agent.nodes.fitting",
-            "agent.nodes.evaluation",
-            "agent.nodes.refinement",
-        ]:
-            logging.getLogger(module).setLevel(logging.INFO)
 
     from .setup import (
         SetupConfig,
@@ -764,30 +660,6 @@ def analyze(
         _print_analysis_results(result, output_dir)
 
 
-def _run_pinned_state(refl1d_path: Path) -> tuple:
-    """``(state, source)`` for the run that produced a refl1d export directory.
-
-    The export lives at ``<run>/refl1d_output/fit_iterN_method``, so the run's
-    ``final_state.json`` is two levels up. It carries the ``chi2_max`` / ``chi2_min``
-    the run was launched with, which is what its fits should be judged against.
-
-    Best-effort by design: a directory inspected out of context, a truncated file, or
-    one predating the pinned window all fall back to the ambient environment rather
-    than failing the command.
-    """
-    candidate = refl1d_path.parent.parent / "final_state.json"
-    try:
-        if not candidate.is_file():
-            return None, None
-        payload = json.loads(candidate.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None, None
-    state = payload.get("state", payload)
-    if not isinstance(state, dict) or state.get("chi2_max") is None:
-        return None, None
-    return state, str(candidate)
-
-
 def _selected_fit(result: dict) -> tuple:
     """``(fit_results, final_selection, selected_fit)`` for a finished run.
 
@@ -1037,20 +909,11 @@ def _print_analysis_results(result: dict, output_dir: Optional[str] = None):
             )
         click.echo()
 
-    # Evaluation. `result["evaluation"]` is only ever set by the MCP server; a
-    # workflow run records the evaluator's findings on the judged FitResult, so
-    # reading only the former made this whole block dead code for `aure analyze`
-    # and the excursion text above never reached the reader.
-    evaluation = result.get("evaluation")
-    if evaluation:
-        quality = evaluation.get("chi_squared_quality", "unknown")
-        acceptable = evaluation.get("acceptable", False)
-        color = "green" if acceptable else "yellow"
-        click.echo(click.style(f"  Fit Quality: {quality}", fg=color, bold=True))
-    else:
-        evaluation = fit or {}
-        if evaluation.get("issues") or evaluation.get("suggestions"):
-            click.echo(click.style("  Fit Quality Notes", fg="cyan", bold=True))
+    # Fit-quality notes. A workflow run records the evaluator's findings on
+    # the judged FitResult, so they are read from there.
+    evaluation = fit or {}
+    if evaluation.get("issues") or evaluation.get("suggestions"):
+        click.echo(click.style("  Fit Quality Notes", fg="cyan", bold=True))
 
     if evaluation.get("issues"):
         click.echo("    Issues:")
@@ -1825,8 +1688,6 @@ def _build_env_overrides(merged: dict) -> dict[str, str]:
         "llm_base_url": "LLM_BASE_URL",
         "llm_temperature": "LLM_TEMPERATURE",
         "llm_timeout": "LLM_TIMEOUT",
-        "alcf_cluster": "ALCF_CLUSTER",
-        "alcf_access_token": "ALCF_ACCESS_TOKEN",
     }
     overrides: dict[str, str] = {}
     for yaml_key, env_key in mapping.items():
@@ -2105,616 +1966,6 @@ def inspect_checkpoint(checkpoint_path: str, show_state: bool, output_json: bool
 
 
 # ============================================================================
-# Plotting Commands
-# ============================================================================
-
-
-@cli.command("plot-results")
-@click.argument("output_dir", type=click.Path(exists=True))
-@click.option(
-    "--save",
-    "-s",
-    type=click.Path(),
-    help="Save plot to file (PNG, PDF, SVG)",
-)
-@click.option(
-    "--offset",
-    "-f",
-    default=10.0,
-    help="Vertical offset factor between R(Q) curves (default: 10)",
-)
-@click.option(
-    "--no-show",
-    is_flag=True,
-    help="Don't display plot interactively (useful with --save)",
-)
-def plot_results(
-    output_dir: str,
-    save: Optional[str],
-    offset: float,
-    no_show: bool,
-):
-    """
-    Plot reflectivity and SLD profiles from workflow results.
-
-    OUTPUT_DIR: Path to the output directory containing refl1d_output
-
-    Creates a two-panel plot:
-    - Left: R(Q) curves (log-log) with data and model predictions from each iteration
-    - Right: SLD profiles for each model iteration
-
-    Examples:
-
-        # Interactive plot
-        python -m aure.cli plot-results ./results
-
-        # Save to file
-        python -m aure.cli plot-results ./results -s results.png
-
-        # Save without display
-        python -m aure.cli plot-results /path/to/results -s results.pdf --no-show
-    """
-    from pathlib import Path
-    from .workflow import CheckpointManager
-
-    try:
-        import matplotlib.pyplot as plt
-        import numpy as np
-    except ImportError:
-        click.echo(click.style("Error: matplotlib is required for plotting", fg="red"))
-        click.echo("Install with: pip install matplotlib")
-        sys.exit(1)
-
-    output_path = Path(output_dir)
-    refl1d_dir = output_path / "refl1d_output"
-    checkpoints_dir = output_path / "checkpoints"
-
-    # Check for refl1d output
-    if not refl1d_dir.exists():
-        click.echo(click.style("No refl1d_output directory found", fg="red"))
-        sys.exit(1)
-
-    # Find problem.json files from fit iterations
-    fit_dirs = sorted(refl1d_dir.glob("fit_iter*_*"))
-    problem_files = [
-        (d, d / "problem.json") for d in fit_dirs if (d / "problem.json").exists()
-    ]
-    if not problem_files:
-        click.echo(
-            click.style("No problem.json files found in refl1d_output/", fg="red")
-        )
-        sys.exit(1)
-
-    click.echo(click.style(f"  Found {len(problem_files)} fit result(s)", fg="cyan"))
-
-    # Get list of checkpoints for experimental data
-    checkpoint_list = CheckpointManager.list_checkpoints(output_dir)
-
-    if not checkpoint_list:
-        click.echo(click.style("No checkpoints found in directory", fg="red"))
-        sys.exit(1)
-
-    # Load data from first checkpoint
-    first_cp = CheckpointManager.load_checkpoint(
-        str(checkpoints_dir / checkpoint_list[0]["file"])
-    )
-    state = first_cp["state"]
-    Q_data = np.array(state.get("Q", []))
-    R_data = np.array(state.get("R", []))
-    dR_data = np.array(state.get("dR", []))
-    sample_desc = state.get("sample_description", "Unknown sample")[:50]
-
-    if len(Q_data) == 0:
-        click.echo(click.style("No experimental data found in checkpoints", fg="red"))
-        sys.exit(1)
-
-    # Get chi-squared values from fitting checkpoints
-    # Map by (node, iteration) for more precise matching
-    chi2_by_node = {}
-    for cp_info in checkpoint_list:
-        if cp_info["node"] in ("fitting", "evaluation", "refinement"):
-            cp_path = str(checkpoints_dir / cp_info["file"])
-            cp_data = CheckpointManager.load_checkpoint(cp_path)
-            cp_state = cp_data["state"]
-            chi2 = cp_state.get("current_chi2")
-            node = cp_info["node"]
-            iteration = cp_info.get("iteration", 0)
-            if chi2 is not None:
-                chi2_by_node[(node, iteration)] = chi2
-
-    # Load and deserialize each problem.json to get R(Q) and SLD
-    model_data = []
-    import json as _json
-    import re
-
-    for fit_dir, problem_file in problem_files:
-        try:
-            # Parse iteration from directory name (e.g. fit_iter0_dream)
-            match = re.search(r"fit_iter(\d+)_(\w+)", fit_dir.name)
-            iteration = int(match.group(1)) if match else len(model_data)
-            method = match.group(2) if match else "unknown"
-            label = f"Fit iter {iteration} ({method})"
-            sort_key = (iteration, 0)
-
-            click.echo(f"    Loading {fit_dir.name}/problem.json...")
-
-            from bumps.serialize import deserialize
-
-            from .nodes.model_builder import data_chisq
-
-            with open(problem_file) as f:
-                problem = deserialize(_json.load(f))
-
-            fitness = problem.fitness
-            experiments = fitness._models if hasattr(fitness, "_models") else [fitness]
-
-            # Use the first experiment for reflectivity and SLD
-            exp = experiments[0]
-            exp.update()
-            Q_arr, R_arr = exp.reflectivity()
-
-            z, sld = None, None
-            try:
-                z_arr, sld_arr, _ = exp.smooth_profile(dz=1.0)
-                z = np.array(z_arr).tolist()
-                sld = np.array(sld_arr).tolist()
-            except Exception:
-                pass
-
-            chi2 = None
-            try:
-                chi2 = float(data_chisq(problem))
-            except Exception:
-                pass
-
-            model_data.append(
-                {
-                    "iteration": iteration,
-                    "sort_key": sort_key,
-                    "label": label,
-                    "Q": np.array(Q_arr).tolist(),
-                    "R": np.array(R_arr).tolist(),
-                    "z": z,
-                    "sld": sld,
-                    "chi2": chi2,
-                    "file": fit_dir.name,
-                }
-            )
-        except Exception as e:
-            click.echo(
-                click.style(
-                    f"    Warning: Could not load {fit_dir.name}: {e}", fg="yellow"
-                )
-            )
-
-    if not model_data:
-        click.echo(click.style("No models could be loaded", fg="red"))
-        sys.exit(1)
-
-    # Sort by sort_key (iteration, sub-order)
-    model_data.sort(key=lambda x: x.get("sort_key", (x["iteration"], 0)))
-
-    click.echo(click.style(f"  Plotting {len(model_data)} model(s)", fg="cyan"))
-
-    # Create figure with two panels
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
-
-    # ========== Left panel: R(Q) curves ==========
-    n_models = len(model_data)
-    colors = plt.cm.viridis(np.linspace(0, 0.85, n_models))
-
-    # Plot data (at top with maximum offset)
-    base_offset = offset**n_models
-    ax1.errorbar(
-        Q_data,
-        R_data * base_offset,
-        yerr=dR_data * base_offset,
-        fmt="o",
-        markersize=2,
-        color="gray",
-        alpha=0.6,
-        label="Data",
-        capsize=0,
-        zorder=1,
-    )
-
-    # Plot models with decreasing offsets
-    for i, md in enumerate(model_data):
-        offset_factor = offset ** (n_models - i - 1)
-
-        label = md["label"]
-        if md["chi2"] is not None:
-            label += f" (χ²={md['chi2']:.1f})"
-
-        # Plot model curve
-        ax1.plot(
-            md["Q"],
-            np.array(md["R"]) * offset_factor,
-            "-",
-            color=colors[i],
-            linewidth=1.5,
-            label=label,
-            zorder=2,
-        )
-
-        # Plot data at same offset (faded)
-        if offset_factor != base_offset:
-            ax1.errorbar(
-                Q_data,
-                R_data * offset_factor,
-                yerr=dR_data * offset_factor,
-                fmt="o",
-                markersize=1.5,
-                color="gray",
-                alpha=0.3,
-                capsize=0,
-                zorder=0,
-            )
-
-    ax1.set_xscale("log")
-    ax1.set_yscale("log")
-    ax1.set_xlabel("Q (Å⁻¹)")
-    ax1.set_ylabel("Reflectivity (offset)")
-    ax1.set_title(f"R(Q) - {sample_desc}")
-    ax1.legend(loc="lower left", fontsize=8)
-    ax1.grid(True, alpha=0.3)
-
-    # ========== Right panel: SLD profiles ==========
-    has_sld = any(md["z"] is not None for md in model_data)
-
-    if has_sld:
-        for i, md in enumerate(model_data):
-            if md["z"] is not None and md["sld"] is not None:
-                ax2.plot(
-                    md["z"],
-                    md["sld"],
-                    "-",
-                    color=colors[i],
-                    linewidth=1.5,
-                    label=md["label"],
-                )
-
-        ax2.set_xlabel("Depth (Å)")
-        ax2.set_ylabel("SLD (×10⁻⁶ Å⁻²)")
-        ax2.set_title("SLD Profile")
-        ax2.legend(loc="best", fontsize=8)
-        ax2.grid(True, alpha=0.3)
-    else:
-        ax2.text(
-            0.5,
-            0.5,
-            "SLD profiles not available",
-            ha="center",
-            va="center",
-            transform=ax2.transAxes,
-        )
-        ax2.set_title("SLD Profile")
-
-    plt.tight_layout()
-
-    # Save if requested
-    if save:
-        plt.savefig(save, dpi=150, bbox_inches="tight")
-        click.echo(click.style(f"  Plot saved to: {save}", fg="green"))
-
-    # Show if requested
-    if not no_show:
-        plt.show()
-
-    plt.close()
-
-
-# ============================================================================
-# Standalone Evaluation Command
-# ============================================================================
-
-
-@cli.command()
-@click.argument("refl1d_dir", type=click.Path(exists=True))
-@click.option(
-    "--context",
-    "-c",
-    "context_prompt",
-    default=None,
-    help="Optional description of the sample / model to give the LLM context",
-)
-@click.option(
-    "--hypothesis",
-    "-h",
-    default=None,
-    help="Optional hypothesis being tested",
-)
-@click.option(
-    "--json",
-    "output_json",
-    is_flag=True,
-    help="Output as JSON",
-)
-@click.option(
-    "--verbose",
-    "-v",
-    is_flag=True,
-    help="Enable verbose logging",
-)
-def evaluate(
-    refl1d_dir: str,
-    context_prompt: Optional[str],
-    hypothesis: Optional[str],
-    output_json: bool,
-    verbose: bool,
-):
-    """
-    Evaluate a refl1d fit result using LLM analysis.
-
-    REFL1D_DIR: Path to a refl1d output directory containing problem.json
-                (e.g. output/refl1d_output/fit_iter0_dream)
-
-    This command loads a serialised bumps FitProblem, extracts fit results
-    (χ², parameters, theory curves, SLD profile, residuals), and asks the
-    LLM to assess the fit quality — without re-running the full workflow.
-
-    The reported `acceptable` is ADVISORY: this command runs neither the
-    SLD-profile check nor the deterministic χ² stop, so its verdict can differ
-    from what `aure analyze` decided for the same fit. Judged against the
-    `chi2_max` the run was launched with when its `final_state.json` can be
-    found, otherwise against the ambient `CHI2_MAX`.
-
-    Use --context / -c to provide a natural-language description of the
-    sample so the LLM can judge physical plausibility.
-
-    \b
-    Examples:
-        aure evaluate output/refl1d_output/fit_iter0_dream
-
-        aure evaluate output/refl1d_output/fit_iter0_dream \\
-            -c "100 nm polystyrene film on silicon"
-
-        aure evaluate output/refl1d_output/fit_iter0_dream --json
-    """
-    import re as _re
-
-    if verbose:
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(message)s",
-            stream=sys.stderr,
-        )
-
-    refl1d_path = Path(refl1d_dir)
-
-    # ── Locate problem.json ────────────────────────────────────
-    problem_file = refl1d_path / "problem.json"
-    if not problem_file.exists():
-        # Maybe the user pointed at the parent refl1d_output dir;
-        # pick the latest fit_iter* subdirectory.
-        fit_dirs = sorted(refl1d_path.glob("fit_iter*_*/problem.json"))
-        if fit_dirs:
-            problem_file = fit_dirs[-1]
-            refl1d_path = problem_file.parent
-        else:
-            click.echo(click.style(f"No problem.json found in {refl1d_dir}", fg="red"))
-            sys.exit(1)
-
-    # Parse iteration & method from directory name
-    match = _re.search(r"fit_iter(\d+)_(\w+)", refl1d_path.name)
-    iteration = int(match.group(1)) if match else 0
-    method = match.group(2) if match else "unknown"
-
-    if not output_json:
-        click.echo(click.style("═" * 60, fg="blue"))
-        click.echo(click.style("  Evaluate Refl1D Fit Result", fg="blue", bold=True))
-        click.echo(click.style("═" * 60, fg="blue"))
-        click.echo()
-        click.echo(f"  Directory: {refl1d_path}")
-        click.echo(f"  Iteration: {iteration}  Method: {method}")
-        if context_prompt:
-            click.echo(f"  Context: {context_prompt}")
-        click.echo()
-
-    # ── Check LLM ──────────────────────────────────────────────
-    llm_ok, llm_msg = _check_llm_status(quiet=output_json, test_connection=True)
-    if not output_json:
-        click.echo()
-    if not llm_ok:
-        if output_json:
-            click.echo(json.dumps({"error": f"LLM not available: {llm_msg}"}))
-        else:
-            click.echo(click.style(f"  Cannot proceed: {llm_msg}", fg="red"))
-        sys.exit(1)
-
-    # ── Deserialise problem.json ───────────────────────────────
-    if not output_json:
-        click.echo("  Loading problem.json...", nl=False)
-    try:
-        import json as _json
-        from bumps.serialize import deserialize
-
-        with open(problem_file) as f:
-            problem = deserialize(_json.load(f))
-        if not output_json:
-            click.echo(click.style(" done", fg="green"))
-    except Exception as e:
-        if not output_json:
-            click.echo(click.style(f" failed: {e}", fg="red"))
-        else:
-            click.echo(json.dumps({"error": f"Failed to load problem.json: {e}"}))
-        sys.exit(1)
-
-    # ── Extract FitResult ──────────────────────────────────────
-    if not output_json:
-        click.echo("  Extracting fit results...", nl=False)
-    try:
-        from .refl1d_import import extract_fit_result_from_problem
-
-        fit_result = extract_fit_result_from_problem(
-            problem,
-            method=method,
-            iteration=iteration,
-            export_dir=str(refl1d_path),
-        )
-        if not output_json:
-            click.echo(click.style(" done", fg="green"))
-    except Exception as e:
-        if not output_json:
-            click.echo(click.style(f" failed: {e}", fg="red"))
-        else:
-            click.echo(json.dumps({"error": f"Failed to extract fit results: {e}"}))
-        sys.exit(1)
-
-    chi2 = fit_result["chi_squared"]
-    if not output_json:
-        click.echo(f"  χ² = {chi2:.4f}")
-        click.echo()
-
-    # ── Run LLM evaluation ─────────────────────────────────────
-    if not output_json:
-        click.echo("  Running LLM evaluation...", nl=False)
-
-    from .nodes.evaluation import (
-        analyze_fit_quality_with_llm,
-        _check_boundary_hits,
-        _get_chi2_max,
-    )
-
-    # Judge against the threshold the evaluated run was launched with, not whatever
-    # CHI2_MAX this shell happens to carry — otherwise the verdict is measured
-    # against a bar the run never used.
-    run_state, state_source = _run_pinned_state(refl1d_path)
-    chi2_max = _get_chi2_max(run_state)
-    if not output_json:
-        origin = f"pinned by the run ({state_source})" if run_state else "ambient"
-        click.echo(f"  Acceptance threshold: χ² ≤ {chi2_max:g}  [{origin}]")
-    boundary_hits = _check_boundary_hits(fit_result)
-
-    try:
-        analysis = analyze_fit_quality_with_llm(
-            fit_result=fit_result,
-            sample_description=context_prompt,
-            hypothesis=hypothesis,
-            features=None,
-            chi2_max=chi2_max,
-            boundary_hits=boundary_hits,
-            per_file_results=fit_result.get("per_file_results"),
-        )
-        if not output_json:
-            click.echo(click.style(" done", fg="green"))
-    except Exception as e:
-        if not output_json:
-            click.echo(click.style(f" failed: {e}", fg="red"))
-        else:
-            click.echo(json.dumps({"error": f"LLM evaluation failed: {e}"}))
-        sys.exit(1)
-
-    # ── Output ─────────────────────────────────────────────────
-    if output_json:
-        result = {
-            "directory": str(refl1d_path),
-            "iteration": iteration,
-            "method": method,
-            "chi_squared": chi2,
-            "parameters": fit_result.get("parameters", {}),
-            "uncertainties": fit_result.get("uncertainties"),
-            "acceptable": analysis.get("acceptable", False),
-            # `acceptable` is the evaluator's opinion on this one exported fit. No
-            # SLD-profile check and no deterministic χ² stop run here, so it can
-            # disagree with what `aure analyze` decided; gate on the run's own
-            # final_state.json / --json `selection` block instead.
-            "acceptable_is_advisory": True,
-            "chi2_max": chi2_max,
-            "chi2_max_source": state_source or "environment",
-            "quality_assessment": analysis.get("quality_assessment", "unknown"),
-            "issues": analysis.get("issues", []),
-            "suggestions": analysis.get("suggestions", []),
-            "physical_concerns": analysis.get("physical_concerns", []),
-        }
-        click.echo(json.dumps(result, indent=2))
-    else:
-        click.echo()
-        # Parameters
-        click.echo(click.style("  Fit Parameters", fg="cyan", bold=True))
-        for name, value in fit_result["parameters"].items():
-            unc = (fit_result.get("uncertainties") or {}).get(name)
-            if unc:
-                click.echo(f"    {name}: {value:.4f} ± {unc:.4f}")
-            else:
-                click.echo(f"    {name}: {value:.4f}")
-        click.echo()
-
-        # Per-file chi2
-        per_file = fit_result.get("per_file_results")
-        if per_file:
-            click.echo(click.style("  Per-file χ²", fg="cyan", bold=True))
-            for pf in per_file:
-                click.echo(f"    {pf['label']}: χ² = {pf['chi_squared']:.3f}")
-            click.echo()
-
-        # Evaluation
-        acceptable = analysis.get("acceptable", False)
-        quality = analysis.get("quality_assessment", "unknown")
-        color = "green" if acceptable else "yellow"
-        click.echo(
-            click.style(
-                f"  Fit Quality: {quality} (χ² = {chi2:.3f})",
-                fg=color,
-                bold=True,
-            )
-        )
-
-        if analysis.get("issues"):
-            click.echo()
-            click.echo(click.style("  Issues:", fg="yellow"))
-            for issue in analysis["issues"]:
-                click.echo(f"    - {issue}")
-
-        if analysis.get("suggestions"):
-            click.echo()
-            click.echo(click.style("  Suggestions:", fg="cyan"))
-            for sug in analysis["suggestions"]:
-                click.echo(f"    - {sug}")
-
-        if analysis.get("physical_concerns"):
-            click.echo()
-            click.echo(click.style("  Physical Concerns:", fg="yellow"))
-            for concern in analysis["physical_concerns"]:
-                click.echo(f"    - {concern}")
-
-        click.echo()
-        verdict = (
-            click.style("  ✓ Fit ACCEPTABLE", fg="green", bold=True)
-            if acceptable
-            else click.style("  ✗ Fit NOT acceptable", fg="red", bold=True)
-        )
-        click.echo(verdict)
-        # This command inspects one exported fit; it does not run the SLD-profile
-        # check or the deterministic χ² stop, so its verdict is the evaluator's
-        # opinion and can differ from what `aure analyze` would have decided on the
-        # same fit. Applying the clamp here would force acceptance on χ² alone with
-        # no profile check, which is the failure mode the clamp's guards exist for.
-        click.echo(
-            click.style(
-                "  (advisory — the evaluator's judgement, not `aure analyze`'s "
-                "acceptance decision: no SLD-profile check, no χ² stop)",
-                fg="bright_black",
-            )
-        )
-        click.echo()
-
-
-def _extract_fit_result_from_problem(
-    problem, method: str, iteration: int, export_dir: str
-) -> dict:
-    """Backwards-compatible re-export.
-
-    The real implementation lives in :mod:`aure.refl1d_import`.
-    """
-    from .refl1d_import import extract_fit_result_from_problem
-
-    return extract_fit_result_from_problem(
-        problem, method=method, iteration=iteration, export_dir=export_dir
-    )
-
-
-# ============================================================================
 # Import a refl1d fit into AuRE
 # ============================================================================
 
@@ -2901,307 +2152,6 @@ def import_refl1d_cmd(
     click.echo(
         f"    aure resume {summary['output_dir']}/checkpoints/005_evaluation.json"
     )
-
-
-# ============================================================================
-# Material Database Commands
-# ============================================================================
-
-
-@cli.command("lookup-sld")
-@click.argument("materials", nargs=-1, required=True)
-@click.option(
-    "--wavelength",
-    "-w",
-    default=1.8,
-    help="Neutron wavelength in Angstroms (default: 1.8)",
-)
-@click.option(
-    "--json",
-    "output_json",
-    is_flag=True,
-    help="Output as JSON",
-)
-def lookup_sld(materials: tuple, wavelength: float, output_json: bool):
-    """
-    Look up SLD values for materials.
-
-    MATERIALS: One or more material names or chemical formulas
-
-    Examples:
-
-        python -m aure.cli lookup-sld silicon gold D2O
-
-        python -m aure.cli lookup-sld SiO2 Fe2O3 TiO2
-
-        python -m aure.cli lookup-sld polystyrene PMMA
-    """
-    from .database.materials import get_sld, lookup_material
-
-    results = []
-    for mat in materials:
-        try:
-            sld = get_sld(mat)
-            info = lookup_material(mat)
-            results.append(
-                {
-                    "material": mat,
-                    "sld": round(sld, 4),
-                    "density": info.density if info else None,
-                    "formula": info.formula if info else mat,
-                }
-            )
-        except Exception as e:
-            results.append({"material": mat, "error": str(e)})
-
-    if output_json:
-        click.echo(json.dumps(results, indent=2))
-    else:
-        click.echo()
-        click.echo(click.style("  Material SLD Values", fg="cyan", bold=True))
-        click.echo(f"  Wavelength: {wavelength} Å")
-        click.echo()
-
-        # Table header
-        click.echo(f"  {'Material':<20} {'SLD (10⁻⁶ Å⁻²)':<18} {'Formula'}")
-        click.echo(f"  {'-' * 20} {'-' * 18} {'-' * 20}")
-
-        for r in results:
-            if "error" in r:
-                click.echo(
-                    f"  {r['material']:<20} "
-                    + click.style(f"Error: {r['error']}", fg="red")
-                )
-            else:
-                click.echo(
-                    f"  {r['material']:<20} {r['sld']:<18.4f} {r.get('formula', '')}"
-                )
-        click.echo()
-
-
-@cli.command("list-materials")
-@click.option(
-    "--category",
-    "-c",
-    type=click.Choice(["polymers", "metals", "substrates", "solvents", "all"]),
-    default="all",
-    help="Filter by category",
-)
-def list_materials(category: str):
-    """
-    List common materials in the database.
-
-    Shows materials with their SLD values for quick reference.
-    """
-    from .database.materials import get_sld
-
-    click.echo()
-    click.echo(click.style("  Material Database", fg="cyan", bold=True))
-    click.echo()
-
-    # Categories
-    categories = {
-        "polymers": ["polystyrene", "d-polystyrene", "PMMA", "d-PMMA", "PEO", "PDMS"],
-        "metals": ["gold", "silver", "nickel", "titanium", "copper", "iron"],
-        "substrates": ["silicon", "sapphire", "quartz", "glass"],
-        "solvents": ["air", "D2O", "H2O", "toluene", "ethanol"],
-    }
-
-    if category == "all":
-        for cat_name, mats in categories.items():
-            click.echo(click.style(f"  {cat_name.title()}", bold=True))
-            for mat in mats:
-                try:
-                    sld = get_sld(mat)
-                    click.echo(f"    {mat:<20} SLD = {sld:>7.3f}")
-                except Exception:
-                    pass
-            click.echo()
-    else:
-        mats = categories.get(category, [])
-        click.echo(click.style(f"  {category.title()}", bold=True))
-        for mat in mats:
-            try:
-                sld = get_sld(mat)
-                click.echo(f"    {mat:<20} SLD = {sld:>7.3f}")
-            except Exception:
-                pass
-        click.echo()
-
-
-# ============================================================================
-# Feature Extraction Commands
-# ============================================================================
-
-
-@cli.command("extract-features")
-@click.argument("data_file", type=click.Path(exists=True))
-@click.option(
-    "--json",
-    "output_json",
-    is_flag=True,
-    help="Output as JSON",
-)
-def extract_features(data_file: str, output_json: bool):
-    """
-    Extract physics features from a reflectivity file.
-
-    Analyzes the data to estimate thickness, roughness, and layer count
-    without building a full model.
-
-    DATA_FILE: Path to the reflectivity data file
-    """
-    from .tools.data_tools import load_reflectivity_data
-    from .tools.feature_tools import (
-        estimate_total_thickness,
-        estimate_roughness,
-        extract_critical_edges,
-        estimate_layer_count,
-    )
-    import numpy as np
-
-    # Load data
-    try:
-        Q, R, dR = load_reflectivity_data(data_file)
-    except Exception as e:
-        click.echo(click.style(f"Error loading data: {e}", fg="red"))
-        sys.exit(1)
-
-    Q = np.array(Q)
-    R = np.array(R)
-
-    features = {}
-
-    # Critical edge
-    try:
-        qc = extract_critical_edges(Q, R)
-        features["critical_edge"] = qc
-    except Exception as e:
-        features["critical_edge"] = {"error": str(e)}
-
-    # Thickness
-    try:
-        thickness = estimate_total_thickness(Q, R)
-        features["thickness"] = thickness
-    except Exception as e:
-        features["thickness"] = {"error": str(e)}
-
-    # Roughness
-    try:
-        roughness = estimate_roughness(Q, R)
-        features["roughness"] = roughness
-    except Exception as e:
-        features["roughness"] = {"error": str(e)}
-
-    # Layer count
-    try:
-        layers = estimate_layer_count(Q, R)
-        features["layer_count"] = layers
-    except Exception as e:
-        features["layer_count"] = {"error": str(e)}
-
-    features["data"] = {
-        "file": data_file,
-        "n_points": len(Q),
-        "q_min": float(Q.min()),
-        "q_max": float(Q.max()),
-    }
-
-    if output_json:
-        click.echo(json.dumps(features, indent=2))
-    else:
-        click.echo()
-        click.echo(click.style("  Feature Extraction", fg="cyan", bold=True))
-        click.echo(f"  File: {data_file}")
-        click.echo(f"  Points: {len(Q)}")
-        click.echo(f"  Q range: {Q.min():.4f} - {Q.max():.4f} Å⁻¹")
-        click.echo()
-
-        if "Qc" in features.get("critical_edge", {}):
-            qc = features["critical_edge"]["Qc"]
-            sld = features["critical_edge"].get("estimated_SLD", 0)
-            click.echo(f"  Critical edge: Qc = {qc:.5f} Å⁻¹ (SLD ≈ {sld:.2f})")
-
-        if "thickness" in features.get("thickness", {}):
-            t = features["thickness"]["thickness"]
-            n = features["thickness"].get("n_fringes", 0)
-            click.echo(f"  Thickness: {t:.0f} Å ({n} fringes)")
-
-        if "roughness" in features.get("roughness", {}):
-            r = features["roughness"]["roughness"]
-            click.echo(f"  Roughness: {r:.1f} Å")
-
-        if "n_layers" in features.get("layer_count", {}):
-            n = features["layer_count"]["n_layers"]
-            conf = features["layer_count"].get("confidence", "unknown")
-            click.echo(f"  Estimated layers: {n} ({conf} confidence)")
-
-        click.echo()
-
-
-# ============================================================================
-# MCP Server Command
-# ============================================================================
-
-
-@cli.command("mcp-server")
-@click.option(
-    "--transport",
-    "-t",
-    type=click.Choice(["stdio", "sse"]),
-    default="stdio",
-    help="Transport protocol (stdio for Claude Desktop, sse for HTTP)",
-)
-@click.option(
-    "--port",
-    "-p",
-    default=8000,
-    help="Port for SSE transport (default: 8000)",
-)
-def mcp_server(transport: str, port: int):
-    """
-    Start the MCP server for AI assistant integration.
-
-    This starts a Model Context Protocol server that allows AI assistants
-    like Claude to interact with the reflectivity analysis workflow.
-
-    For Claude Desktop, use stdio transport (default).
-    For HTTP-based clients, use sse transport.
-
-    Examples:
-
-        python -m aure.cli mcp-server
-
-        python -m aure.cli mcp-server --transport sse --port 8080
-    """
-    from .mcp_server import mcp
-
-    click.echo(click.style("═" * 60, fg="blue"))
-    click.echo(click.style("  Reflectivity Analysis MCP Server", fg="blue", bold=True))
-    click.echo(click.style("═" * 60, fg="blue"))
-    click.echo()
-    click.echo(f"  Transport: {transport}")
-    if transport == "sse":
-        click.echo(f"  Port: {port}")
-    click.echo()
-    click.echo("  Available tools:")
-    click.echo("    - lookup_material_sld")
-    click.echo("    - compare_materials")
-    click.echo("    - analyze_reflectivity_features")
-    click.echo("    - start_analysis_session")
-    click.echo("    - get_session_model")
-    click.echo("    - run_fit")
-    click.echo("    - evaluate_fit")
-    click.echo("    - modify_model")
-    click.echo("    - quick_analyze")
-    click.echo()
-    click.echo("  Starting server...")
-    click.echo()
-
-    if transport == "sse":
-        mcp.run(transport="sse", port=port)
-    else:
-        mcp.run(transport="stdio")
 
 
 # ============================================================================

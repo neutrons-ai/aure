@@ -21,7 +21,6 @@ from typing import Dict, Any, List
 from langchain_core.messages import HumanMessage
 
 from ..state import ReflectivityState, Message, LLMCallRecord
-from ..database import get_sld
 from ..llm import llm_available, get_llm
 from ..config import format_user_constraints
 from ..skills import SkillRegistry, load_skill_context
@@ -29,6 +28,29 @@ from .hypotheses import merge_structural_hypotheses
 from .prompts import format_model_refinement_prompt
 
 logger = logging.getLogger(__name__)
+
+#: Silicon's neutron SLD, in 1e-6 A^-2. The default substrate when a
+#: description names none. `periodictable` computes 2.0737 from Si at
+#: 2.33 g/cm^3; it is a constant of nature, not something to look up per run.
+_SILICON_SLD = 2.07
+
+#: Seed and bounds for a layer whose SLD nothing supplied — no value in the
+#: parse, and no range either.
+#:
+#: Neutron SLDs of the materials reflectometry actually measures are
+#: **bimodal**: protiated organics cluster near 0.4 (measured range -0.6 to
+#: 2.4 over 18 common species) and their deuterated counterparts near 5.5
+#: (3.1 to 7.1), because full deuteration adds the hydrogen number density
+#: times 1.041 — 5 to 8 for anything organic. Nothing real sits in the middle.
+#:
+#: So the usual "seed +/- 2.5" window is the one thing that must not be applied
+#: here. Around a mid-gap seed of 2.0 it gives (-0.5, 4.5), which excludes the
+#: entire deuterated half of the distribution — and a layer fenced into the
+#: wrong half cannot be recovered by fitting, because the bound, not the data,
+#: is what holds it. The span below covers both clusters and lets the optimizer
+#: choose. Wide bounds cost iterations; a wrong bound costs the answer.
+_UNKNOWN_SLD_SEED = 2.0
+_UNKNOWN_SLD_RANGE = (-0.6, 7.5)
 
 
 def _strip_dataset_arrays(model: dict) -> dict:
@@ -211,7 +233,6 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
         # Tie specs dropped automatically because their layer is gone; those
         # need no explanation from the model (see below).
         pruned_specs: list[str] = []
-        pruned_derived: list[str] = []
 
         # Load skill context
         registry = SkillRegistry()
@@ -293,20 +314,6 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
                 new_model["background"] = current_model["background"]
             # A reparametrization is the user's/analysis's structural decision,
             # not a per-iteration one. The refine LLM re-emits the whole model
-            # and does not know about this block, so without an explicit
-            # carry-over it would be dropped on the first refinement — the fit
-            # would silently revert to the raw coordinates, and the run would
-            # look like it simply changed its mind. Config wins if it declared
-            # any; otherwise the previous model's block is authoritative.
-            cfg_derived = (state.get("user_config") or {}).get("derived_parameters")
-            if cfg_derived:
-                new_model["derived_parameters"] = copy.deepcopy(cfg_derived)
-            elif current_model.get("derived_parameters"):
-                new_model["derived_parameters"] = copy.deepcopy(
-                    current_model["derived_parameters"]
-                )
-            else:
-                new_model.pop("derived_parameters", None)
             # Multi-state co-refinement: carry over states + tie spec from
             # the previous model when the LLM omitted them. If the user
             # supplied ties in the config they win, regardless of the LLM.
@@ -395,21 +402,6 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
                         dropped,
                     )
 
-            # Same reconciliation for reparametrizations: a structural edit can
-            # remove the layer a derived parameter is written against. The
-            # refine LLM is told not to do that (rule 14) but may anyway.
-            # Dropping the declaration costs one modelling choice; letting the
-            # build raise would end the run and forfeit every remaining
-            # refinement iteration over it.
-            from .model_builder import prune_derived_parameters
-
-            pruned_derived = prune_derived_parameters(new_model)
-            if pruned_derived:
-                logger.warning(
-                    "[MODELING] Dropped derived parameter(s) invalidated by the "
-                    "structural change: %s",
-                    "; ".join(pruned_derived),
-                )
             updates["llm_calls"].append(
                 LLMCallRecord(
                     node="modeling",
@@ -477,11 +469,6 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
             changes.append(
                 "Dropped tie spec(s) for removed layer(s): "
                 + ", ".join(sorted(pruned_specs))
-            )
-        for note in pruned_derived:
-            changes.append(
-                f"Dropped reparametrization {note} — the structural change "
-                f"removed what it was written against"
             )
         # A tie the pruner removed is already accounted for; anything else that
         # moved is a judgement the model made and owes a reason for.
@@ -683,12 +670,12 @@ def _extract_cross_state_unshared(sample_description: str, model_def: dict):
         data = json.loads(_strip_code_fences(response.content.strip()))
         proposed = data.get("unshared_parameters") or []
         tieable_set = set(tieable)
-        derived = [p for p in proposed if isinstance(p, str) and p in tieable_set]
-        if derived:
+        unshared = [p for p in proposed if isinstance(p, str) and p in tieable_set]
+        if unshared:
             logger.info(
-                "[MODELING] Derived unshared parameters from description: %s", derived
+                "[MODELING] Derived unshared parameters from description: %s", unshared
             )
-        return derived or None
+        return unshared or None
     except Exception as exc:  # graceful: fall back to default tying
         logger.warning("[MODELING] cross-state tie extraction failed: %s", exc)
         return None
@@ -852,41 +839,20 @@ def _build_initial_model(state: ReflectivityState) -> Dict[str, Any]:
                 if not uc.get("shared_parameters") and not uc.get(
                     "unshared_parameters"
                 ):
-                    derived = _extract_cross_state_unshared(
+                    unshared = _extract_cross_state_unshared(
                         state.get("sample_description", ""), model_def
                     )
-                    if derived:
-                        uc["unshared_parameters"] = derived
+                    if unshared:
+                        uc["unshared_parameters"] = unshared
                         # Persist so it survives refinement and is visible in state;
                         # _attach_state_metadata (config wins) applies it below.
                         state["user_config"] = uc
                         updates["user_config"] = uc
             _attach_state_metadata(model_def, state)
 
-            # Reparametrization (derived_parameters) comes from the user config
-            # only — nothing proposes one on its own. Validated against the
-            # model that was just built, so a typo in a layer name or an
-            # expression is an error here rather than a crash mid-fit or, worse,
-            # a quietly different model.
         except ValueError as exc:
             updates["error"] = f"Multi-state model setup failed: {exc}"
             return updates
-
-        cfg_derived = (state.get("user_config") or {}).get("derived_parameters")
-        if cfg_derived:
-            try:
-                model_def["derived_parameters"] = copy.deepcopy(cfg_derived)
-                from .model_builder import validate_derived_parameters
-
-                validate_derived_parameters(model_def)
-            except ValueError as exc:
-                updates["error"] = f"Reparametrization (derived_parameters): {exc}"
-                return updates
-            logger.info(
-                "[MODELING] Reparametrized with %d derived parameter(s): %s",
-                len(cfg_derived),
-                ", ".join(str(d.get("name")) for d in cfg_derived),
-            )
 
         # Snapshot the clean intake model as the rewind point. When a later
         # refinement realizes a *reinterpretation* hypothesis (e.g. "the
@@ -923,7 +889,7 @@ def _get_substrate(parsed: dict, features: dict) -> dict:
     # Default to silicon if not specified
     return {
         "name": "silicon",
-        "sld": get_sld("silicon"),
+        "sld": _SILICON_SLD,
         "roughness": 3.0,
         "roughness_max": 15.0,
     }
@@ -949,7 +915,8 @@ def _build_layers(parsed: dict, features: dict) -> List[dict]:
     if parsed.get("layers"):
         for i, layer in enumerate(parsed["layers"]):
             # Handle None values from LLM parsing with sensible defaults
-            sld = layer.get("sld") if layer.get("sld") is not None else 2.0
+            sld_known = layer.get("sld") is not None
+            sld = layer["sld"] if sld_known else _UNKNOWN_SLD_SEED
 
             # SLD range: use provided values or calculate defaults
             # Ensure a minimum spread of ±1.5 around the expected value
@@ -965,10 +932,15 @@ def _build_layers(parsed: dict, features: dict) -> List[dict]:
                 else:
                     sld_min = provided_sld_min
                     sld_max = provided_sld_max
-            else:
+            elif sld_known:
                 # Default: ±2.5 around expected value, bounded by physical limits
                 sld_min = max(sld - 2.5, -6.0)
                 sld_max = min(sld + 2.5, 10.0)
+            else:
+                # Nothing was parsed, so we do not know which side of the H/D
+                # split this layer sits on — and ±2.5 around the seed would
+                # decide for it. See _UNKNOWN_SLD_RANGE.
+                sld_min, sld_max = _UNKNOWN_SLD_RANGE
 
             thickness = (
                 layer.get("thickness") if layer.get("thickness") is not None else 100.0
@@ -1002,7 +974,6 @@ def _build_layers(parsed: dict, features: dict) -> List[dict]:
                     "thickness_min": thickness_min,
                     "thickness_max": thickness_max,
                     "roughness": roughness,
-                    "roughness_min": 5.0,
                     "roughness_max": roughness_max,
                 }
             )
@@ -1017,14 +988,15 @@ def _build_layers(parsed: dict, features: dict) -> List[dict]:
             layers.append(
                 {
                     "name": f"layer{i + 1}",
-                    "sld": 2.0,  # Generic value
-                    "sld_min": 0.0,
-                    "sld_max": 7.0,
+                    # Nothing was described; the fringes say how many layers
+                    # there are and how thick, not what they are made of.
+                    "sld": _UNKNOWN_SLD_SEED,
+                    "sld_min": _UNKNOWN_SLD_RANGE[0],
+                    "sld_max": _UNKNOWN_SLD_RANGE[1],
                     "thickness": avg_thickness,
                     "thickness_min": avg_thickness * 0.5,
                     "thickness_max": avg_thickness * 2.0,
                     "roughness": features.get("estimated_roughness", 5.0),
-                    "roughness_min": 5.0,
                     "roughness_max": 30.0,
                 }
             )

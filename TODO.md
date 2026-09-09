@@ -5,99 +5,137 @@ what is wrong, what it costs, and what the change would be.
 
 ---
 
-## Stop hardcoding a 5 Å roughness floor in `_build_layers`
+## The outer interface can only be bounded from outside the model
 
-**Where:** [`src/aure/nodes/modeling.py`](src/aure/nodes/modeling.py) —
-`_build_layers` writes `"roughness_min": 5.0` into every layer it constructs
-(both the described-layers branch and the feature-estimate branch).
+**Where:** [`src/aure/nodes/model_builder.py`](src/aure/nodes/model_builder.py)
+— `_outer_roughness_max`, and the `roughness_tie` branch of `_build_sample`.
 
-**What is wrong.** The floor is asserted regardless of what the sample
-description says and regardless of the roughness the intake parse chose. A
-description that says, in plain English,
-
-> This buried oxide interface is chemically sharp — its roughness is often well
-> under 5 Å, so do not impose a roughness floor on it.
-
-produces a layer with `roughness: 3.0` **and** `roughness_min: 5.0`. Two
-consequences follow:
-
-1. The parameter is built at 3.0 with bounds (5, 30) — outside its own range.
-   `_ranged` (in `model_builder`) now clamps it to 5.0 and logs, so the fit no
-   longer starts infeasible, but the value the description asked for is
-   discarded.
-2. The floor binds for the whole fit. No untied layer interface can go below
-   5 Å, so an expert value below that is outside the search space before the
-   optimizer starts.
-
-**What it cost.** Measured across the validation sweeps in
-`aure-validation/results` (12 sweeps with `comparisons.csv`, 165 runs with
-retained artifacts):
+**What this entry used to say, and why it was wrong.** It proposed making
+`ROUGHNESS_MAX_OUTER` a floor on the ceiling — `max(override, declared)` —
+"probably right", on the grounds that its purpose is to stop a low default
+capping a diffuse interface. The corpus refutes that:
 
 | | |
 |---|---|
-| runs whose first model started a layer below its own floor | 156 / 165 |
-| roughness comparisons whose expert target is below 5 Å | 128 (SiO₂ 112, Ti 16) |
-| of those, comparisons where the fit actually reached below 5 Å | 22 — **all** of them only because the SLD-profile remedy had applied `roughness_tie` to that layer, which bypasses the floor |
-| median \|fitted − reference\| on blocked targets | 2.87 Å |
-| median error forced by the floor alone | 1.80 Å |
+| outer-interface fits within 2 % of the 250 Å cap | **108 of 835**, across **32 runs**, several at exactly 250.0 |
+| expert reference roughness in those runs | **46–200 Å, median 79** |
+| model declarations exceeding the cap | 16, up to 400 Å |
 
-More than half the typical error on those interfaces was arithmetically
-unavoidable. It is invisible to the run's own verdict: χ² is unaffected, and 14
-of the 17 near-floor cases in `20260819-103916` still scored `good`.
+Where the cap binds, the fit is already running 2–4× past the expert value and
+the cap is the only thing stopping it. Widening it lets those 32 runs travel
+*further* from the reference. The cap is a regularizer the corpus leans on, not
+a safety margin — so the precedence stays as it is, and
+`outer_ceiling_displacement` + a log line now make it visible instead
+(`7e15c10`, this entry's phases 1 and 2).
 
-### Aside: how `roughness_tie` escapes the floor
+**The real defect is that no model-side tool can bound that interface.**
 
-Worth recording because it explains the 22 exceptions above, not because it is
-a remedy.
+`roughness_tie` is the principled bound — σ = fraction × thickness, so an
+interface can never outgrow its layer — and it **cannot reach the outer
+surface**. Applied to the outermost layer it rewrites that layer's *own*
+interface and leaves the outer one free:
 
-The floor lives in the `else` branch of the interface handling in
-`_build_sample`. A layer carrying `roughness_tie` never reaches it: its
-interface is replaced by the expression `fraction × thickness`, and the free
-parameter becomes `fraction`, ranged (0.05, 0.5) by default. `.range(r_min,
-r_max)` is never called on that interface, so nothing floors it — the
-achievable σ is whatever those fractions of the fitted thickness happen to be.
+```
+stack: ['dTHF', 'SEI', 'Cu', 'Si']          # back reflection, tie on SEI
+  [0] dTHF   interface=Parameter   bounds=(0.0, 250.0)   <- the outer surface, untouched
+  [1] SEI    interface=Expression  (fraction x thickness) <- the tie landed here
+```
 
-In `cu_film/Cu_0/201179` (`20260819-123006`) the SiO₂ layer fitted to 17.5 Å
-thick with `roughness_tie: {fraction_max: 0.5}`, which puts σ anywhere in
-0.88–8.76 Å. It landed at 4.15 Å (fraction 0.24) against a reference of 1.9 Å —
-still not right, but inside the range at all, which the untied layers were not.
+The outer surface lives on the *ambient* slab, and `roughness_tie` only
+rewrites layer slabs. So the only instrument that can bound it is a global
+constant supplied from the environment — which is exactly why
+`ROUGHNESS_MAX_OUTER` exists, and why it has to be blunt.
 
-So a guardrail aimed at something else entirely — erf-tail profile artifacts on
-thin layers — is the only thing in the system that ever let a sharp buried
-interface be fitted as sharp. It reached the right region for the wrong reason,
-and only in the 74 of 165 runs where the profile detector happened to fire on
-that layer.
+**And neither guard catches the runaway reliably.** Of the 108 pinned fits, 90
+are vetoed by the SLD-profile artifact check — but **12 were verified clean**
+(`profile_checked=True, profile_artifact=False`) at 246–250 Å with χ² of
+1.3–2.9, against references of 66–124 Å. A good χ², a clean profile, and an
+outer roughness 2–4× the expert value. So χ² actively rewards the runaway in
+those cases, presumably because a very wide erf tail mimics a diffuse layer or
+density gradient the model is missing — and nothing in the loop objects.
 
-It is **not** a fix, for three reasons: it applies only when the artifact
-detector fires, so it cannot be relied on; it couples σ to the layer thickness,
-which is physically wrong here (how sharp a buried oxide interface is has
-nothing to do with how thick the oxide is); and it caps σ at half the
-thickness, trading one arbitrary bound for another. The interesting part is
-that the floor was invisible for so long partly *because* this accident kept
-producing plausible numbers on the cases where it fired.
+**The change.** Give the outer surface the same principled bound the layers
+have: extend `roughness_tie` (or an equivalent) to it, so in back reflection
+`sample[0].interface` becomes `fraction × <outermost layer>.thickness` rather
+than a free parameter under a global cap. A 250 Å tail on a 200 Å layer is
+unphysical whatever any env var says, and this is the bound that says so from
+inside the model.
 
-**The change.** Omit `roughness_min` from `_build_layers` entirely and let the
-builder default apply. The default in `_build_sample` now yields to a declared
-`roughness` (a default that overrides what the model states is not a default),
-so dropping the hardcode restores the description-driven value while keeping
-the 5 Å floor everywhere the roughness is not explicitly small. Writing
-`min(5.0, roughness)` instead would also work but leaves the policy in two
-places.
+That would make `ROUGHNESS_MAX_OUTER` redundant for its stated purpose, and it
+would remove the cases where the profile check passes a runaway. It changes
+what the 32 pinned runs fit, so it costs a re-sweep.
 
-**Two related gaps**, both of which this change makes moot for ordinary runs
-but which remain if a floor is ever wanted deliberately:
+**Available today, and cheaper:** an explicit `interfaces` entry names the
+outer boundary and sets both its bounds, beating the env override and the
+hardcoded floor of 0 in one step — verified: `(0, 250)` becomes `(5, 400)`. It
+sets fixed numbers rather than σ ≤ k·t, so it is a workaround rather than the
+fix, and nothing emits it yet (see `InterfaceInfo`).
 
-- `roughness_min` is absent from the model-JSON schema in the refinement
-  prompt, so no refinement iteration can lower a floor either.
-- It is reachable from a setup file only inside `states[].layers[]`. There is
-  no top-level `layers:` key, so a description-driven single-file run —
-  `aure analyze DATA "description"`, which is every case in the sweeps — has no
-  config surface on which to set it. The codebase has an env override for the
-  outer roughness *ceiling* (`ROUGHNESS_MAX_OUTER`) and nothing for the floor.
+## The bottom medium's interface is the one interface with no floor
 
-**Verifying a fix.** Re-run any case from `20260819-103916`; the SiO₂ interface
-should be free to move below 5 Å and land near the reference (median 3.4 Å)
-instead of pinning at the bound.
+**Where:** [`src/aure/nodes/model_builder.py`](src/aure/nodes/model_builder.py)
+— the two `sample[0].interface.range(...)` calls at the end of `_build_sample`.
+
+**The semantics first**, because the naming misleads. Substrate and ambient are
+both slabs in the refl1d stack, and a slab's `interface` is its boundary with
+whatever sits *on top of it*. So the medium at the **bottom** of the stack owns
+a real fitted roughness, and the one at the **top** has an unused `0` — nothing
+is above it. Which medium is which depends on the beam direction:
+
+```
+normal:           [silicon, SiO2, Cu, dTHF]
+  [0] silicon   interface=4.00  FREE bounds=(0.0, 15.0)   substrate/SiO2 boundary
+  [3] dTHF      interface=0.00  unused
+
+back reflection:  [dTHF, Cu, SiO2, silicon]
+  [0] dTHF      interface=7.00  FREE bounds=(0.0, 25.0)   the OUTER surface
+  [3] silicon   interface=0.00  unused
+```
+
+**What is wrong.** Every interface above the bottom resolves its lower bound
+through `_ranged`, which honours a declared `roughness_min` and otherwise
+applies a 5 Å default that yields to a smaller declared `roughness`.
+`sample[0].interface` does neither — its lower bound is the literal `0` in both
+branches:
+
+```python
+sample[0].interface.range(0, _outer_roughness_max(layers_info))  # back reflection
+sample[0].interface.range(0, sub_rough_max)                      # normal
+```
+
+So the one interface that cannot state a floor is whichever the beam makes the
+bottom of the stack: the substrate boundary in a normal run, and the **outer
+surface** in back reflection — the interface most likely to be genuinely rough,
+and the one whose *ceiling* is already configurable via `ROUGHNESS_MAX_OUTER`.
+`SubstrateInfo` declares no `roughness_min` and nothing reads one.
+
+**A second observation, same code.** In back reflection the ambient's interface
+is seeded from the outermost layer's `roughness` (`layers_info[-1]["roughness"]`),
+so `[0] dTHF` and `[1] Cu` above both start at 7.00 — two independent free
+parameters from one declared value, with different bounds ((0, 25) and (5, 25)).
+That may be intended as a sensible seed; it is worth knowing that editing the
+outermost layer's roughness moves two parameters.
+
+**What it costs.** Not measured. A roughness of 0 is unphysical but it is one
+parameter and the layers above carry the structure; the fit is free to leave it.
+Worth knowing before someone reads the layer semantics and assumes the bottom
+medium shares them.
+
+**The change.** Route `sample[0].interface` through `_ranged` like every other
+interface, so it gets the same default-yields-to-declared behaviour and can
+carry a declared floor — which means `SubstrateInfo` needs a `roughness_min`,
+and the back-reflection branch needs to decide whose floor it reads (the
+ambient's, or the outermost layer's, whose roughness it already borrows).
+Alternatively state in `SubstrateInfo` that the bottom interface is
+deliberately unbounded below. The first is consistent; the second is honest
+about what is implemented.
+
+**A related gap in the declaration surface.** `roughness_min` reaches a *layer*
+from a refinement (prompt schema, rule 4a) and from a setup file inside
+`states[].layers[]`. It does not reach a description-driven single-file run —
+`aure analyze DATA "description"` — because there is no top-level `layers:`
+key. That is the same question U4 raises in [docs/scope.md](docs/scope.md);
+decide that first.
 
 ---
 
@@ -177,11 +215,10 @@ re-adds it from `user_config` on the next iteration and prune drops it again,
 so it stays inert for the remainder of the run while looking, in the config,
 like it is still in force.
 
-Nothing forbids the rename. The one prompt rule that does — rule 14's "DO NOT
-remove or rename any layer an entry references" — is emitted by
-`_format_derived_parameters_rule` only for a model that carries a
-`derived_parameters` block, so a run using `shared_parameters` alone never
-sees it.
+Nothing forbids the rename. No refinement rule tells the LLM to leave alone a
+layer name a tie spec references. (One did, for the reparametrization block
+retired on 2026-09-08, and it was emitted only for models carrying that block —
+so a run using `shared_parameters` alone never saw it either.)
 
 The drop does reach the run transcript, but worded "Dropped tie spec(s) for
 **removed layer(s)**", which misattributes a rename as a removal and sends a
@@ -221,9 +258,9 @@ The union is deliberate and correct for the case it was written for — a layer
 present in some states but not others must stay a valid tie target — but it
 also admits names that are live nowhere.
 
-This bites exactly the documented remedy for the naming hazard. The advice in
-[`docs/derived-parameters.md`](docs/derived-parameters.md) ("declare the stack
-explicitly in the state instead of leaving it to the description") is sound,
+This bites exactly the remedy for the naming hazard. The advice to declare the
+stack explicitly in the state rather than leaving it to the description is
+sound,
 and there is no top-level `layers:` key in the setup schema, so following it
 means giving *every* state its own stack. The LLM-parsed template still exists
 underneath and its names — `copper`, say — remain valid tie targets while the
@@ -473,49 +510,171 @@ the data require it, and a tie expressed by role must hold across them.
 
 ---
 
-## Take a step back: enumerate AuRE's use-cases and decide which it should serve
+## Resolve a data file from its content first; fall back to the filename only when the metadata is incomplete
 
-**Not an issue with a decided remedy** — the other entries in this file are, and
-this one deliberately is not. It is a scoping decision that should be made
-deliberately and written down, because several of the entries above are only
-worth fixing if the use-case behind them is one AuRE is meant to serve.
+**Where:** [`src/aure/instruments/registry.py`](src/aure/instruments/registry.py) —
+`resolve_by_name` / `resolve`, and the `file_role` / `group_key` /
+`header_metadata` wrappers that pick between them.
 
-**Why now.** The evidence from the validation work is that AuRE is genuinely
-useful on the case it was built for, and that the further a use-case sits from
-that centre the more the machinery has to be bent to reach it — each bend adding
-a surface that can fail quietly rather than loudly. Three of the entries above
-are of exactly that shape: a bound that cannot be declared, a tie that cannot be
-expressed, a structure that cannot be inferred per state. None of them is hard
-to patch individually. Together they are a signal that capability is being added
-faster than the boundaries are being drawn, and the cost lands on robustness in
-the centre.
+**What is wrong.** Resolution is filename-first by design: `resolve` tries the
+name and only opens the file if nothing claimed it, and the `file_role` /
+`group_key` wrappers never read the file at all. The stated reason is sound in
+itself — a setup file is parsed before the data need exist, and
+`refl1d_import` classifies probes whose files it is still writing — but it
+makes the filename authoritative over the file's own declared metadata, which
+is backwards. An extension is a fine hint. A name pattern is not evidence about
+what is inside.
 
-**The exercise.** List every use-case the system currently admits — from the
-README, the config schema, the CLI, the web UI and the MCP surface, not from
-memory — and for each one record:
+Three consequences, all reproduced on hand-written files, all silent:
 
-- what it claims to do, and where that claim is made;
-- whether it has ever been run end to end on real data, and where the evidence
-  is;
-- what it depends on that the user must supply, and whether the interface can
-  actually accept it (three of the entries above are failures of exactly this);
-- how it fails when a precondition is missing: loudly, or silently;
-- what it costs to keep — code paths, prompt surface, schema fields,
-  documentation, and the failure modes it introduces into unrelated paths.
+| file (identical ORSO content: θ=0.6 declared, `sQz` = 1σ) | `resolve_by_name` | `resolve` | role | group | θ | dq_is_fwhm |
+|---|---|---|---|---|---|---|
+| `REFL_201282_combined_data_auto.ort` | ORSO | ORSO | partial | **None** | 0.6 | False |
+| `REFL_2222_1_2223_partial.txt` | REF_L | REF_L | partial | 2222 | **0.0** | **True** |
+| `cu_film.txt` | **generic** | **ORSO** | unknown | None | 0.6 | False |
 
-Then sort into: **core** (supported, tested, documented, defended);
-**bounded** (works within stated limits, and the limits are enforced in code,
-not just written down); **retired** (removed, with the reason recorded).
+1. **The filename wins over the header, and the fit pays.** Row 2 is claimed by
+   REF_L's name pattern, so the ORSO YAML header is never read: the declared
+   incident angle is lost (θ=0.0 makes `model_builder` build a Q-probe and
+   forfeit `theta_offset` / `sample_broadening`), and `dq_is_fwhm` stays `True`,
+   so a 1σ `sQz` column is read as a FWHM and refl1d divides it by 2.355 — the
+   resolution comes out 2.35× too narrow. `authoritative_fields` cannot help:
+   it asks `instruments.resolve()`, which has already answered REF_L.
 
-A starting inventory, to be checked against the code rather than trusted:
-single-curve steady-state fitting; multi-file fitting of one sample;
-multi-state co-refinement with cross-state ties; per-state structure overrides;
-reparametrization via `derived_parameters`; thin-layer mode enumeration;
-contrast variation; time-resolved series; the batch manifest and plan/job
-surface; the web UI; the MCP tool surface; the skill library.
+2. **Two instruments answer for one file.** Row 3 is `generic` to
+   `resolve_by_name` and ORSO to `resolve`. Because `file_role` / `group_key`
+   use the first and `header_metadata` uses the second, the file gets ORSO's dQ
+   convention *and* generic's `role=unknown` — which also makes
+   `role_supports_nuisance` refuse nuisance parameters for a file whose
+   incident angle is known and declared.
 
-**The point of the exercise** is to be able to say no. "AuRE does not do this,
-and here is what to use instead" is a stronger position than a feature that
-works when the user already knows the answer. The single-curve case is the one
-with 51 curves of evidence behind it; anything that makes that case less robust
-for the sake of breadth is a bad trade.
+3. **A set id present in the name is discarded, and a guardrail dies with it.**
+   REF_L's patterns are anchored to `\.txt$`, so ORSO claims row 1 by extension
+   and answers `group_key = None` — though `201282` is in the name. Both set-id
+   consistency checks filter `None` before counting
+   ([`config.py:393`](src/aure/config.py#L393),
+   [`intake.py:653`](src/aure/nodes/intake.py#L653)), so they stop firing rather
+   than erroring:
+
+   ```
+   two set_ids, .txt   -> ConfigError: partial files must share one set_id (found: ['2222', '3333'])
+   two set_ids, .ort   -> kind='partials'          # accepted silently
+   ```
+
+**How academic this is.** Entirely, for now: there is no real REF_L ORSO file
+to test against, and a properly written one would carry the metadata that is
+missing here — its `data_source.measurement.data_files` would name the original
+`REFL_<set>_..._.nxs` runs, so the set id would be recoverable from the
+*content* rather than the name, and the declared angle and 1σ resolution would
+be in the header where the ORSO instrument already looks. The failure modes
+above are what happens to a file that is mislabelled or incompletely written,
+not to a correct one. That is the reason to fix the ordering rather than to
+special-case REF_L-in-ORSO: correct files stop depending on their names, and
+incorrect ones degrade in a stated order instead of silently.
+
+**The change (minimal).** Invert the precedence and make the fallback explicit:
+
+- `resolve` reads the header first and prefers an instrument that claims the
+  file by *content*; the filename decides only when no instrument claims the
+  content, or when the content is unreadable / absent.
+- Keep `resolve_by_name` for the two call sites that genuinely cannot read a
+  file (`config` parsing a setup before the run, `refl1d_import` writing
+  probes), but treat it as the desperation path it is: name it accordingly, and
+  have the wrappers that *can* read the file (`file_role`, `group_key`) use
+  `resolve` so one file is answered by one instrument.
+- Let an instrument answer `group_key` from the header, so a set id declared in
+  ORSO metadata is honoured and one omitted from a mislabelled file is
+  `None` — as now.
+- Restore the guardrail's teeth: `partials` whose group keys are *all* `None`
+  should say so rather than pass, since "no instrument encodes grouping" and
+  "these files disagree" are different situations and only the second is fine
+  to ignore.
+
+`AURE_INSTRUMENT` already exists as the override for data whose provenance
+neither the name nor the header reveals, so nothing needs a new escape hatch.
+
+**A related gap, same theme.** Run-title extraction never moved behind the
+seam: it is still a module-level regex in intake
+(`^#\s*(?:run\s+)?title\s*:`, [`intake.py:52`](src/aure/nodes/intake.py#L52))
+applied to every file regardless of instrument. It happens to work on ORSO —
+it returned `'Cu film in dTHF'` from the nested YAML `experiment.title` — but
+by coincidence, and it will take the first `title:` at any nesting depth.
+
+**Verifying a fix.** The three rows above, as a table test alongside the golden
+table in [`tests/test_instruments.py`](tests/test_instruments.py): identical
+ORSO content must resolve to ORSO under every name, and one instrument must
+answer all four questions about a given file.
+
+---
+
+## Wish: functional constraints between fit parameters, as an add-on
+
+**Not a defect.** `derived_parameters` — declaring one parameter as a function
+of others, so the fit explores a *combination* rather than the coordinates it is
+written in — was **removed on 2026-09-08**. This records what it must do if it
+comes back, so a future design starts from the constraints rather than
+rediscovering them.
+
+**What it was for.** Reflectivity does not determine the parameters a model is
+written in; it determines combinations of them. A thin layer's
+`(ρ_layer − ρ_ambient)·t` is pinned tightly while the SLD and the thickness
+separately are not. Independent measurements have the same shape: QCM-D gives an
+adsorbed amount, not an SLD; a density plus a swelling measurement gives a
+volume fraction, not a thickness. Fitting the combination removes the degeneracy
+ridge from the geometry the optimizer explores.
+
+**Why it was removed, in order of weight:**
+
+1. **It has to survive AuRE's own iteration, and it did not.** A declaration is
+   written against layers; the refinement loop adds and removes them. The
+   response was `prune_derived_parameters` — drop the declaration and log it.
+   That is a workaround for the hard problem, not an answer to it, and it is
+   exactly the part an add-on has to design first. A constraint that evaporates
+   when the loop edits the stack is worse than no constraint, because the run
+   continues and reports a χ² for a model nobody declared.
+2. **No prose route, and the fallback was unsafe.** The mechanism was
+   config-only. Asked in a description for a relation it could have expressed
+   ("the volume fraction is the same in both contrasts, so the SLD must differ
+   as the solvent does"), the tie extractor returned the nearest expressible
+   thing — an untie — silently substituting two free parameters for one shared
+   invariant. Whatever replaces this must **refuse** and say so in `issues`.
+3. **It was never used.** Added to support benchmarking and not used for it.
+   Off by default was the tell.
+
+**What worked and is worth carrying forward:**
+
+- **Expressions round-trip.** bumps 1.0.x preserves expression parameters *and*
+  `Constraint` objects through `problem.json` — verified single-state and
+  multi-state, with χ² and constraint count unchanged. The old
+  `save_problem_json` refusal was over-conservative; an add-on need not inherit
+  it. (Re-verify against the pinned bumps version.)
+- **Cross-state relations were expressible**, if awkwardly: an auxiliary *tied*
+  declaration holding one shared free parameter, plus one state-scoped
+  assignment per state, each with its own expression. Verified: a 2× ratio held
+  as the shared handle moved. Two of the three declarations existed only to
+  carry an expression and their mandatory `free` blocks were dead — a first-class
+  surface should express this directly.
+- **The expression namespace was per state**, built from that state's own
+  sample, with no handle on another state's parameters. The shared auxiliary was
+  the only way to link states; there was no `other_state.thickness` to write.
+  An add-on needs to decide whether cross-state references are first-class.
+- **A whitelisted-AST evaluator, never `eval`.** These strings come from config
+  files and from LLMs. The retired `expressions.py` admitted numbers, dotted
+  names, unary minus, five arithmetic operators and four comparisons, and
+  rejected everything else by name. Reuse that shape.
+- **BIC accounting.** A derived raw parameter leaves the free set, so the count
+  has to move with it. Multi-state runs read the count off the problem
+  (`len(problem.getp())`), which is correct without special-casing; only the
+  single-state and checkpoint-replay paths needed a delta.
+- **χ² must stay the data term.** `data_chisq` exists because a `Constraint`
+  makes `FitProblem.chisq()` a number about the penalty rather than the data — a
+  violated one measured ~10¹⁰. It was kept on removal, so an add-on inherits a
+  χ² that already means what it should.
+
+**Where the code was**, for anyone reconstructing it: `nodes/expressions.py`
+(the evaluator), a ~400-line block in `nodes/model_builder.py` between
+`_build_sample` and `data_chisq`, the gate and shape-check in `config.py`, the
+carry-over in `nodes/modeling.py`, refinement rule 14 in `nodes/prompts.py`, the
+`functional-constraints` skill, `docs/derived-parameters.md`, and
+`tests/test_derived_parameters.py`. All present up to the commit that removed
+them.

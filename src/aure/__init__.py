@@ -8,9 +8,7 @@ Main components:
 - workflow: the analysis pipeline state machine (runner.py)
 - state: State definitions for the workflow
 - tools: LangChain tools for data loading, feature extraction, and model building
-- database: Material SLD database
 - cli: Click-based command-line interface
-- mcp_server: FastMCP server for AI assistant integration
 
 Usage:
     # Python API
@@ -19,9 +17,6 @@ Usage:
 
     # CLI
     python -m aure.cli analyze data.dat "100 nm polystyrene on silicon"
-
-    # MCP Server
-    python -m aure.cli mcp-server
 """
 
 import warnings

@@ -34,9 +34,6 @@ defaults:
   # llm_temperature: 0.0
   # llm_timeout: 120
 
-  # ALCF inference endpoints (when llm_provider: alcf)
-  # alcf_cluster: sophia          # sophia | metis
-  # alcf_access_token: ...        # Globus token
 
 # ── Jobs ──────────────────────────────────────────────────────
 jobs:

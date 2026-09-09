@@ -21,6 +21,19 @@ class LayerInfo(TypedDict):
     thickness: float
     thickness_min: Optional[float]
     thickness_max: Optional[float]
+    # This layer's boundary with whatever sits above it in the refl1d STACK.
+    # Back reflection assembles the stack ambient-first, so the physical
+    # interface this describes depends on the geometry: with layers listed
+    # substrate->ambient as [SiO2, Ti, Cu], `Ti.roughness` is the Ti/Cu
+    # boundary in a normal measurement and the Ti/SiO2 boundary in back
+    # reflection. `_log_interface_map` prints the mapping per build.
+    #
+    # This is deliberate and must not be "corrected": it is the convention the
+    # reference refl1d fits were built with, so a layer-attached roughness
+    # compares like-for-like against them. Re-keying it would put every buried
+    # interface one position off against the reference corpus. To state a
+    # boundary without depending on the geometry, use `ModelDefinition.
+    # interfaces` (see `InterfaceInfo`) instead.
     roughness: float
     # Lower bound on the interface. Omitted, a 5 Å floor applies — but only
     # where it does not contradict `roughness` itself, since a default that
@@ -46,10 +59,54 @@ class SubstrateInfo(TypedDict):
 
 
 class AmbientInfo(TypedDict):
-    """Information about the ambient/fronting medium."""
+    """Information about the ambient/fronting medium.
+
+    The ambient has **no roughness**. A slab's interface is its boundary with
+    whatever sits above it in the refl1d stack, so the outer surface belongs to
+    the outermost *layer* in both geometries — in a normal stack that layer's
+    slab carries it directly, and in back reflection the ambient slab borrows
+    that same declared value. A ``roughness`` here would be ignored;
+    :func:`aure.nodes.model_builder._build_sample` warns rather than dropping
+    it silently.
+    """
 
     name: str
     sld: float
+    # Bounds on the ambient SLD, which IS fitted whenever the ambient is not
+    # air and its SLD is non-zero. Declared here they are used verbatim;
+    # omitted, the builder defaults to 0.8x / 1.2x of the declared SLD — which
+    # inverts for a negative SLD, see the TODO in `_build_sample`.
+    sld_min: Optional[float]
+    sld_max: Optional[float]
+
+
+class InterfaceInfo(TypedDict, total=False):
+    """One interface named by the two materials it separates.
+
+    A layer's own ``roughness`` describes its boundary with whatever sits above
+    it in the refl1d *stack*, and back reflection assembles the stack
+    ambient-first — so which physical interface a layer's declaration describes
+    depends on the geometry. That is deliberate and must stay: it is the
+    convention the reference refl1d fits were built with, so a layer-attached
+    roughness compares like-for-like against them.
+
+    What it cannot express is an interface *named*. "The interface between the
+    copper and the titanium is 3 nm" belongs to a different layer in each
+    geometry, and the substrate's own declaration is discarded in back
+    reflection, leaving one boundary unreachable. An entry here names both
+    materials in **sample order** (substrate side first) and is therefore
+    geometry-independent; the builder resolves it to the right slab.
+
+    Optional and empty by default: absent, the positional mapping stands
+    exactly as before. Resolved by
+    :func:`aure.nodes.model_builder._apply_interface_declarations`.
+    """
+
+    below: str  # material on the substrate side of the boundary
+    above: str  # material on the ambient side
+    roughness: float
+    roughness_min: Optional[float]
+    roughness_max: Optional[float]
 
 
 class IntensityInfo(TypedDict, total=False):
@@ -91,6 +148,11 @@ class ModelDefinition(TypedDict, total=False):
     ambient: AmbientInfo
     constraints: List[str]
     back_reflection: bool
+    # Optional, empty by default. Names an interface by the two materials it
+    # separates, so a boundary can be stated without knowing the geometry —
+    # see `InterfaceInfo`. Absent, the positional mapping from each layer's
+    # own `roughness` stands unchanged.
+    interfaces: List[InterfaceInfo]
 
     # ---- Fitting context ----
     data_file: str  # Absolute path to reflectivity data
@@ -117,81 +179,9 @@ class ModelDefinition(TypedDict, total=False):
     # change structure between states, and distinct samples can share one.
     distinct_sample: bool
 
-    # ---- Reparametrization ----
-    # Fit a combination of raw parameters instead of the parameters themselves
-    # (see DerivedParameter). Each entry adds one free parameter and removes
-    # the raw ones it assigns, so the free-parameter count is not the layer
-    # slot count once this is non-empty.
-    derived_parameters: List["DerivedParameter"]
-
     # ---- Post-fit snapshots (populated after fitting) ----
     fitted_parameters: dict  # {param_name: value}
     fitted_uncertainties: dict  # {param_name: uncertainty}
-
-
-class DerivedParameter(TypedDict, total=False):
-    """A reparametrization: fit a *combination* of raw parameters directly.
-
-    The data constrains some combinations far better than the parameters
-    themselves — a thin layer's ``Δρ·t`` is pinned while ``Δρ`` and ``t``
-    individually are not — and what a scientist knows independently is usually
-    a combination too (a surface excess from QCM-D, a volume fraction). Fitting
-    the raw parameters and then constraining them fights that geometry; fitting
-    the combination works with it, and turns prior knowledge into an ordinary
-    range on an ordinary parameter.
-
-    So a derived parameter declares a NEW free parameter and makes one raw
-    parameter depend on it, rather than declaring an implicit constraint
-    ``f(θ) ≈ c`` that something would have to solve. The inverse is written out
-    in ``assign``; nothing here does algebra.
-
-    Example — fit the surface excess and let the layer's SLD follow::
-
-        {"name": "Gamma_SEI",
-         "free": {"init": -420, "min": -600, "max": -250},
-         "assign": {"SEI.rho": "dTHF.rho + Gamma_SEI / SEI.thickness"},
-         "keep_physical": ["SEI.rho > 0", "SEI.rho < 6.4"]}
-
-    Fields
-    ------
-    name : str
-        The new free parameter's name. Must be unique and must not collide with
-        a layer/material name.
-    free : dict
-        ``{init, min, max}`` for the new parameter. The prior is uniform over
-        ``[min, max]``, which on a well-chosen combination is usually the whole
-        point: the reparametrization puts the flat prior on the axis the
-        knowledge is actually about.
-    assign : dict[str, str]
-        ``"<layer>.<attr>" -> expression``. Each named raw parameter STOPS being
-        free and becomes the expression's value. ``<attr>`` is ``thickness``,
-        ``interface``, or ``rho`` (``material.rho`` is accepted too).
-    keep_physical : list[str]
-        Ordering comparisons (``"SEI.rho > 0"``) turned into bumps constraints.
-        A derived parameter has no bounds of its own — its value follows from
-        others — so without these it can wander somewhere impossible.
-    source : str
-        Provenance of the reparametrization / its range. Required in practice:
-        a constraint that moves the answer has to be auditable.
-    tied : bool
-        Multi-state only, default True: ONE free parameter shared across the
-        states, with ``assign`` re-evaluated in each state's own namespace. That
-        is exactly solvent-contrast variation — the excess is invariant while
-        each state's ambient, and therefore each state's derived SLD, differs.
-        ``False`` gives each state its own copy, named ``"<state> <name>"``.
-    states : list[str]
-        Multi-state only: apply only in these states (empty = all). In a state
-        it does not apply to, the ``assign`` targets stay ordinary free
-        parameters.
-    """
-
-    name: str
-    free: Dict[str, Any]
-    assign: Dict[str, str]
-    keep_physical: List[str]
-    source: str
-    tied: bool
-    states: List[str]
 
 
 class ExtractedFeatures(TypedDict):
@@ -500,6 +490,12 @@ class ReflectivityState(TypedDict):
     # cannot tell you whether it was — BIC is monotone in χ², so a
     # noise-absorbing fit wins on it for exactly the untrustworthy reason.
     best_bic_chi2: Optional[float]
+    # Which BIC formula `best_bic` was computed under (`evaluation.BIC_FORMULA`).
+    # A run resumed across a change of convention would otherwise compare two
+    # different statistics; the guardrails discard a baseline whose marker does
+    # not match. Absent on checkpoints written before the marker existed, which
+    # is exactly the stale case it is there to catch.
+    bic_formula: Optional[str]
     # Set by the terminal `finalize` node once the refinement loop has stopped.
     # `finalized` makes that node idempotent (the runner also calls it
     # defensively on loop-exit paths that never route through a node);
@@ -625,6 +621,7 @@ def create_initial_state(
         best_bic=None,
         best_bic_model=None,
         best_bic_chi2=None,
+        bic_formula=None,
         finalized=False,
         final_selection=None,
         final_fit=None,

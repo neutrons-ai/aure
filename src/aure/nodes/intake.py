@@ -27,6 +27,7 @@ from ..state import ReflectivityState, Message, LLMCallRecord
 from ..tools.data_tools import load_reflectivity_data, validate_reflectivity_data
 from ..llm import llm_available, get_llm, invoke_with_timeout
 from ..skills import SkillRegistry, select_skills, load_skill_context
+from .. import instruments
 from .hypotheses import normalize_hypothesis_states
 from .prompts import format_sample_parse_prompt, format_structural_hypothesis_prompt
 
@@ -37,81 +38,12 @@ logger = logging.getLogger(__name__)
 # dQ convention detection
 # ============================================================================
 
-_MAX_HEADER_LINES = 40  # Read at most this many lines from each file
+# Header reading and the deterministic per-instrument parse live in
+# :mod:`aure.instruments`; this module keeps only the parts that are not
+# instrument-specific (the run title) plus the LLM-based parse below.
+_read_file_header = instruments.read_file_header
 
 
-def _read_file_header(file_path: str) -> str:
-    """Read the header/comment lines from a data file.
-
-    Returns the first ``_MAX_HEADER_LINES`` lines of the file (or fewer
-    if the file is shorter).  This provides enough context for the LLM
-    to determine the dQ convention without reading the entire file.
-    """
-    lines = []
-    try:
-        with open(file_path, "r") as f:
-            for i, line in enumerate(f):
-                if i >= _MAX_HEADER_LINES:
-                    break
-                lines.append(line.rstrip("\n"))
-    except Exception:
-        pass
-    return "\n".join(lines)
-
-
-def _parse_theta_from_header(file_path: str) -> float:
-    """Extract incident angle (theta) from a REF_L data file header.
-
-    Looks for the metadata table that contains ``TwoTheta(deg)`` and
-    extracts the value.  For a single-segment file the table has one
-    data row; theta is half of TwoTheta.
-
-    Returns 0.0 if the angle cannot be determined (e.g. combined file
-    with multiple segments, or non-REF_L format).
-    """
-    header = _read_file_header(file_path)
-    if not header:
-        return 0.0
-
-    lines = header.split("\n")
-    # Find the column header line containing TwoTheta
-    col_idx = -1
-    header_line_idx = -1
-    for i, line in enumerate(lines):
-        if "TwoTheta" in line and line.startswith("#"):
-            cols = line.lstrip("# ").split()
-            for j, col in enumerate(cols):
-                if col.startswith("TwoTheta"):
-                    col_idx = j
-                    header_line_idx = i
-                    break
-            break
-
-    if col_idx < 0:
-        return 0.0
-
-    # Collect data rows after the header line (comment lines with numeric data)
-    data_rows = []
-    for line in lines[header_line_idx + 1 :]:
-        if not line.startswith("#"):
-            break
-        parts = line.lstrip("# ").split()
-        if len(parts) > col_idx:
-            try:
-                float(parts[col_idx])
-                data_rows.append(parts)
-            except ValueError:
-                continue
-
-    if len(data_rows) != 1:
-        # Combined file (multiple segments) or no data — can't assign a single theta
-        return 0.0
-
-    try:
-        two_theta = float(data_rows[0][col_idx])
-        return two_theta / 2.0
-    except (ValueError, IndexError):
-        return 0.0
 
 
 # Header label spellings that carry the operator's free-form run title, e.g.
@@ -268,21 +200,19 @@ Respond with ONLY the JSON object.
 
 
 # -- Default metadata returned when parsing is not possible ---------------
-_DEFAULT_HEADER_METADATA = {
-    "dq_is_fwhm": True,
-    "num_segments": 0,
-    "theta": 0.0,
-    "instrument": None,
-}
+#: Shape of the metadata dict; the instrument registry owns the defaults so a
+#: format that writes a 1-sigma dQ (ORSO, for one) can say so.
+_DEFAULT_HEADER_METADATA = instruments.DEFAULT_HEADER_METADATA
 
 
 def parse_file_header(file_path: str) -> dict:
     """Extract structured metadata from a reflectometry data file header.
 
     Makes a single LLM call that returns dQ convention, incident angle,
-    number of segments, and instrument.  Falls back to deterministic
-    heuristics (``_parse_theta_from_header``) when the LLM is
-    unavailable, and safe defaults for anything that cannot be inferred.
+    number of segments, and instrument. Falls back to the resolved
+    instrument's own deterministic header parse
+    (:func:`aure.instruments.header_metadata`) when the LLM is unavailable or
+    fails, which is also where a non-REF_L format supplies its conventions.
 
     Returns
     -------
@@ -297,10 +227,8 @@ def parse_file_header(file_path: str) -> dict:
         return dict(_DEFAULT_HEADER_METADATA)
 
     if not llm_available():
-        logger.debug("[INTAKE] LLM not available; falling back to heuristics")
-        result = dict(_DEFAULT_HEADER_METADATA)
-        result["theta"] = _parse_theta_from_header(file_path)
-        return result
+        logger.debug("[INTAKE] LLM not available; using the instrument parse")
+        return instruments.header_metadata(file_path)
 
     try:
         from langchain_core.messages import HumanMessage
@@ -323,6 +251,25 @@ def parse_file_header(file_path: str) -> dict:
             for key in result:
                 if key in parsed:
                     result[key] = parsed[key]
+            # A format that *defines* a field outranks the LLM's reading of
+            # it — an ORSO `sQz` column is one sigma by specification, not by
+            # inference. Instruments that declare nothing keep the LLM's
+            # answer, which is how this has always behaved.
+            instrument = instruments.resolve(file_path)
+            authoritative = instruments.authoritative_fields(instrument)
+            if authoritative:
+                own = instrument.header_metadata(file_path)
+                for key in authoritative:
+                    if key in result and key in own:
+                        if result[key] != own[key]:
+                            logger.info(
+                                "[INTAKE] %s defines %s=%r; overriding the LLM's %r",
+                                instrument.name,
+                                key,
+                                own[key],
+                                result[key],
+                            )
+                        result[key] = own[key]
             logger.info(
                 "[INTAKE] Header metadata for %s: dq_is_fwhm=%s, theta=%.4f, "
                 "segments=%d, instrument=%s",
@@ -341,10 +288,8 @@ def parse_file_header(file_path: str) -> dict:
             e,
         )
 
-    # Fallback: heuristic theta + safe defaults for the rest
-    result = dict(_DEFAULT_HEADER_METADATA)
-    result["theta"] = _parse_theta_from_header(file_path)
-    return result
+    # Fallback: whatever the file's own instrument can determine.
+    return instruments.header_metadata(file_path)
 
 
 def detect_dq_convention(file_path: str) -> bool:
@@ -431,27 +376,6 @@ def _fix_llm_json(text: str) -> str:
 
 # Keys we expect on each hypothesis object; used to filter/validate
 _HYPOTHESIS_TEXT_FIELDS = ("title", "rationale", "change", "skill_source")
-
-
-_FUNCTIONAL_CONSTRAINTS_SKILL = "functional-constraints"
-
-
-def _gate_functional_constraints_skill(
-    active_skills: list[str], user_config: Dict[str, Any] | None
-) -> list[str]:
-    """Add or remove ``functional-constraints`` according to the opt-in gate."""
-    from ..config import derived_parameters_enabled
-
-    cfg = user_config or {}
-    enabled = bool(cfg.get("derived_parameters")) or derived_parameters_enabled(
-        cfg.get("allow_derived_parameters")
-    )
-    selected = set(active_skills)
-    if enabled:
-        selected.add(_FUNCTIONAL_CONSTRAINTS_SKILL)
-    else:
-        selected.discard(_FUNCTIONAL_CONSTRAINTS_SKILL)
-    return sorted(selected)
 
 
 def generate_structural_hypotheses_with_llm(
@@ -607,23 +531,6 @@ def _format_hypotheses_summary(hypotheses: list[Dict[str, Any]]) -> str:
 # Multi-state helpers (Ticket 05)
 # ----------------------------------------------------------------------
 
-# Filename heuristics for REF_L instrument set_id detection.
-_SET_ID_COMBINED_RE = re.compile(r"REFL_(\d+)_combined_data_auto\.txt$", re.IGNORECASE)
-_SET_ID_PARTIAL_RE = re.compile(r"REFL_(\d+)_\d+_\d+_partial\.txt$", re.IGNORECASE)
-
-
-def _extract_set_id(file_path: str) -> str | None:
-    """Return the REF_L set_id encoded in *file_path* or None if absent."""
-    import os
-
-    name = os.path.basename(file_path)
-    for pattern in (_SET_ID_COMBINED_RE, _SET_ID_PARTIAL_RE):
-        m = pattern.search(name)
-        if m:
-            return m.group(1)
-    return None
-
-
 def _enrich_dataset(ds: dict) -> dict:
     """Load Q/R/dR + parse header metadata for a single ``DatasetInfo``.
 
@@ -722,7 +629,7 @@ def intake_node(state: ReflectivityState) -> Dict[str, Any]:
                             )
                         )
                         continue
-                    sid = _extract_set_id(ds["file"])
+                    sid = instruments.group_key(ds["file"])
                     if sid:
                         set_ids.add(sid)
                     enriched_files.append(enriched_ds)
@@ -898,15 +805,6 @@ def intake_node(state: ReflectivityState) -> Dict[str, Any]:
                 active_skills = sorted(
                     set(active_skills) | {"multi-state-corefinement"}
                 )
-            # Reparametrization is opt-in, so its skill follows the gate rather
-            # than the LLM's judgement — included when the feature is on (the
-            # model then needs to know how a derived parameter behaves and how
-            # to recommend one), and stripped when it is off even if the
-            # selector picked it out of the catalog, so a run that cannot use
-            # the feature is never told about it.
-            active_skills = _gate_functional_constraints_skill(
-                active_skills, state.get("user_config")
-            )
             updates["active_skills"] = active_skills
             updates["llm_calls"].append(
                 LLMCallRecord(

@@ -1,11 +1,15 @@
 """
 LLM provider registry.
 
-Supported providers: openai, gemini, alcf, local.
+Supported providers: openai, gemini, local.
 
-``openai``, ``alcf``, and ``local`` all use the OpenAI-compatible
-LangChain wrapper with different base URLs and credential handling.
-``gemini`` uses :class:`ChatGoogleGenerativeAI`.
+``openai`` and ``local`` both use the OpenAI-compatible LangChain wrapper with
+different base URLs and credential handling. ``gemini`` uses
+:class:`ChatGoogleGenerativeAI`.
+
+Any other OpenAI-compatible endpoint — a self-hosted server or a remote
+facility inference API — is reached through ``local`` with ``LLM_BASE_URL``
+and ``LLM_API_KEY``, so it needs no provider entry here.
 
 Adding a new OpenAI-compatible provider only requires a new factory in
 ``openai_compat.py`` and a registry entry in :data:`PROVIDERS` below.
@@ -16,8 +20,7 @@ from __future__ import annotations
 from typing import Optional
 
 from ..config import get_llm_config
-from .alcf_auth import get_token  # noqa: F401  (re-exported for config.py)
-from .openai_compat import create_openai, create_alcf, create_local
+from .openai_compat import create_openai, create_local
 from .gemini import create_gemini
 
 # ── Registry & public entry point ──────────────────────────────────────
@@ -25,7 +28,6 @@ from .gemini import create_gemini
 PROVIDERS = {
     "openai": create_openai,
     "gemini": create_gemini,
-    "alcf": create_alcf,
     "local": create_local,
 }
 

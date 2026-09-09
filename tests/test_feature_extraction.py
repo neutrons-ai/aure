@@ -7,7 +7,6 @@ with known parameters, then tests if features can be recovered.
 
 import numpy as np
 from aure.tools.feature_tools import extract_all_features, analyze_residual_fringes
-from aure.database.materials import lookup_material
 
 
 # ---------------------------------------------------------------------------
@@ -170,26 +169,6 @@ def test_2_layer():
         # 2-layer beating makes thickness harder; use a generous tolerance
         assert thickness_error < 50, (
             f"Thickness error too large: {thickness_error:.1f}%"
-        )
-
-
-def test_material_lookup():
-    """Test material database lookup."""
-    test_queries = [
-        ("Si", 2.07),
-        ("silicon", 2.07),
-        ("D2O", 6.37),
-        ("heavy water", 6.37),
-        ("gold", 4.66),
-        ("native oxide", 3.47),
-    ]
-
-    for query, expected in test_queries:
-        material = lookup_material(query)
-        assert material is not None, f"lookup_material({query!r}) returned None"
-        sld = material.get_sld()
-        assert abs(sld - expected) < 0.1, (
-            f"SLD mismatch for {query}: got {sld:.3f}, expected {expected}"
         )
 
 

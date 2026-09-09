@@ -5,7 +5,7 @@ Submodules
 ----------
 config      – environment-variable-driven configuration
 timeout     – signal-based call timeout wrapper
-providers/  – one module per LLM backend (openai, gemini, alcf, local, …)
+providers/  – one module per LLM backend (openai, gemini, local, …)
 
 Public API (re-exported here for convenience)
 ---------------------------------------------

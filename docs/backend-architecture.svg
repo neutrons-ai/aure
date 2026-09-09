@@ -32,14 +32,14 @@
 
   <!-- Title -->
   <text x="40" y="46" class="title">AuRE — Backend Architecture</text>
-  <text x="40" y="70" class="sub">The agentic core: a LangGraph state machine over <tspan class="mono">ReflectivityState</tspan> driving the refinement loop, plus the shared services every node calls. (Web UI / MCP UI omitted.)</text>
+  <text x="40" y="70" class="sub">The agentic core: a LangGraph state machine over <tspan class="mono">ReflectivityState</tspan> driving the refinement loop, plus the shared services every node calls. (Web UI internals omitted.)</text>
   <text x="40" y="90" class="sub"><tspan font-weight="700" fill="#7c3aed">Violet</tspan> nodes make LLM calls · <tspan font-weight="700" fill="#475569">slate</tspan> nodes are deterministic (no LLM). The LLM proposes &amp; explains; code enforces invariants.</text>
 
   <!-- ============ ENTRY POINTS ============ -->
   <rect x="40" y="112" width="1280" height="110" rx="12" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5"/>
   <text x="60" y="136" class="box-t">Entry points &amp; inputs</text>
-  <text x="60" y="160" class="box-s"><tspan font-weight="700">CLI</tspan> (<tspan class="mono">aure.cli</tspan>):  analyze · batch · resume · evaluate · import-refl1d · prepare · plot-results</text>
-  <text x="60" y="180" class="box-s"><tspan font-weight="700">MCP</tspan> (<tspan class="mono">mcp_server.py</tspan>, FastMCP stdio/SSE) exposes the same workflow to AI assistants</text>
+  <text x="60" y="160" class="box-s"><tspan font-weight="700">CLI</tspan> (<tspan class="mono">aure.cli</tspan>):  analyze · batch · resume · import-refl1d · prepare · serve</text>
+  <text x="60" y="180" class="box-s"><tspan font-weight="700">Web UI</tspan> (<tspan class="mono">aure serve</tspan>, Flask) — interactive setup or viewer, over the same workflow</text>
   <text x="60" y="200" class="box-s"><tspan font-weight="700">Setup YAML</tspan> (<tspan class="mono">setup.py</tspan>) — states-only schema · <tspan class="mono">load_setup / load_manifest</tspan></text>
   <text x="720" y="160" class="box-s"><tspan font-weight="700">Inputs:</tspan></text>
   <text x="720" y="180" class="box-s">&#8226; data file(s) — Q, R, dR &#160;&#160; &#8226; sample_description (free text)</text>
@@ -172,7 +172,7 @@
   <text x="56" y="744" class="nd"><tspan font-weight="700">invoke_with_timeout()</tspan></text>
   <text x="66" y="759" class="nd"><tspan class="mono">timeout.py</tspan> · LLMTimeoutError</text>
   <text x="56" y="782" class="nd"><tspan font-weight="700">providers/</tspan></text>
-  <text x="66" y="797" class="nd">openai_compat · gemini · alcf</text>
+  <text x="66" y="797" class="nd">openai_compat · gemini</text>
   <line x1="56" y1="810" x2="264" y2="810" stroke="#c4b5fd" stroke-dasharray="3 3"/>
   <text x="56" y="828" class="ann">temperature 0 · JSON out</text>
   <text x="56" y="844" class="ann">each call &#8594; LLMCallRecord</text>

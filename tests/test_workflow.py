@@ -156,7 +156,7 @@ def test_full_fitting_pipeline():
 
 @pytest.mark.skipif(not llm_available(), reason="No LLM configured")
 def test_workflow_without_fitting():
-    """run_prepare yields a model but never fits (the MCP model-build path)."""
+    """run_prepare yields a model but never fits (the `aure prepare` path)."""
     data_file = create_test_data_file()
 
     final_state = run_prepare(

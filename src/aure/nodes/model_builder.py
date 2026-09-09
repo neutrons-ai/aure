@@ -43,6 +43,15 @@ def load_probe(file_path: str, *, dq_is_fwhm: bool = True):
     -------
     probe
         A refl1d ``Probe`` (or ``QProbe``) object.
+
+    Notes
+    -----
+    ``.ort`` support is refl1d's, and in 1.0.1 its loader accepts only files
+    that carry the incident angle *and* the wavelength as tagged data columns,
+    each with a matching ``ErrorColumn``. A file stating them once in the
+    header — the natural form for a reduced curve — raises ``AttributeError``
+    from inside ``load4``. See ``tests/test_orso_probe.py``, whose strict
+    xfails will fail once that is fixed upstream.
     """
     import warnings
 
@@ -214,22 +223,69 @@ def _outer_roughness_max(layers_info: list) -> float:
     The default is unchanged, so behaviour only differs when a model (or the
     environment) explicitly asks for a wider bound.
     """
+    declared = None
+    if layers_info:
+        try:
+            declared = float(
+                layers_info[-1].get("roughness_max", _OUTER_ROUGHNESS_MAX_DEFAULT)
+            )
+        except (TypeError, ValueError):
+            declared = None
+
     override = os.environ.get("ROUGHNESS_MAX_OUTER")
     if override:
         try:
-            return float(override)
+            forced = float(override)
         except ValueError:
             logger.warning(
                 "[MODEL] Ignoring non-numeric ROUGHNESS_MAX_OUTER=%r", override
             )
-    if layers_info:
-        try:
-            return float(
-                layers_info[-1].get("roughness_max", _OUTER_ROUGHNESS_MAX_DEFAULT)
-            )
-        except (TypeError, ValueError):
-            pass
-    return _OUTER_ROUGHNESS_MAX_DEFAULT
+        else:
+            # The override REPLACES the model's ceiling rather than widening it,
+            # and that is deliberate: on the reference corpus the outer
+            # roughness runs to the cap in 108 of 835 fits where the expert
+            # value is 46-200 Å, so the cap is a regularizer the fits lean on.
+            # Say when it displaces a declaration, though — otherwise a model
+            # asking for 400 Å gets 250 with nothing anywhere admitting it.
+            if declared is not None and abs(declared - forced) > 1e-9:
+                logger.info(
+                    "[MODEL] outer interface ceiling %g Å from "
+                    "ROUGHNESS_MAX_OUTER, displacing the %g Å declared on %r. "
+                    "To set it from the model, name the interface explicitly "
+                    "(see ModelDefinition.interfaces).",
+                    forced,
+                    declared,
+                    (layers_info[-1] or {}).get("name", "the outermost layer"),
+                )
+            return forced
+
+    return declared if declared is not None else _OUTER_ROUGHNESS_MAX_DEFAULT
+
+
+def outer_ceiling_displacement(definition: dict) -> tuple | None:
+    """``(forced, declared, layer_name)`` when the env displaces a declared
+    outer ceiling; ``None`` otherwise.
+
+    The displacement itself is deliberate — see :func:`_outer_roughness_max` —
+    but it is invisible from inside a run: the model declares one ceiling and
+    the fit uses another. `evaluation` reports this as an issue so the refiner
+    is told its declaration had no effect, instead of re-raising it every
+    iteration against a bound it cannot move.
+    """
+    override = os.environ.get("ROUGHNESS_MAX_OUTER")
+    if not override:
+        return None
+    layers = definition.get("layers") or []
+    if not layers:
+        return None
+    try:
+        forced = float(override)
+        declared = float(layers[-1]["roughness_max"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if abs(forced - declared) <= 1e-9:
+        return None
+    return forced, declared, str(layers[-1].get("name", "the outermost layer"))
 
 
 #: Lower bound applied to a layer interface when the model declares none.
@@ -284,6 +340,181 @@ def _ranged(param, value, lo, hi, *, label: str, declared_lo: bool = True) -> No
     param.range(lo, hi)
 
 
+def _interface_owner_index(
+    position: int, n_layers: int, *, back_reflection: bool
+) -> int:
+    """Slab index carrying the boundary above *position* in SAMPLE order.
+
+    Sample order is substrate-first: ``-1`` is the substrate, ``0..n-1`` the
+    layers, ``n`` the ambient. The boundary "above position p" is the one
+    between p and p+1.
+
+    A slab's ``interface`` is its boundary with whatever sits above it *in the
+    stack*, and the stack is assembled ambient-first in back reflection — so
+    the slab that carries a given physical boundary is the lower of the two in
+    STACK order, which is the substrate-side material normally and the
+    ambient-side material in back reflection.
+    """
+    if back_reflection:
+        # stack = [ambient, L(n-1), ..., L0, substrate]; the ambient-side
+        # material of the pair sits lower.
+        upper = position + 1
+        return 0 if upper >= n_layers else n_layers - upper
+    # stack = [substrate, L0, ..., L(n-1), ambient]
+    return position + 1
+
+
+def _log_interface_map(
+    layers_info: list, substrate_info: dict, ambient_info: dict, back_reflection: bool
+) -> None:
+    """Record which declared roughness feeds which physical boundary.
+
+    The mapping is not what a reader of the model JSON would assume. A layer's
+    ``roughness`` is its boundary with whatever sits above it in the *stack*,
+    and back reflection assembles the stack ambient-first — so the same
+    declaration describes a different interface depending on the geometry, the
+    substrate's is discarded, and the outermost layer's is used twice (once for
+    its own buried boundary, once for the borrowed outer surface). Working that
+    out from the code takes a while; this makes it readable off a run.
+
+    Logged at INFO for back reflection, where the mapping is surprising and
+    lossy, and at DEBUG for a normal stack, where it is the obvious one.
+    """
+    if not layers_info:
+        return
+    names = [layer.get("name", f"layer{i}") for i, layer in enumerate(layers_info)]
+    sub = substrate_info.get("name", "substrate")
+    amb = ambient_info.get("name", "ambient")
+    chain = [sub, *names, amb]
+
+    pieces = []
+    for position in range(-1, len(names)):
+        lower, upper = chain[position + 1], chain[position + 2]
+        if back_reflection:
+            # The ambient-side material's slab carries the boundary, and the
+            # ambient has no roughness of its own — the OUTER boundary borrows
+            # the outermost layer's declaration.
+            if position + 1 >= len(names):
+                pieces.append(
+                    f"{names[-1]}.roughness -> {lower}/{upper} (outer, borrowed)"
+                )
+                continue
+            owner = names[position + 1]
+        else:
+            owner = sub if position < 0 else names[position]
+        pieces.append(f"{owner}.roughness -> {lower}/{upper}")
+    if back_reflection:
+        pieces.append(f"{sub}.roughness -> (unused)")
+        logger.info("[BUILDER] back-reflection interface map: %s", "; ".join(pieces))
+    else:
+        pieces.append(f"{amb} interface -> (unused)")
+        logger.debug("[BUILDER] interface map: %s", "; ".join(pieces))
+
+
+def _apply_interface_declarations(definition: dict, sample) -> None:
+    """Apply an optional ``interfaces`` block, overriding the positional map.
+
+    A layer's ``roughness`` describes its boundary with whatever sits above it
+    in the *stack*, and back reflection assembles the stack ambient-first — so
+    which physical interface a declaration describes depends on the geometry
+    (see :func:`_log_interface_map`). That is self-consistent, and it matches
+    the convention the reference refl1d fits were built with, so it is not
+    changed here.
+
+    What it cannot do is let someone *name* an interface. "The interface
+    between the copper and the titanium is 3 nm" has no unambiguous home: the
+    layer that owns it differs between geometries, and the substrate's own
+    declaration is discarded in back reflection, so one boundary is unreachable
+    altogether.
+
+    An ``interfaces`` entry names the two materials the boundary separates, in
+    sample order (substrate side first), and is therefore geometry-independent:
+
+        interfaces:
+          - {below: silicon, above: SiO2, roughness: 3.0, roughness_max: 20.0}
+
+    Absent — which is every model today — this is a no-op and the positional
+    mapping stands untouched.
+    """
+    declared = definition.get("interfaces") or []
+    if not declared:
+        return
+
+    layers_info = definition.get("layers") or []
+    back_reflection = definition.get("back_reflection", False)
+    names = [layer.get("name", f"layer{i}") for i, layer in enumerate(layers_info)]
+    sub = (definition.get("substrate") or {}).get("name", "substrate")
+    amb = (definition.get("ambient") or {}).get("name", "ambient")
+    chain = [sub, *names, amb]  # sample order: substrate first
+
+    seen: dict[int, str] = {}
+    for entry in declared:
+        if not isinstance(entry, dict):
+            raise ValueError("each `interfaces` entry must be a mapping")
+        below, above = entry.get("below"), entry.get("above")
+        if not below or not above:
+            raise ValueError(
+                f"interface entry {entry!r} needs both `below` and `above` "
+                f"(the two materials it separates, substrate side first)"
+            )
+        try:
+            i_below, i_above = chain.index(str(below)), chain.index(str(above))
+        except ValueError:
+            raise ValueError(
+                f"interface {below!r}/{above!r} names a material not in this "
+                f"model; known, in sample order: {chain}"
+            ) from None
+        if i_above != i_below + 1:
+            raise ValueError(
+                f"interface {below!r}/{above!r} is not a boundary: those "
+                f"materials are not adjacent. Sample order is {chain}, and "
+                f"`below` must be the substrate-side one."
+            )
+
+        position = i_below - 1  # sample-order position: -1 is the substrate
+        idx = _interface_owner_index(
+            position, len(names), back_reflection=back_reflection
+        )
+        if idx in seen:
+            raise ValueError(
+                f"interfaces declares {below!r}/{above!r} and {seen[idx]} for "
+                f"the same boundary"
+            )
+        seen[idx] = f"{below!r}/{above!r}"
+
+        # `roughness_tie` replaces the interface with an expression, which has
+        # no value to set. It is the profile-artifact remedy and more specific
+        # than a declared number, so it wins — loudly.
+        if not hasattr(sample[idx].interface, "range"):
+            logger.warning(
+                "[BUILDER] interface %s/%s ignored: that interface is tied to "
+                "its layer thickness (roughness_tie)",
+                below,
+                above,
+            )
+            continue
+
+        value = entry.get("roughness")
+        if value is None:
+            raise ValueError(f"interface {below!r}/{above!r} declares no `roughness`")
+        declared_lo = "roughness_min" in entry
+        _ranged(
+            sample[idx].interface,
+            float(value),
+            float(entry.get("roughness_min", _ROUGHNESS_MIN_DEFAULT)),
+            float(entry.get("roughness_max", 30.0)),
+            label=f"{below}/{above} interface",
+            declared_lo=declared_lo,
+        )
+        logger.info(
+            "[BUILDER] interface %s/%s set explicitly: roughness=%g (slab %d)",
+            below,
+            above,
+            float(value),
+            idx,
+        )
+
+
 def _build_sample(definition: dict):
     """Build a refl1d sample stack with parameter ranges from a ModelDefinition.
 
@@ -304,6 +535,25 @@ def _build_sample(definition: dict):
     ambient_info = definition["ambient"]
     layers_info = definition.get("layers", [])
     back_reflection = definition.get("back_reflection", False)
+
+    # A roughness on the AMBIENT is ignored, in both geometries, so say so. An
+    # interface belongs to the slab below it, and the outer surface is
+    # therefore the outermost layer's: in a normal stack that layer's own slab
+    # carries it, and in back reflection the ambient slab borrows that same
+    # declared value (see the stack assembly below). Either way nothing reads
+    # `ambient["roughness"]`, and a declaration that vanishes without comment
+    # is worse than one that is refused.
+    _rough_keys = ("roughness", "roughness_min", "roughness_max")
+    _stray = [k for k in _rough_keys if k in ambient_info]
+    if _stray:
+        owner = layers_info[-1].get("name") if layers_info else None
+        logger.warning(
+            "[BUILDER] ambient %r declares %s — ignored. The outer surface is "
+            "owned by %s; set its roughness instead.",
+            ambient_info.get("name", "ambient"),
+            ", ".join(_stray),
+            f"the outermost layer ({owner})" if owner else "the outermost layer",
+        )
 
     # --- Materials ---
     substrate = SLD(name=substrate_info["name"], rho=substrate_info["sld"])
@@ -413,424 +663,24 @@ def _build_sample(definition: dict):
         sub_rough_max = substrate_info.get("roughness_max", 15.0)
         sample[0].interface.range(0, sub_rough_max)
 
+    _apply_interface_declarations(definition, sample)
+    _log_interface_map(layers_info, substrate_info, ambient_info, back_reflection)
+
     return sample
 
 
-# ======================================================================
-# Derived parameters (reparametrization)
-# ======================================================================
+#: ``X.rho`` and ``X.sld`` are accepted as spellings of refl1d's
+#: ``X.material.rho``. Tie specs are written by hand, and all three spellings
+#: appear in the wild, so they have to canonicalize to one parameter.
+_ATTR_ALIASES = {"rho": "material.rho", "sld": "material.rho"}
 
 
-_NAMESPACE_ATTRS = ("thickness", "interface", "material.rho")
-
-
-def _parameter_namespace(
-    definition: dict, sample, *, extra: Dict[str, Any] | None = None
-) -> Dict[str, Any]:
-    """Map ``"<layer>.<attr>"`` to the live ``bumps`` parameter on *sample*.
-
-    Built fresh at each use rather than cached, so an expression evaluated
-    after an assignment sees the assigned value. That ordering is what lets a
-    ``keep_physical`` guard constrain the DERIVED quantity (``SEI.rho > 0``)
-    rather than the free parameter that replaced it.
-
-    ``substrate`` and ``ambient`` are registered under both their material name
-    and the literal alias, matching the tie-spec vocabulary.
-    """
-    ns: Dict[str, Any] = {}
-    back = definition.get("back_reflection", False)
-
-    names: list[tuple[str, str]] = []
-    for layer in definition.get("layers") or []:
-        if isinstance(layer, dict) and layer.get("name"):
-            names.append((layer["name"], layer["name"]))
-    sub_name = (definition.get("substrate") or {}).get("name")
-    if sub_name:
-        names.append((sub_name, sub_name))
-        names.append((sub_name, "substrate"))
-    amb_name = (definition.get("ambient") or {}).get("name")
-    if amb_name:
-        names.append((amb_name, amb_name))
-        names.append((amb_name, "ambient"))
-
-    for real_name, alias in names:
-        idx = _layer_index(definition, real_name, back_reflection=back)
-        if idx is None:
-            continue
-        for attr in _NAMESPACE_ATTRS:
-            try:
-                ns[f"{alias}.{attr}"] = _get_layer_param(sample[idx], attr)
-            except AttributeError:
-                continue  # e.g. the semi-infinite media have no thickness
-    ns.update(extra or {})
-    return ns
-
-
-def _derived_specs(definition: dict, state_name: str) -> list[dict]:
-    """The declarations that apply to this state (all of them when unscoped)."""
-    out = []
-    for spec in definition.get("derived_parameters") or []:
-        if not isinstance(spec, dict) or not spec.get("name"):
-            continue
-        scope = spec.get("states") or []
-        if scope and state_name and state_name not in scope:
-            continue
-        out.append(spec)
-    return out
-
-
-def _derived_assigned_slots(definition: dict, state_name: str) -> set:
-    """``(sample index, attr path)`` pairs a reparametrization takes over here.
-
-    A raw parameter that a declaration assigns is no longer free, so a
-    cross-state tie must not alias it: doing so would replace the per-state
-    expression with state 0's — reintroducing exactly the shared coordinate the
-    reparametrization exists to remove, and silently resolving each state's
-    derived SLD against the WRONG state's ambient.
-    """
-    from .expressions import canonical_name
-
-    slots: set = set()
-    back = definition.get("back_reflection", False)
-    for spec in _derived_specs(definition, state_name):
-        for target in (spec.get("assign") or {}):
-            canon = canonical_name(str(target))
-            layer_name, _, attr_path = canon.partition(".")
-            if not attr_path:
-                continue
-            idx = _layer_index(definition, layer_name, back_reflection=back)
-            if idx is not None:
-                slots.add((idx, attr_path))
-    return slots
-
-
-def _unrealizable_reason(
-    definition: dict, spec: dict, declared: set
-) -> str | None:
-    """Why *spec* cannot be built against this structure, or None if it can.
-
-    Name-based, so it works before a sample exists — the same check serves the
-    post-refinement prune and the defensive skip inside the builder.
-
-    A declaration is kept only if EVERY part of it resolves: each assignment
-    target, each name any expression mentions, and each guard. Keeping a
-    declaration whose ``keep_physical`` guard has gone stale would be the worst
-    outcome of the three — the reparametrization would still steer the fit
-    while the check that made it safe had quietly stopped applying.
-    """
-    from .expressions import ExpressionError, referenced_names
-
-    valid = _valid_layer_names(definition) | declared
-    for target in (spec.get("assign") or {}):
-        if str(target).split(".", 1)[0] not in valid:
-            return f"assignment target {target!r} names no layer"
-    texts = list((spec.get("assign") or {}).values())
-    texts += list(spec.get("keep_physical") or [])
-    for text in texts:
-        try:
-            refs = referenced_names(str(text))
-        except ExpressionError as exc:
-            return f"expression {text!r} is invalid ({exc})"
-        for ref in refs:
-            if ref.split(".", 1)[0] not in valid:
-                return f"expression {text!r} references missing {ref!r}"
-    return None
-
-
-def surviving_derived_parameters(definition: dict) -> tuple[list, list[str]]:
-    """Split ``derived_parameters`` into what still applies and what does not.
-
-    Returns ``(kept, notes)``. A declaration is dropped when the structure has
-    moved out from under it — most often because a refinement removed the layer
-    it reparametrizes. That is a structural edit invalidating a modelling
-    choice, exactly like a tie whose layer is gone, and
-    :func:`prune_tie_specs` already establishes the answer: drop it and say so.
-    Raising instead would end the run, discarding the remaining refinement
-    budget over a change the model had no way to know was forbidden.
-
-    Auxiliary declarations (free, no ``assign``, reaching the model only
-    through another entry's expression) are dropped alongside whatever
-    referenced them — otherwise a free parameter the data cannot see would be
-    left wandering its full range and charged to BIC. Applied to a fixed point,
-    since one auxiliary may feed another.
-    """
-    from .expressions import ExpressionError, referenced_names
-
-    specs = [
-        s
-        for s in (definition.get("derived_parameters") or [])
-        if isinstance(s, dict)
-    ]
-    if not specs:
-        return [], []
-
-    notes: list[str] = []
-    declared = {str(s.get("name")) for s in specs if s.get("name")}
-    kept = []
-    for spec in specs:
-        reason = _unrealizable_reason(definition, spec, declared)
-        if reason is None:
-            kept.append(spec)
-        else:
-            notes.append(f"{spec.get('name')!r}: {reason}")
-
-    # Fixed point: an auxiliary left with no referent goes too.
-    while True:
-        referenced: set = set()
-        for spec in kept:
-            for text in list((spec.get("assign") or {}).values()) + list(
-                spec.get("keep_physical") or []
-            ):
-                try:
-                    referenced |= referenced_names(str(text))
-                except ExpressionError:
-                    continue
-        orphans = [
-            spec
-            for spec in kept
-            if not (spec.get("assign") or {})
-            and str(spec.get("name")) not in referenced
-        ]
-        if not orphans:
-            break
-        for spec in orphans:
-            kept.remove(spec)
-            notes.append(
-                f"{spec.get('name')!r}: auxiliary parameter left unreferenced"
-            )
-    return kept, notes
-
-
-def prune_derived_parameters(definition: dict) -> list[str]:
-    """Drop declarations invalidated by a structural edit, in place.
-
-    Returns human-readable notes for the dropped ones (empty when nothing was
-    dropped), for the caller to log and put in the run transcript. The mirror
-    of :func:`prune_tie_specs`, and called from the same place.
-    """
-    if not definition.get("derived_parameters"):
-        return []
-    kept, notes = surviving_derived_parameters(definition)
-    if notes:
-        definition["derived_parameters"] = kept
-    return notes
-
-
-def apply_derived_parameters(
-    definition: dict,
-    sample,
-    *,
-    state_name: str = "",
-    shared: Dict[str, Any] | None = None,
-) -> list:
-    """Reparametrize *sample* in place; return the physicality constraints.
-
-    For each declaration a new free ``Parameter`` is created and every raw
-    parameter named in ``assign`` is replaced by an expression over it — so the
-    fit explores the combination the data (or an independent measurement)
-    actually constrains, instead of coordinates it does not resolve. The
-    replaced parameters leave the free set automatically: ``bumps`` discovers
-    parameters by traversing the model, and an expression is not one.
-
-    *shared* is the cross-state cache. A declaration with ``tied`` (the default)
-    resolves to ONE parameter object across every state, while ``assign`` is
-    re-evaluated per state against that state's own namespace — which is
-    precisely solvent-contrast variation: one invariant excess, a different
-    derived SLD in each contrast. That relationship cannot be written as a
-    ``shared_parameters`` entry, because the invariant is not a layer attribute.
-
-    Raises ``ValueError`` on a declaration that does not describe a buildable
-    reparametrization; the caller surfaces it rather than fitting something
-    other than what was asked for.
-    """
-    from bumps.parameter import Parameter
-
-    from .expressions import ExpressionError, canonical_name, evaluate
-    from .expressions import evaluate_constraint
-
-    specs = _derived_specs(definition, state_name)
-    if not specs:
-        return []
-    # Defensive: any entry point may hand us a definition whose structure has
-    # moved (a checkpoint replayed after a refinement, a hand-edited model). A
-    # reparametrization that no longer describes this model is dropped, not
-    # fatal — see :func:`surviving_derived_parameters`.
-    realizable, notes = surviving_derived_parameters(
-        {**definition, "derived_parameters": specs}
-    )
-    for note in notes:
-        logger.warning(
-            "[BUILDER] Dropped derived parameter %s%s",
-            note,
-            f" (state {state_name})" if state_name else "",
-        )
-    specs = realizable
-    if not specs:
-        return []
-
-    # Every declared parameter exists before any assignment is evaluated, so
-    # one reparametrization may be written in terms of another.
-    created: Dict[str, Any] = {}
-    for spec in specs:
-        name = str(spec["name"])
-        tied = bool(spec.get("tied", True))
-        key = name if (tied or not state_name) else f"{state_name} {name}"
-        par = (shared or {}).get(key)
-        if par is None:
-            free = spec.get("free") or {}
-            init = float(free.get("init", free.get("value", 0.0)))
-            par = Parameter(init, name=key)
-            lo, hi = free.get("min"), free.get("max")
-            if lo is not None and hi is not None:
-                par.range(float(lo), float(hi))
-            if shared is not None:
-                shared[key] = par
-        created[name] = par
-
-    for spec in specs:
-        for target, expr in (spec.get("assign") or {}).items():
-            ns = _parameter_namespace(definition, sample, extra=created)
-            try:
-                value = evaluate(str(expr), ns)
-            except ExpressionError as exc:
-                raise ValueError(
-                    f"derived parameter {spec['name']!r}: assignment to "
-                    f"{target!r} is invalid — {exc}"
-                ) from exc
-            layer_name, _, _rest = canonical_name(str(target)).partition(".")
-            attr_path = canonical_name(str(target)).split(".", 1)[1] if _rest else ""
-            if not attr_path:
-                raise ValueError(
-                    f"derived parameter {spec['name']!r}: assignment target "
-                    f"{target!r} must be '<layer>.<attr>'"
-                )
-            idx = _layer_index(
-                definition,
-                layer_name,
-                back_reflection=definition.get("back_reflection", False),
-            )
-            if idx is None:
-                raise ValueError(
-                    f"derived parameter {spec['name']!r}: assignment target "
-                    f"{target!r} names no layer in this "
-                    + (f"state ({state_name})" if state_name else "model")
-                )
-            _set_layer_param(sample[idx], attr_path, value)
-
-    constraints = []
-    for spec in specs:
-        for guard in spec.get("keep_physical") or []:
-            ns = _parameter_namespace(definition, sample, extra=created)
-            try:
-                constraints.append(evaluate_constraint(str(guard), ns))
-            except ExpressionError as exc:
-                raise ValueError(
-                    f"derived parameter {spec['name']!r}: keep_physical entry "
-                    f"{guard!r} is invalid — {exc}"
-                ) from exc
-    return constraints
-
-
-def validate_derived_parameters(definition: dict) -> None:
-    """Check declarations against the model's structure, without building a fit.
-
-    Everything here would otherwise surface as a mid-fit crash or, worse, as a
-    silently different model. Called from the config layer so a typo is a
-    startup error.
-    """
-    from .expressions import ExpressionError, referenced_names
-
-    specs = definition.get("derived_parameters") or []
-    if not specs:
-        return
-    if not isinstance(specs, list):
-        raise ValueError("derived_parameters must be a list")
-
-    structural = _valid_layer_names(definition)
-    seen: set[str] = set()
-    declared = {
-        str(s.get("name")) for s in specs if isinstance(s, dict) and s.get("name")
-    }
-    state_names = {
-        st.get("name") for st in (definition.get("states") or []) if st.get("name")
-    }
-
-    for spec in specs:
-        if not isinstance(spec, dict):
-            raise ValueError("each derived_parameters entry must be a mapping")
-        name = str(spec.get("name") or "").strip()
-        if not name:
-            raise ValueError("a derived parameter is missing `name`")
-        if name in seen:
-            raise ValueError(f"duplicate derived parameter name {name!r}")
-        seen.add(name)
-        if name in structural:
-            raise ValueError(
-                f"derived parameter {name!r} collides with a layer/material name"
-            )
-        free = spec.get("free") or {}
-        lo, hi = free.get("min"), free.get("max")
-        if lo is None or hi is None:
-            raise ValueError(
-                f"derived parameter {name!r}: `free` needs `min` and `max` "
-                f"(a derived parameter has no bounds of its own to fall back on)"
-            )
-        if float(lo) >= float(hi):
-            raise ValueError(f"derived parameter {name!r}: free.min must be < free.max")
-        assign = spec.get("assign") or {}
-        for scope_name in spec.get("states") or []:
-            if state_names and scope_name not in state_names:
-                raise ValueError(
-                    f"derived parameter {name!r}: unknown state {scope_name!r}; "
-                    f"known: {sorted(state_names)}"
-                )
-        known = structural | declared
-
-        def _check(kind: str, text: str) -> None:
-            try:
-                refs = referenced_names(str(text))
-            except ExpressionError as exc:
-                raise ValueError(
-                    f"derived parameter {name!r}: {kind} {text!r} — {exc}"
-                ) from exc
-            for ref in refs:
-                if ref.split(".", 1)[0] not in known:
-                    raise ValueError(
-                        f"derived parameter {name!r}: {kind} {text!r} references "
-                        f"unknown parameter {ref!r}; known: {sorted(known)}"
-                    )
-
-        for target, expr in assign.items():
-            if str(target).split(".", 1)[0] not in structural:
-                raise ValueError(
-                    f"derived parameter {name!r}: assignment target {target!r} "
-                    f"names no layer; known: {sorted(structural)}"
-                )
-            _check("assign", expr)
-        for guard in spec.get("keep_physical") or []:
-            _check("keep_physical", guard)
-
-    # A declaration with no `assign` is an AUXILIARY parameter: free, but
-    # reaching the model only through another declaration's expression. That is
-    # how a two-parameter reparametrization is written — e.g. solvation, where
-    # the volume fraction and the dry SLD are both free and only the layer's
-    # SLD is derived from them. Legitimate, but only if something references
-    # it; otherwise it is a free parameter the data cannot see, which would
-    # wander the whole range and cost a parameter for nothing.
-    referenced: set[str] = set()
-    for spec in specs:
-        for expr in (spec.get("assign") or {}).values():
-            referenced |= referenced_names(str(expr))
-        for guard in spec.get("keep_physical") or []:
-            referenced |= referenced_names(str(guard))
-    for spec in specs:
-        name = str(spec.get("name"))
-        if not (spec.get("assign") or {}) and name not in referenced:
-            raise ValueError(
-                f"derived parameter {name!r} has no `assign` and is referenced "
-                f"by no other declaration — it would be a free parameter that "
-                f"reaches nothing in the model"
-            )
+def canonical_name(name: str) -> str:
+    """Canonicalize a dotted parameter name (``X.rho`` -> ``X.material.rho``)."""
+    layer, _, attr = name.partition(".")
+    if not attr:
+        return name
+    return f"{layer}.{_ATTR_ALIASES.get(attr, attr)}"
 
 
 def data_chisq(problem) -> float:
@@ -838,17 +688,19 @@ def data_chisq(problem) -> float:
 
     ``FitProblem.chisq()`` scales the *total* nllf, which sums the model's
     misfit with the parameter-prior and constraint penalties
-    (``_nllf_components`` → ``pmodel + pparameter + pconstraints``). With plain
-    box bounds and no constraints those extra terms are identically zero and
-    the two agree, which is why nothing noticed. The moment a reparametrization
-    adds a ``keep_physical`` guard they do not: a violated constraint pushed χ²
-    to ~10¹⁰ in testing, and that number drives the acceptance window
-    (``chi2_min ≤ χ² ≤ chi2_max``), the regression guardrail and BIC.
+    (``_nllf_components`` → ``pmodel + pparameter + pconstraints``). Every
+    model AuRE builds today declares plain box bounds and no constraints, so
+    those extra terms are identically zero and the two agree.
 
-    Those are all judgements about how well the model describes the
-    measurement, so they must see the data term. The penalty is not discarded —
-    the optimizer still minimizes the total — it is just not reported as
-    goodness of fit.
+    This is kept separate anyway, because the distinction is real and the
+    conflation is silent. A single ``bumps`` ``Constraint`` anywhere in the
+    problem makes ``chisq()`` a number about the penalty rather than about the
+    data — a violated one measured ~10¹⁰ in testing — and that number drives
+    the acceptance window (``chi2_min ≤ χ² ≤ chi2_max``), the regression
+    guardrail and BIC. Those are all judgements about how well the model
+    describes the measurement, so they must see the data term, and nothing
+    downstream would notice if they stopped. Reporting the data term costs one
+    call and cannot be wrong.
 
     Falls back to ``problem.chisq()`` if bumps' internals move; the two are
     equal for every model that declares no priors or constraints.
@@ -886,6 +738,67 @@ def penalty_nllf(problem) -> float:
         return 0.0
 
 
+def data_chisq_total(problem) -> float:
+    """The **un-normalized** χ² of the data term: ``Σ((R − R_model)/dR)²``.
+
+    This is what BIC needs. ``data_chisq`` reports the *reduced* χ² — divided by
+    the degrees of freedom — which is the right number to judge fit quality
+    against 1, and the wrong number to put in an information criterion, where
+    the likelihood term must scale with the amount of data.
+
+    bumps defines ``pmodel = ½·Σresiduals²`` for Gaussian independent
+    uncertainties (see ``FitProblem.chisq_str``), so the total is exactly
+    ``2·pmodel``. Deriving it this way deliberately avoids reconstructing it as
+    ``χ²_reduced × dof``: bumps' ``dof`` also folds in prior degrees of freedom
+    (``model_points() + Σ prior.dof − n_params``) and silently degrades to an
+    un-normalized scale when it is non-positive, so the round trip is not an
+    identity.
+
+    Infeasible parameters return ``inf``, matching ``data_chisq`` — see the
+    reasoning there.
+    """
+    try:
+        _pparameter, _pconstraints, pmodel, failing = problem._nllf_components()
+    except Exception:  # pragma: no cover - bumps internal rename
+        # chisq(norm=False) scales the nllf by exactly 2, giving the total χ²
+        # including the penalty terms. Only reachable if bumps renames its
+        # internals, in which case an over-inclusive total beats no BIC at all.
+        logger.debug("[BUILDER] data_chisq_total fell back to chisq(norm=False)")
+        try:
+            return float(problem.chisq(norm=False))
+        except Exception:
+            return float("inf")
+    if failing:
+        return float("inf")
+    return 2.0 * float(pmodel)
+
+
+def bic_inputs(problem) -> dict:
+    """The three quantities BIC needs, read off the problem itself.
+
+    Returns ``{_chi2_total, _n_data, _n_free_params}``. Every fit path stamps
+    these onto its ``FitResult`` so that ``evaluation`` scores a fit from the
+    problem that produced it rather than re-deriving ``n`` and ``k`` from the
+    model dict. Re-deriving them is what let ``fitting`` and ``evaluation``
+    disagree: ``state["Q"]`` holds only the primary data file, so a
+    co-refinement was scored against one file's point count.
+
+    ``model_points()`` and ``getp()`` are the same accessors bumps uses to build
+    its own ``dof``, so ``n`` counts every point of every dataset of every state
+    and ``k`` counts unique free parameters — tied-across-state parameters once,
+    expression-derived ones not at all.
+    """
+    try:
+        return {
+            "_chi2_total": data_chisq_total(problem),
+            "_n_data": int(problem.model_points()),
+            "_n_free_params": len(problem.getp()),
+        }
+    except Exception:  # pragma: no cover - bumps internal rename
+        logger.debug("[BUILDER] bic_inputs unavailable", exc_info=True)
+        return {}
+
+
 def build_problem(definition: dict):
     """Construct a bumps ``FitProblem`` from a ``ModelDefinition`` dict.
 
@@ -901,8 +814,7 @@ def build_problem(definition: dict):
     from bumps.fitproblem import FitProblem
 
     experiment = build_experiment(definition)
-    constraints = apply_derived_parameters(definition, experiment.sample)
-    return FitProblem(experiment, constraints=constraints or None)
+    return FitProblem(experiment)
 
 
 def build_multi_problem(definition: dict, data_files: list[dict]):
@@ -1025,8 +937,7 @@ def build_multi_problem(definition: dict, data_files: list[dict]):
 
         experiments.append(Experiment(probe=probe, sample=sample))
 
-    constraints = apply_derived_parameters(definition, sample)
-    problem = FitProblem(experiments, constraints=constraints or None)
+    problem = FitProblem(experiments)
     return problem, experiments, sorted_data_files
 
 
@@ -1213,22 +1124,17 @@ def _resolve_tied_set(definition: dict) -> list[tuple[str, str]]:
     def _split(spec: str) -> tuple[str, str]:
         """Split ``"<layer>.<attr>"``, canonicalizing and checking the attribute.
 
-        The attribute is canonicalized with the same rule the reparametrization
-        expressions use, so ``Cu.rho`` / ``Cu.sld`` / ``Cu.material.rho`` all name
-        one parameter. Two schemas that can sit side by side in the same file
-        must not spell the same quantity differently: with
-        ``derived_parameters`` writing ``SEI.rho`` a few lines above, a tie spec
-        of ``Cu.rho`` is the natural thing to write, and it used to pass the
-        layer-name check and then reach refl1d as ``getattr(slab, "rho")`` —
-        `'Slab' object has no attribute 'rho'`, thrown from inside the builder
-        long after the mistake.
+        The attribute is canonicalized by :func:`canonical_name`, so
+        ``Cu.rho`` / ``Cu.sld`` / ``Cu.material.rho`` all name one parameter.
+        Tie specs are hand-written and all three spellings appear in the wild;
+        ``Cu.rho`` used to pass the layer-name check and then reach refl1d as
+        ``getattr(slab, "rho")`` — `'Slab' object has no attribute 'rho'`,
+        thrown from inside the builder long after the mistake.
 
         An attribute that is not tie-able at all is rejected here rather than
         deep in the build, so the modeling node's fallback (carry the previous
         tie spec) can catch it instead of the run ending.
         """
-        from .expressions import canonical_name
-
         if "." not in spec:
             raise ValueError(
                 f"Parameter spec {spec!r} must be of the form '<layer>.<attr>'"
@@ -1374,25 +1280,6 @@ def build_states_problem(definition: dict):
 
     tied_set = _resolve_tied_set(definition)
 
-    # Cross-state cache for derived parameters. A tied declaration resolves to
-    # one Parameter object for the whole problem while its `assign` is
-    # re-evaluated per state — so the invariant (a surface excess, a volume
-    # fraction) is shared and each state's derived SLD follows from its OWN
-    # ambient. The `shared_parameters` mechanism cannot express that: it ties
-    # layer attributes to each other, and the invariant is not one.
-    shared_derived: Dict[str, Any] = {}
-    derived_constraints: list = []
-    # Per-state record of which slots a reparametrization owns. Consulted for
-    # BOTH ends of every tie below: a parameter that is derived in *either*
-    # state cannot be aliased to the other, in either direction.
-    derived_slots_by_state: list[set] = []
-    # Tie pairs that were NOT applied to a state because one end is derived.
-    # The renaming pass below has to know: it keys off the tie SET, so without
-    # this a parameter that is untied in fact keeps the tied spelling — and two
-    # states that both fall back to a free parameter would then carry the same
-    # name, silently colliding in the fitted-parameter dict.
-    untied_by_derivation: Dict[int, set] = {}
-
     samples: list = []
     effective_defs: list[dict] = []
     experiments_by_state: dict[str, list] = {}
@@ -1405,10 +1292,6 @@ def build_states_problem(definition: dict):
         effective_defs.append(eff)
         sample = _build_sample(eff)
         samples.append(sample)
-        st_name_for_derived = state.get("name", f"state{state_idx}")
-        derived_slots_by_state.append(
-            _derived_assigned_slots(eff, st_name_for_derived)
-        )
 
         # Cross-state parameter aliasing.
         if state_idx > 0:
@@ -1419,33 +1302,6 @@ def build_states_problem(definition: dict):
             for layer_name, attr_path in tied_set:
                 ref_idx = _layer_index(ref_def, layer_name, back_reflection=ref_back)
                 cur_idx = _layer_index(eff, layer_name, back_reflection=cur_back)
-                derived_here = (
-                    cur_idx is not None
-                    and (cur_idx, attr_path) in derived_slots_by_state[state_idx]
-                )
-                # Aliasing the reference end is the subtler half: when a
-                # declaration is scoped to state 0 only, tying the others to it
-                # would hand them state 0's expression — resolving every
-                # state's SLD against state 0's ambient, which is the opposite
-                # of what a scoped reparametrization asked for.
-                derived_at_ref = (
-                    ref_idx is not None
-                    and (ref_idx, attr_path) in derived_slots_by_state[0]
-                )
-                if derived_here or derived_at_ref:
-                    if not derived_here:
-                        untied_by_derivation.setdefault(state_idx, set()).add(
-                            (layer_name, attr_path)
-                        )
-                    logger.debug(
-                        "[STATES] tie %s.%s not applied to state %r — the "
-                        "parameter is derived in %s",
-                        layer_name,
-                        attr_path,
-                        state.get("name"),
-                        "this state" if derived_here else "the reference state",
-                    )
-                    continue
                 if ref_idx is None or cur_idx is None:
                     # The layer is absent from this state's stack (per-state
                     # structure, or a pruned spec) — the tie does not apply here.
@@ -1459,17 +1315,6 @@ def build_states_problem(definition: dict):
                     continue
                 ref_param = _get_layer_param(ref_sample[ref_idx], attr_path)
                 _set_layer_param(sample[cur_idx], attr_path, ref_param)
-
-        # Applied after the tie aliasing above so the reparametrization wins
-        # over any tie that survived the derived-slot filter.
-        derived_constraints.extend(
-            apply_derived_parameters(
-                eff,
-                sample,
-                state_name=st_name_for_derived,
-                shared=shared_derived,
-            )
-        )
 
         # Build probes for this state.
         data_files = state.get("data_files") or []
@@ -1594,24 +1439,11 @@ def build_states_problem(definition: dict):
             targets.append((amb_name, "material.rho"))
             targets.append((amb_name, "interface"))
 
-        freed = untied_by_derivation.get(state_idx, set())
-        derived_slots = (
-            derived_slots_by_state[state_idx]
-            if state_idx < len(derived_slots_by_state)
-            else set()
-        )
         for layer_name, attr_path in targets:
-            if (layer_name, attr_path) in tied_lookup and (
-                layer_name,
-                attr_path,
-            ) not in freed:
+            if (layer_name, attr_path) in tied_lookup:
                 continue  # shared with state 0 — keep default name
             idx = _layer_index(eff, layer_name, back_reflection=back)
             if idx is None:
-                continue
-            if (idx, attr_path) in derived_slots:
-                # Derived here: the slot holds an expression, not a fittable
-                # parameter, and has no name of its own to set.
                 continue
             try:
                 param = _get_layer_param(sample[idx], attr_path)
@@ -1648,9 +1480,7 @@ def build_states_problem(definition: dict):
                 seen_nuisance.add(id(par))
                 par.name = f"{st_name} {nuisance_attr}"
 
-    problem = FitProblem(
-        all_experiments, constraints=derived_constraints or None
-    )
+    problem = FitProblem(all_experiments)
     return problem, experiments_by_state, sorted_files_by_state
 
 
@@ -1685,23 +1515,6 @@ def save_problem_json(
         The absolute path to the written file.
     """
     from bumps.serialize import save_file
-
-    if definition.get("derived_parameters"):
-        # bumps' serializer does not round-trip expression parameters (the same
-        # limitation `roughness_tie` works around by re-applying the tie from
-        # the ModelDefinition on every rebuild). A problem.json written here
-        # would load as a DIFFERENT model — the derived parameters back to
-        # free, the reparametrization gone, the constraints gone — and nothing
-        # downstream would say so. Refuse rather than hand over a file that
-        # quietly fits something else.
-        raise ValueError(
-            "cannot export problem.json: this model uses derived_parameters "
-            f"({', '.join(str(d.get('name')) for d in definition['derived_parameters'])}), "
-            "and bumps serialization does not preserve expression parameters. "
-            "The exported problem would silently drop the reparametrization "
-            "and its constraints. Run the fit through AuRE, or remove the "
-            "derived parameters to export."
-        )
 
     if needs_states_problem(definition):
         problem, _exps, _sorted = build_states_problem(definition)

@@ -249,13 +249,13 @@ The modeling prompt contains:
 On the **first** iteration the node also settles the parts of the model that are
 not the layer stack: it attaches the measurement states, resolves which
 parameters are tied across them (the user's configuration wins; otherwise it can
-derive the answer from the description), works out any per-state structural
-differences, and validates a reparametrization if one was declared (§7).
+derive the answer from the description), and works out any per-state structural
+differences (§7).
 
 The response is a complete JSON model definition. The node validates it,
 preserves immutable fields (like the data-file path), and writes it back
 into the state. Fields the LLM knows nothing about — the states block, the tie
-specification, a reparametrization — are **carried over explicitly** rather than
+specification — are **carried over explicitly** rather than
 taken from the response, because a model that re-emits the whole definition each
 iteration would otherwise drop them and silently revert the run to a simpler
 problem than the one that was asked for. If the LLM output is invalid JSON, the node falls back to
@@ -339,12 +339,18 @@ numbering is topical, not chronological — `evaluation_node` runs 1 → 2 → 4
      lower χ² because it gives the fit more freedom. What we actually
      want is a model that is *statistically justified*, measured by the
      Bayesian Information Criterion:
-     $$\mathrm{BIC} = k \ln n + \chi^2$$
-     where $k$ is the number of free parameters and $n$ is the number of
-     data points. If the most recent iteration added parameters and the
-     BIC went up despite χ² going down, the added complexity was not
-     worth it. The node reverts to the best-BIC model and marks the
-     hypothesis that was just tried as `rejected`.
+     $$\mathrm{BIC} = \chi^2_\text{total} + k \ln n$$
+     where $k$ is the number of free parameters, $n$ is the total number of
+     data points, and $\chi^2_\text{total}$ is the **un-normalized** sum
+     $\sum_i ((R_i - R_{\text{model},i})/dR_i)^2$ — not the reduced χ²
+     reported everywhere else. This is the standard Gaussian result for
+     known variances, which is what the `dR` column gives us. See
+     [metrics.md §3](metrics.md#3-bic--complexity-penalty) for how the three
+     quantities are obtained and why the reduced χ² must not be used here.
+     If the most recent iteration added parameters and the BIC went up
+     despite χ² going down, the added complexity was not worth it. The
+     node reverts to the best-BIC model and marks the hypothesis that was
+     just tried as `rejected`.
 
 6. **Clamp acceptance to the χ² acceptance window.** `CHI2_MAX` (or the setup's
    `chi2_max:`) is the run's contract with the user, so a **finite χ² inside the
@@ -374,14 +380,13 @@ numbering is topical, not chronological — `evaluation_node` runs 1 → 2 → 4
      to χ² and must never be accepted on χ² alone;
    - step 3 did not reach a trustworthy answer, which `_profile_checked` states
      positively: the fit carries no exported SLD profile (refl1d writes one only
-     when the run has an output directory — an ad-hoc `run_analysis(...)`, MCP's
-     `co_refine_states` without `output_dir`, or `quick_analyze`, which has no
-     such parameter), the detector declined the profile it has (too few points,
-     mismatched `z`/`rho` lengths, a non-finite sample, or a zero SLD span across
-     the media), **or any one state of a co-refinement reported no profile** —
-     partial coverage leaves the whole fit unverified. "Not checked" is treated as
-     unsafe, not as clean, so the LLM's verdict decides, exactly as it did before
-     the threshold became binding;
+     when the run has an output directory, so an ad-hoc `run_analysis(...)` call
+     without one has nothing to check), the detector declined the profile it has
+     (too few points, mismatched `z`/`rho` lengths, a non-finite sample, or a
+     zero SLD span across the media), **or any one state of a co-refinement
+     reported no profile** — partial coverage leaves the whole fit unverified.
+     "Not checked" is treated as unsafe, not as clean, so the LLM's verdict
+     decides, exactly as it did before the threshold became binding;
    - a **per-file / per-state χ²** is above the threshold, carries the `+inf`
      "fit failed" sentinel, or is below `chi2_min`: the reported χ² is
      `problem.chisq()` averaged over every model of a co-refinement, so a single
@@ -486,7 +491,6 @@ The skills currently shipped:
 | `sei-layer-analysis` | Battery / electrolyte samples | Solid-electrolyte interphase layer conventions |
 | `solvent-contrast-matching` | Samples in D₂O, H₂O, deuterated solvents | Solvent SLDs, contrast matching, isotope-confusion traps |
 | `multi-state-corefinement` | More than one state in the run | Which parameters to tie across states and why, the common experimental patterns, and when the states differ in *structure* rather than in values (§7.2–7.3) |
-| `functional-constraints` | Reparametrization enabled for the run | When fitting a combination beats fitting the coordinates, the two canonical forms, and how to behave around a model that already has one (§7.4) |
 
 Skill activation is itself an LLM decision. At the start of a run, the
 model is given the list of available skills and the user's sample
@@ -495,10 +499,8 @@ automatically regardless of the LLM's answer, and a few activations are
 decided by code rather than judgement: `solvent-contrast-matching` is forced in
 for any liquid ambient (a solvent may be deuterated and the description simply
 not say so), `multi-state-corefinement` whenever the run has more than one
-state, and `functional-constraints` strictly according to the reparametrization
-gate — added when it is on, and removed even if the selector picked it when it
-is off, so a run that cannot use the feature is never told about it. When the selector LLM is
-unavailable or returns an empty list, the always-on skills alone remain.
+state. When the selector LLM is unavailable or returns an empty list, the
+always-on skills alone remain.
 
 Skill selection is **not** frozen at intake. When the evaluation node
 revises the hypotheses (§6.5), it re-runs the selector with the observed
@@ -879,32 +881,6 @@ each state, and fringes in a *subset* of states are the signature to look for:
 either that subset's untied parameters are wrong, or the states genuinely differ
 in structure. Both readings are put to the evaluator, along with which states
 are affected.
-
-### 7.4 Fitting a combination instead of a coordinate
-
-Reflectivity does not determine the parameters a model is written in; it
-determines certain **combinations** of them. A thin layer's
-$(\rho_\text{layer} - \rho_\text{ambient}) \cdot t$ is pinned tightly while the
-SLD and the thickness separately are not — the degeneracy ridge of §6.8. What an
-independent measurement gives you has the same shape: QCM-D yields an adsorbed
-amount, not an SLD; a known density plus a swelling measurement yields a volume
-fraction, not a thickness.
-
-A **reparametrization** (`derived_parameters:`) makes the combination a free
-parameter and derives the raw one from it. The ridge disappears from the
-geometry the optimizer explores, and an ordinary range on the combination means
-what it says. In a co-refinement the combination is shared across states while
-each state's SLD follows from its *own* solvent — which is what contrast
-variation actually assumes, and which no tie between layer attributes can state,
-because the invariant is not a layer attribute.
-
-This is **off by default** (`allow_derived_parameters:`): a reparametrized model
-asks more of the LLM than a plain stack, since derived attributes are not fit
-parameters and the layers they reference must not be refined away. Declarations
-come from the setup file; the workflow does not write its own. Full reference:
-**[derived-parameters.md](derived-parameters.md)**.
-
----
 
 ## 8. Reading the output of a run
 
