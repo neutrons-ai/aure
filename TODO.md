@@ -656,19 +656,32 @@ answer all four questions about a given file.
 
 ---
 
-## An ORSO file cannot be loaded into a probe at all
+## ORSO loading requires the geometry as tagged value+error columns
 
 **Where:** [`src/aure/nodes/model_builder.py`](src/aure/nodes/model_builder.py)
 — `load_probe`, which hands `.ort` to refl1d's `load4`.
 
-**What is wrong.** It crashes. Not on a malformed file — on one written by
-`orsopy` itself:
+**Correction.** This entry previously said an ORSO file "cannot be loaded into
+a probe at all". That is too strong, and the narrower truth is more useful:
+`load4` loads an ORSO file **only** when it carries the incident angle *and*
+the wavelength as tagged data columns, each with a matching `ErrorColumn`.
+Every other spec-valid shape crashes. Four shapes, all written by `orsopy` and
+all read back by `orsopy` without complaint:
 
 ```
-load_probe(valid.ort) -> AttributeError: 'NoneType' object has no attribute 'error_value'
+header only, no angle error             -> AttributeError: 'NoneType' ... 'error_value'
+header only, with angle error           -> AttributeError: 'dict' ... 'error_value'
+tagged value columns, no error columns  -> AttributeError: 'NoneType' ... 'error_value'
+tagged value + error columns            -> loads, 40 points
 ```
 
-The bug is upstream, in refl1d 1.0.1,
+So a REF_L export might well work — a TOF instrument has a per-point
+wavelength, and if the reduction writes `Theta`/`sTheta` and
+`Lambda`/`sLambda` columns it takes the working path. What fails is the
+minimal form: state the geometry once in the header, which is what `orsopy`
+writes by default and what a reduced R(Q) curve naturally is.
+
+**The mechanism**, in refl1d 1.0.1
 `refl1d/probe/data_loaders/load4.py:109-110`:
 
 ```python
@@ -676,69 +689,47 @@ if hasattr(v, "error") and resolution_index is None:
     header_out[refl1d_resolution_name] = v.error.error_value
 ```
 
-There are **two** failure modes on that one line, and between them they cover
-both shapes a real file takes:
+`resolution_index` is set only when a column's `physical_quantity` matches
+(`incident_angle`, `wavelength`) *and* a second column's `error_of` names it.
+Absent either, this fall-through runs — and `error` is a declared field of
+orsopy's `Value` dataclass defaulting to `None`, so `hasattr` is True whether
+or not the file wrote one. Two dereference failures follow: `None.error_value`
+when nothing was written, and `dict.error_value` when it was, because
+`ValueRange.error` (what `wavelength` normally is) round-trips as an untyped
+dict rather than an `ErrorValue`. That asymmetry is an orsopy issue in its own
+right.
 
-- **No errors written** — orsopy's default. `instrument_settings.incident_angle`
-  is a `Value`, whose dataclass *declares* `error` with a default of `None`. So
-  `hasattr(v, "error")` is True, it guards nothing, and the next line
-  dereferences `None`.
-- **Errors written.** The angle is then fine, but `wavelength` is normally a
-  `ValueRange`, which declares no `error` field at all — orsopy attaches it as
-  an untyped attribute holding a plain **`dict`**, and the same line raises
-  `'dict' object has no attribute 'error_value'`. (`Value.error` deserializes
-  to an `ErrorValue` while `ValueRange.error` stays a dict; that asymmetry is
-  an orsopy issue in its own right and worth raising there separately.)
-
-So there is no way to write the header that gets past it. `resolution_index` —
-the thing that would skip the branch — is only set when the file carries the
-angle as a data *column* with a matching `physical_quantity` and `error_of`
-pair, which a reduced R(Q) curve does not.
-
-**Reproduction.** A standalone script covering both modes was written for the
-refl1d team: it builds its files with `orsopy`'s own writer (so they are
-spec-valid by construction), shows orsopy reading them back, shows `load4`
-failing, prints the offending object state, and carries the patch below in its
-docstring. The core of it is four lines:
-
-```python
-from orsopy import fileio
-from refl1d.names import load4
-fileio.save_orso([fileio.OrsoDataset(info, data)], "reduced.ort")
-load4("reduced.ort")   # AttributeError: 'NoneType' object has no attribute 'error_value'
-```
-
-This is not academic. ORSO is a supported instrument on this branch: the
-registry claims `.ort`, reads its metadata correctly, and declares its dQ
-convention — and then the file cannot be turned into a probe, so it cannot be
-fitted, which is the only thing a user wants from it.
+The loader has what it needs in the failing cases: the angle is in
+`settings.incident_angle` and the resolution is already in the `sQz` column.
 
 **Why nothing caught it.** Nothing in the suite loads a `.ort` into a probe.
 `load_probe` appears in **zero** tests, and `.ort` appears only in
-`tests/test_instruments.py`, which exercises classification and header metadata
-without ever opening a probe. The 528 lines of instrument tests are all on the
-metadata side of the seam.
+`tests/test_instruments.py`, which exercises classification and header
+metadata without ever opening a probe. The 528 lines of instrument tests are
+all on the metadata side of the seam.
 
 **The change.** Guard the dereference and tolerate both shapes — read
 `getattr(v, "error", None)`, skip when it is `None`, and take `error_value` /
-`value_is` from either an `ErrorValue` or a `dict` — then send it upstream to
-refl1d, since every refl1d user hits this. AuRE
-should not wait on the release: `load_probe` is the single entry point for data
-loading, so a local workaround belongs there, either as a targeted patch or by
-reading the ORSO file through `orsopy` directly and constructing the probe from
-the columns (which is what `tools.data_tools.parse_ort_file` already does for
-feature extraction, on a separate and more forgiving code path).
+`value_is` from either an `ErrorValue` or a `dict` — then send it upstream,
+since every refl1d user reading a header-only ORSO file hits this. A local
+workaround belongs in `load_probe` either way, as the single entry point for
+data loading.
+
+**Reproduction.** A standalone script covering all four shapes was written for
+the refl1d team: it builds its files with `orsopy`'s own writer, shows orsopy
+reading each back, shows which `load4` accepts, prints the offending object
+state, and carries the patch in its docstring.
 
 Note the two ORSO readers as a consequence worth removing later:
-`parse_ort_file` is a lenient 4-column reader that succeeds on files `load4`
-rejects, so a `.ort` file can pass feature extraction and then fail to fit.
+`tools.data_tools.parse_ort_file` is a lenient 4-column reader that succeeds on
+files `load4` rejects, so a `.ort` file can pass feature extraction and then
+fail to fit.
 
-**Verifying a fix.** Generate a file with `orsopy.fileio.save_orso` in a test
+**Verifying a fix.** Generate files with `orsopy.fileio.save_orso` in a test
 fixture and assert `load_probe` returns a probe whose `dQ` equals the `sQz`
 column (not `sQz / 2.355`, which is the separate `dq_is_fwhm` question). Cover
-both header shapes — with and without an explicit angle/wavelength error —
-since they fail for different reasons. That test is the coverage gap,
-independent of the crash.
+all four shapes above — three fail today for two different reasons, and the
+fourth must keep working.
 
 ---
 
