@@ -55,13 +55,14 @@ this specific sample** and rank them by expected value.
 
 For each hypothesis, provide:
 
-- **title** — one short line, e.g. "Add native CuO on top of Cu".
+- **title** — one short line, e.g. "Add native cuprous oxide on top of Cu".
 - **rationale** — a sentence grounded in an active skill. Cite the skill by
   name (e.g. *"metal-oxide-interfaces says a Cu layer exposed to D₂O forms a
   10–50 Å native oxide unless otherwise stated"*).
 - **change** — the concrete structural edit in neutral terms: insertion
   point, typical thickness, typical SLD, typical roughness. E.g. *"insert a
-  10–50 Å CuO layer (SLD 4.5–5.5) between Cu and D₂O, σ 3–15 Å"*.
+  10–50 Å CuOx layer (SLD 4.2–5.5, porous to dense Cu₂O) between Cu and D₂O,
+  σ 3–15 Å"*.
 - **skill_source** — the name of the skill motivating this hypothesis.
 
 ### Ranking criteria
@@ -71,8 +72,12 @@ Rank hypotheses by the combination of:
 1. **Prior probability given the sample** — native oxides on exposed metals
    in aqueous ambients are almost certain; speculative extra interfacial
    layers are not.
-2. **Size of effect on the fit** — a 20 Å CuO with SLD 5.0 in D₂O (SLD 6.3)
-   produces a large low-Q contrast step and will move χ² substantially.
+2. **Size of effect on the fit** — a 20 Å cuprous oxide with SLD 5.36 in D₂O
+   (SLD 6.37) produces a large low-Q contrast step and will move χ²
+   substantially. Note this depends on *which* oxide: stoichiometric CuO is
+   6.46 against D₂O's 6.37, so the same hypothesis written as CuO has almost no
+   contrast and would be a poor use of two parameters. See
+   `metal-oxide-interfaces` for the recomputed values.
 3. **Cost in parameters (BIC)** — prefer hypotheses that add fewer free
    parameters for the same effect. Splitting one layer into two sublayers is
    lower-yield than adding a genuinely missing outer layer.

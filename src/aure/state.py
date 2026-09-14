@@ -372,12 +372,12 @@ class StructuralHypothesis(TypedDict, total=False):
     id : int
         Stable identifier within this run (1-based).
     title : str
-        One-line description, e.g. "Add native CuO on top of Cu".
+        One-line description, e.g. "Add native cuprous oxide on top of Cu".
     rationale : str
         Why this hypothesis is plausible — cite the active skill (or "user").
     change : str
         Concrete structural edit in neutral terms, e.g.
-        "insert a 10-30 Å CuO layer (SLD ~5.0) between Cu and D2O".
+        "insert a 10-30 Å CuOx layer (SLD ~5.0, cuprous) between Cu and D2O".
     skill_source : str
         Name of the skill that motivates this hypothesis, or "user" when it
         was derived from the user's stated hypothesis.

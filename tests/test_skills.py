@@ -32,7 +32,9 @@ class TestSkillRegistry:
         assert "structural-hypothesis-ranking" in names
         assert "multi-state-corefinement" in names
         assert "thin-layer-degeneracy" in names
-        assert len(names) == 8
+        assert "ridge-invariant-observables" in names
+        assert "interface-swallowed-layers" in names
+        assert len(names) == 10
 
     def test_metadata_parsed_correctly(self):
         registry = SkillRegistry()
@@ -45,7 +47,10 @@ class TestSkillRegistry:
     def test_all_metadata_returns_list(self):
         registry = SkillRegistry()
         all_meta = registry.all_metadata()
-        assert len(all_meta) == 8
+        # One entry per discovered skill. Asserting the relationship rather than
+        # a second literal: the count is already pinned in
+        # test_scan_finds_all_skills, and two copies of it drift apart.
+        assert len(all_meta) == len(registry.skill_names)
         assert all(isinstance(m, SkillMetadata) for m in all_meta)
 
     def test_load_body(self):
