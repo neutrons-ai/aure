@@ -177,6 +177,22 @@ def _cost(response: Any) -> Optional[float]:
         return None
 
 
+def _answering_model(response: Any) -> Optional[str]:
+    """The model that actually answered, when the response names one.
+
+    The caller passes the model it *asked* for, which is not always a name. The
+    ``claude_code`` provider lets the CLI resolve its own model and reports the
+    result here; ``ChatOpenAI`` reports the served model the same way. Either
+    beats the request for the purposes of a row someone will later sum by model.
+    """
+    meta = getattr(response, "response_metadata", None) or {}
+    if isinstance(meta, dict):
+        name = meta.get("model") or meta.get("model_name")
+        if name:
+            return str(name)
+    return None
+
+
 def _text(content: Any) -> str:
     """Flatten message content to text, including provider block lists."""
     if content is None:
@@ -234,9 +250,20 @@ def _messages(prompt: Any) -> list:
 
 
 def _completion(response: Any) -> Optional[str]:
-    """The reply exactly as received, untruncated, or ``None`` on a failure."""
+    """The reply exactly as received, untruncated, or ``None`` on a failure.
+
+    A provider that post-processes its own reply before handing it on — the
+    ``claude_code`` shim strips fences and lifts JSON out of prose — exposes
+    the untouched text as ``raw_content``, and that is what gets recorded. The
+    trace exists to show what the model actually said; recording the shim's
+    improved version of it would hide exactly the failure the trace is there
+    to catch.
+    """
     if response is None:
         return None
+    raw = getattr(response, "raw_content", None)
+    if raw is not None:
+        return _text(raw)
     content = getattr(response, "content", None)
     if content is None:
         return _text(response)
@@ -287,6 +314,7 @@ def record(
     try:
         timestamp = datetime.now(timezone.utc).isoformat()
         provider = provider or _provider()
+        model = _answering_model(response) or model
         entry = {
             "seq": None,
             "timestamp": timestamp,

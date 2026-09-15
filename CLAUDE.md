@@ -84,11 +84,12 @@ Each skill is a directory containing a `SKILL.md` (Agent Skills spec format). `s
 
 ### LLM layer ([src/aure/llm/](src/aure/llm/))
 
-- `config.py` — reads env vars, returns a normalized config dict; supports `openai`, `gemini`, `local` (OpenAI-compatible).
+- `config.py` — reads env vars, returns a normalized config dict; supports `openai`, `gemini`, `local` (OpenAI-compatible) and `claude_code`.
 - `providers/` — one module per backend; `get_llm()` dispatches.
 - `timeout.py` — signal-based wrapper (`invoke_with_timeout`, raises `LLMTimeoutError`); the per-call timeout comes from `LLM_TIMEOUT`.
 - `ledger.py` — every call is recorded at that same chokepoint, never at the call sites, so a node added later cannot be forgotten. `llm_calls.jsonl` (always, with `-o`) carries cost and token counts; `llm_trace.jsonl` (opt-in, `AURE_LLM_LOG_TEXT=1`) carries the exchange itself. `seq` joins them and is allocated once under one lock. Measurement only — a recording failure is swallowed rather than allowed to fail an analysis, and `cost_usd`/token counts are `None` when unreported, never `0`.
 - Any OpenAI-compatible endpoint (a self-hosted server, or a remote facility inference API) is reached through the `local` provider with `LLM_BASE_URL` + `LLM_API_KEY`. AuRE deliberately carries **no** provider-specific credential code: obtaining and refreshing a facility token is the facility's tooling's job, not AuRE's.
+- `providers/claude_code.py` — the one provider that is not an endpoint: it runs `claude -p --output-format json` as a subprocess. It takes **no credential**, which is the same principle as above rather than an exception to it — the binary already holds whatever auth is in play (subscription, `ANTHROPIC_API_KEY`, Bedrock, Vertex, Foundry), so `llm_available()` checks for the binary instead of a key. It exists because nr-workbench users have Claude Code and often no endpoint, and `nrw aure run` refuses to start without one. It pays ~12k input tokens of Claude Code preamble per call. Because the CLI is conversational and several nodes parse JSON with no tolerance for a preamble (`modeling._cross_state_ties` and `._per_state_structure` parse bare and **swallow the failure**), the shim replaces the system prompt, strips fences, lifts a balanced JSON span out of prose, and retries once — all gated on the prompt having asked for JSON, because the ISAAC exporter asks for a paragraph and uses it verbatim. `raw_content` carries the untouched reply so the call trace records what the model said, not what the shim made of it. `--bare` would shrink the preamble but disables OAuth/keychain auth, which removes the point.
 
 ### Web UI
 

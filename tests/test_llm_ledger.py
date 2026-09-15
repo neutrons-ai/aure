@@ -229,3 +229,18 @@ def test_aure_llm_log_moves_both_files(tmp_path, monkeypatch):
         assert not (tmp_path / "ignored.jsonl").exists()
     finally:
         ledger.set_sink(None)
+
+
+def test_the_answering_model_wins_over_the_requested_one(ledger_dir, monkeypatch):
+    """claude_code lets the CLI resolve a model; the row should name the result."""
+    monkeypatch.setenv("AURE_LLM_LOG_TEXT", "1")
+    reply = _Reply()
+    reply.response_metadata["model"] = "claude-sonnet-5"
+    ledger.record(reply, duration_s=1.0, model="claude-code-default", prompt="ask")
+    assert _rows(ledger_dir / "llm_calls.jsonl")[0]["model"] == "claude-sonnet-5"
+    assert _rows(ledger_dir / "llm_trace.jsonl")[0]["model"] == "claude-sonnet-5"
+
+
+def test_the_requested_model_stands_when_the_response_names_none(ledger_dir):
+    ledger.record(_Reply(), duration_s=1.0, model="gpt-4o-mini")
+    assert _rows(ledger_dir / "llm_calls.jsonl")[0]["model"] == "gpt-4o-mini"

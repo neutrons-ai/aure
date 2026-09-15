@@ -50,9 +50,16 @@ def _check_llm_status(
         click.echo(f"    Model: {info['model']}")
         if info.get("base_url"):
             click.echo(f"    Base URL: {info['base_url']}")
+        if info.get("binary"):
+            click.echo(f"    Binary: {info['binary']}")
 
     if not info["available"]:
-        msg = "LLM not configured (missing API key or base URL)"
+        if info["provider"] == "claude_code":
+            # This provider takes no credential, so the usual message sends
+            # the user looking for a key they do not need.
+            msg = "Claude Code CLI not found (install it, or set AURE_CLAUDE_BIN)"
+        else:
+            msg = "LLM not configured (missing API key or base URL)"
         if not quiet:
             click.echo(click.style(f"    Status: ✗ {msg}", fg="yellow"))
         return False, msg
@@ -198,12 +205,13 @@ def check_llm(output_json: bool, no_test: bool):
 
     \b
     Environment variables used:
-        LLM_PROVIDER     openai | gemini | local
+        LLM_PROVIDER     openai | gemini | local | claude_code
         LLM_MODEL        model name (default depends on provider)
         LLM_API_KEY      API key (or OPENAI_API_KEY / GEMINI_API_KEY)
         LLM_BASE_URL     base URL (required for 'local' provider)
         LLM_TIMEOUT      call timeout in seconds (default 120)
         LLM_TEMPERATURE  sampling temperature (default 0.0)
+        AURE_CLAUDE_BIN  path to the CLI ('claude_code' provider only)
 
     \b
     Examples:
@@ -216,7 +224,11 @@ def check_llm(output_json: bool, no_test: bool):
     config = get_llm_config()
     info = get_llm_info()
     has_key = bool(config.get("api_key"))
-    has_credential = has_key
+    # claude_code holds no credential of its own — the CLI does — so a missing
+    # key is not a finding there, and reporting one sends the user looking for
+    # something they do not need.
+    is_claude_code = config["provider"] == "claude_code"
+    has_credential = bool(info.get("binary")) if is_claude_code else has_key
 
     if not output_json:
         click.echo()
@@ -224,11 +236,18 @@ def check_llm(output_json: bool, no_test: bool):
         click.echo(click.style("  " + "─" * 40, fg="blue"))
         click.echo()
         click.echo(f"    Provider:    {config['provider'] or '(not set)'}")
-        click.echo(f"    Model:       {config['model']}")
-        click.echo(
-            f"    API key:     {'••••' + config['api_key'][-4:] if has_key else click.style('NOT SET', fg='red')}"
-        )
-        if config.get("base_url"):
+        model_label = config["model"] or "(the CLI's default)"
+        click.echo(f"    Model:       {model_label}")
+        if is_claude_code:
+            click.echo(
+                f"    Binary:      {info.get('binary') or click.style('NOT FOUND', fg='red')}"
+            )
+            click.echo("    API key:     not used by this provider")
+        else:
+            click.echo(
+                f"    API key:     {'••••' + config['api_key'][-4:] if has_key else click.style('NOT SET', fg='red')}"
+            )
+        if config.get("base_url") and not is_claude_code:
             click.echo(f"    Base URL:    {config['base_url']}")
         click.echo(f"    Timeout:     {get_llm_timeout()}s")
         click.echo(f"    Temperature: {config['temperature']}")
@@ -247,6 +266,10 @@ def check_llm(output_json: bool, no_test: bool):
                 click.echo("    or add to .env:")
                 click.echo(f"      LLM_PROVIDER={config['provider']}")
                 click.echo("      LLM_API_KEY=<your-key>")
+            elif is_claude_code:
+                click.echo("    Install the Claude Code CLI, or point AuRE at it:")
+                click.echo("      export AURE_CLAUDE_BIN=/path/to/claude")
+                click.echo("    See https://claude.com/claude-code")
             elif config["provider"] == "local" and not config.get("base_url"):
                 click.echo("    Set a base URL for the local provider:")
                 click.echo("      export LLM_BASE_URL=http://localhost:11434/v1")

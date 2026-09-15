@@ -9,11 +9,14 @@ Every provider module receives a *config dict* produced by
 import os
 from typing import Dict, Any
 
-# Default models per provider
+# Default models per provider. ``claude_code`` defaults to empty: the CLI
+# resolves its own model, and pinning one here would break an account whose
+# backend (Bedrock, Vertex, Foundry) has not deployed that alias.
 DEFAULT_MODELS: Dict[str, str] = {
     "openai": "gpt-4o-mini",
     "gemini": "gemini-2.0-flash-lite",
     "local": "llama3",
+    "claude_code": "",
 }
 
 
@@ -64,6 +67,12 @@ def llm_available() -> bool:
     config = get_llm_config()
     provider = config["provider"]
 
+    if provider == "claude_code":
+        # No key of its own: the CLI holds whatever credential is in play.
+        # Imported lazily because providers/ imports this module.
+        from .providers.claude_code import available
+
+        return available()
     if provider == "local":
         return bool(config["base_url"])
     # Cloud providers need an API key
@@ -80,4 +89,12 @@ def get_llm_info() -> dict:
     }
     if config["provider"] == "local":
         info["base_url"] = config["base_url"]
+    elif config["provider"] == "claude_code":
+        from .providers.claude_code import _binary
+
+        try:
+            info["binary"] = _binary()
+        except ValueError:
+            info["binary"] = None
+        info["model"] = config["model"] or "(the CLI's default)"
     return info

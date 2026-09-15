@@ -189,11 +189,41 @@ AuRE reads its LLM settings from environment variables (or a `.env` file in the
 project root).  See [.env.example](.env.example) for every available option.
 
 ```bash
-LLM_PROVIDER=openai          # "openai", "gemini", or "local"
+LLM_PROVIDER=openai          # "openai", "gemini", "local", or "claude_code"
 LLM_MODEL=gpt-4o             # model name for your provider
 LLM_API_KEY=sk-...           # API key
 # LLM_BASE_URL=              # only needed for local / openai-compatible
 ```
+
+#### Claude Code as the provider
+
+If you already have [Claude Code](https://claude.com/claude-code) installed,
+AuRE can use it instead of an API endpoint:
+
+```bash
+LLM_PROVIDER=claude_code
+# LLM_MODEL=claude-sonnet-5   # optional; the CLI picks its own default
+```
+
+There is no key to set. AuRE runs `claude -p` as a subprocess, so whatever that
+binary is already authenticated with — a subscription, `ANTHROPIC_API_KEY`, or
+a Bedrock / Vertex / Foundry configuration — is what the analysis uses. This is
+the route for [nr-workbench](https://github.com/neutrons-ai/nr-workbench)
+users, whose harness is Claude Code and who would otherwise have to configure a
+second model purely to satisfy AuRE's endpoint check.
+
+Two things to know before choosing it:
+
+- **It costs more per call.** Each invocation carries Claude Code's own system
+  prompt and tool definitions — about 12k input tokens AuRE does not send and
+  a completions API would not charge for. Measured on Sonnet 5: ~$0.08 for the
+  first call of a run and ~$0.017 for each one after, since the prompt cache is
+  reused across processes for an hour. Expect $0.2–0.4 per analysis of pure
+  overhead on top of the prompts themselves.
+- **It is slower.** Process startup adds roughly a second to every call.
+
+`aure check-llm` verifies it the same way it verifies any other provider, and
+reports which binary it found.
 
 #### Other OpenAI-compatible endpoints
 
