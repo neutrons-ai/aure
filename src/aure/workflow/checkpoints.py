@@ -22,6 +22,44 @@ logger = logging.getLogger(__name__)
 NODE_ORDER = ["intake", "analysis", "modeling", "fitting", "evaluation", "finalize"]
 
 
+def _aure_version() -> Optional[str]:
+    """The installed AuRE version, or ``None`` if it cannot be determined."""
+    try:
+        from importlib.metadata import version
+
+        return version("aure")
+    except Exception:
+        return None
+
+
+def _git_describe() -> Optional[str]:
+    """``git describe --always --dirty`` for a checkout, else ``None``.
+
+    Recorded because the version alone does not identify the code: ``prompts.py``
+    changes between releases, and a prompt rebuilt from today's source paired
+    with last month's reply is not the exchange that happened. A single
+    subprocess, run once per run at initialize(), and never fatal.
+    """
+    repo = Path(__file__).resolve().parents[3]
+    if not (repo / ".git").exists():
+        return None
+    try:
+        import subprocess
+
+        out = subprocess.run(
+            ["git", "describe", "--always", "--dirty"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return None
+    if out.returncode != 0:
+        return None
+    return out.stdout.strip() or None
+
+
 class CheckpointManager:
     """
     Manages workflow checkpoints.
@@ -85,6 +123,13 @@ class CheckpointManager:
             "hypothesis": initial_state.get("hypothesis"),
             "checkpoints": [],
         }
+        # Which code produced this run. A run that says so can be replayed
+        # exactly; one that does not can only be dated, and dating a sweep to a
+        # commit afterwards is archaeology standing in for provenance.
+        run_info["aure_version"] = _aure_version()
+        git_describe = _git_describe()
+        if git_describe:
+            run_info["git_describe"] = git_describe
         # Record an explicit model_name up front when available; the fitting
         # node fills in a resolved one (via the state) once it runs.
         explicit_name = initial_state.get("model_name") or (

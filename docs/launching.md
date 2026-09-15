@@ -444,6 +444,31 @@ deterministic χ² stop stands down and the evaluator LLM's verdict decides
 acceptance instead. An `-o`-less run is therefore not just unrecorded, it is
 judged by a different rule.
 
+### What `-o` records about the LLM calls
+
+Two files, both at the top of the output directory, joined by `seq`:
+
+| File | Written | Contents |
+|---|---|---|
+| `llm_calls.jsonl` | always, with `-o` | One row per call: `seq`, `timestamp`, `node`, `model`, `provider`, `duration_s`, the token counts, `cost_usd`, `ok`, `error`. |
+| `llm_trace.jsonl` | only with `AURE_LLM_LOG_TEXT=1` | The exchange: `messages` as sent and `completion` as received, untruncated. |
+
+`cost_usd` is the provider's own figure and is `None` for every provider that
+does not price its own call — unknown, not free, the same rule the token counts
+follow. Summing a column over a mixed archive therefore has to skip the nulls
+rather than treat them as zeros.
+
+The trace is off by default because a prompt carries the sample description and
+the user's hypothesis, which is their data and should not land on disk unless
+asked for. It is what makes a run re-readable after the fact — why a verdict
+came out the way it did, and what a different model would have replied to the
+same question — which pairs with the `aure_version` and `git_describe` stamped
+into `run_info.json`: a prompt rebuilt from today's `prompts.py` and paired with
+last month's reply is not the exchange that happened.
+
+`AURE_LLM_LOG` overrides the ledger's destination, and moves the trace with it —
+useful for a batch harness that wants every case in one file.
+
 ## Where the run controls come from
 
 Three layers, innermost wins:

@@ -138,3 +138,32 @@ def test_run_info_captures_resolved_model_name_on_checkpoint(tmp_path):
     )
     run_info = json.loads((mgr.output_dir / "run_info.json").read_text())
     assert run_info["model_name"] == "230536"
+
+
+def test_run_info_records_which_code_produced_the_run(tmp_path):
+    """Version and checkout identity, so a run can be replayed rather than dated.
+
+    Without these, rebuilding a prompt from today's ``prompts.py`` and pairing
+    it with an archived reply pairs the current question with the previous
+    answer.
+    """
+    mgr = CheckpointManager(str(tmp_path))
+    mgr.initialize(
+        {"hypothesis": None}, data_file="/x/REFL.txt", sample_description="Cu"
+    )
+    run_info = json.loads((mgr.output_dir / "run_info.json").read_text())
+
+    assert "aure_version" in run_info
+    # Running from the checkout this test lives in, so the SHA must be there.
+    assert run_info.get("git_describe")
+
+
+def test_run_info_version_stamp_survives_a_missing_checkout(tmp_path, monkeypatch):
+    """Provenance is best-effort: an installed wheel has no .git and must not fail."""
+    from aure.workflow import checkpoints as cp
+
+    monkeypatch.setattr(cp, "_git_describe", lambda: None)
+    mgr = cp.CheckpointManager(str(tmp_path))
+    mgr.initialize({"hypothesis": None}, data_file="/x/a.txt", sample_description="Cu")
+    run_info = json.loads((mgr.output_dir / "run_info.json").read_text())
+    assert "git_describe" not in run_info

@@ -87,6 +87,7 @@ Each skill is a directory containing a `SKILL.md` (Agent Skills spec format). `s
 - `config.py` — reads env vars, returns a normalized config dict; supports `openai`, `gemini`, `local` (OpenAI-compatible).
 - `providers/` — one module per backend; `get_llm()` dispatches.
 - `timeout.py` — signal-based wrapper (`invoke_with_timeout`, raises `LLMTimeoutError`); the per-call timeout comes from `LLM_TIMEOUT`.
+- `ledger.py` — every call is recorded at that same chokepoint, never at the call sites, so a node added later cannot be forgotten. `llm_calls.jsonl` (always, with `-o`) carries cost and token counts; `llm_trace.jsonl` (opt-in, `AURE_LLM_LOG_TEXT=1`) carries the exchange itself. `seq` joins them and is allocated once under one lock. Measurement only — a recording failure is swallowed rather than allowed to fail an analysis, and `cost_usd`/token counts are `None` when unreported, never `0`.
 - Any OpenAI-compatible endpoint (a self-hosted server, or a remote facility inference API) is reached through the `local` provider with `LLM_BASE_URL` + `LLM_API_KEY`. AuRE deliberately carries **no** provider-specific credential code: obtaining and refreshing a facility token is the facility's tooling's job, not AuRE's.
 
 ### Web UI
