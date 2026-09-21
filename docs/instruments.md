@@ -170,6 +170,29 @@ prefix. Reads theta from the header's `TwoTheta(deg)` table, halving it; a
 multi-segment table yields `0.0`, which is what tells `model_builder` to
 build a Q-based probe instead of an angle-based one.
 
+**REF_L_autoreduction** ([`ref_l.py`](../src/aure/instruments/ref_l.py)) —
+REF_L's `new_reduction` pipeline, `REFL_<run>_<seg>_<subrun>_autoreduction.dat`.
+A different dialect from the file above, not a rename: the header is
+`# Key = value` lines mixing JSON and Python notation, it describes the **whole
+run** and is byte-identical in every one of that run's segment files, and its
+fourth column is **one sigma** where the older reduction writes a FWHM. Always
+`PARTIAL` — the dialect has no combined form — and it shares REF_L's group key
+so a beamtime mid-migration can co-refine both in one state. Declares both
+`dq_is_fwhm` and `theta` authoritative; `theta` because the LLM header parse is
+given the header text and not the filename, and the angle can only be found by
+the segment number the filename carries.
+
+The angle lookup is the part worth knowing about. `Angles.THS` and
+`Run Title.title` are longer than the segment count, because the reduction
+**appends to them on reprocess instead of replacing them** — a run reduced
+twice carries two complete passes. So a file finds its angle by matching the
+trailing `-<segment>.` in the title array, taking the **last** match (the first
+is the oldest pass, stale by construction), and it warns if the passes
+disagree. Positional indexing is accidentally correct for a whole repeated
+block and wrong for a ragged one; on run 234277 it gives segment 3 an angle of
+1.251° instead of 3.5°, a factor of ~2.8 in Q that fits cleanly to a wrong
+thickness.
+
 **ORSO** ([`orso.py`](../src/aure/instruments/orso.py)) — claims `.ort`, or
 any file whose header carries the ORSO banner. Parses the commented YAML
 header: a single declared `incident_angle` means one angle, an angle range

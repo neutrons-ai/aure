@@ -178,7 +178,7 @@ This is also the general answer for any facility whose format we do not yet
 read, and the reason it comes first: it is the escape hatch that makes a
 missing instrument an inconvenience rather than a wall.
 
-### Phase 1 — the format, through the seam
+### Phase 1 — the format, through the seam — **done**
 
 `REFLAutoreductionInstrument` in `instruments/ref_l.py`, registered ahead of
 `REFLInstrument`, sharing its `group_key` scheme so a beamtime mid-migration
@@ -200,6 +200,15 @@ can co-refine both dialects in one state.
   case is the one that matters; add a whole-block-repeat case and a
   disagreeing-duplicates case, neither of which nrw has. New golden rows only —
   the existing table is parity with the pre-registry behaviour and stays put.
+
+Shipped in `tests/test_instrument_autoreduction.py`. The array-consistency and
+disagreeing-pass checks log at WARNING for now; phase 2's `header_issues`
+promotes them to run-visible issues. `run_title` is implemented on the
+instrument and unused until phase 2 puts it on the protocol.
+
+One behaviour change to know about: a state of these files is now classified
+`partials` rather than `combined`, so its files must share one run number and
+`theta_offset` / `sample_broadening` become available on it.
 
 ### Phase 2 — three protocol gaps this format exposes
 

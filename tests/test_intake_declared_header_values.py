@@ -36,12 +36,17 @@ def no_llm(monkeypatch):
 
 
 def _unreadable_header_file(name: str) -> str:
-    """A file whose header no instrument claims — the fallback case."""
+    """A file no instrument claims — the fallback case.
+
+    Deliberately not a REF_L name: the format that motivated this is a
+    built-in now, and using one would test that instrument instead of the
+    declaration mechanism.
+    """
     Q = np.linspace(0.01, 0.10, 40)
     R = np.clip((0.0217 / (2 * np.maximum(Q, 0.001))) ** 4, 1e-10, 1.0)
     path = os.path.join(tempfile.mkdtemp(), name)
     with open(path, "w") as f:
-        f.write("# columns = Q, R, dR, dQ (sigma)\n")
+        f.write("# instrument: D17\n")
         for q, r in zip(Q, R):
             f.write(f"{q:.6f}  {r:.6e}  {0.05 * r:.6e}  {0.02 * q:.6e}\n")
     return path
@@ -51,7 +56,7 @@ def test_the_unclaimed_default_is_what_we_are_overriding():
     """Guard for the tests below: without a declaration, FWHM and no angle."""
     from aure import instruments
 
-    path = _unreadable_header_file("REFL_234277_3_234279_autoreduction.dat")
+    path = _unreadable_header_file("d17_012345_reduced.mft")
     try:
         meta = instruments.header_metadata(path)
         assert meta["dq_is_fwhm"] is True
@@ -61,7 +66,7 @@ def test_the_unclaimed_default_is_what_we_are_overriding():
 
 
 def test_declared_values_survive_enrichment():
-    path = _unreadable_header_file("REFL_234277_3_234279_autoreduction.dat")
+    path = _unreadable_header_file("d17_012345_reduced.mft")
     try:
         state = create_initial_state(
             data_file=path,
@@ -99,7 +104,7 @@ def test_a_declared_convention_reaches_the_state_level_flag():
     fresh header parse and a declaration on the primary file was silently
     outvoted for any single-file analysis.
     """
-    path = _unreadable_header_file("REFL_234277_1_234277_autoreduction.dat")
+    path = _unreadable_header_file("d17_012345_reduced.mft")
     try:
         state = create_initial_state(
             data_file=path,
@@ -121,7 +126,7 @@ def test_a_declared_convention_reaches_the_state_level_flag():
 
 def test_an_undeclared_file_still_takes_the_parsed_convention():
     """No declaration must leave the previous behaviour untouched."""
-    path = _unreadable_header_file("REFL_234277_1_234277_autoreduction.dat")
+    path = _unreadable_header_file("d17_012345_reduced.mft")
     try:
         state = create_initial_state(
             data_file=path,
@@ -140,8 +145,7 @@ def test_an_undeclared_file_still_takes_the_parsed_convention():
 def test_each_file_keeps_its_own_declaration():
     """The three segments of one measurement each carry their own angle."""
     paths = [
-        _unreadable_header_file(f"REFL_234277_{i}_23427{6 + i}_autoreduction.dat")
-        for i in (1, 2, 3)
+        _unreadable_header_file(f"d17_01234{i}_reduced.mft") for i in (1, 2, 3)
     ]
     try:
         state = create_initial_state(

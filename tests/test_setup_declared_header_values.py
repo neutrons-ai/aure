@@ -21,11 +21,15 @@ from aure.setup import dump_setup
 
 @pytest.fixture
 def data_file(tmp_path):
-    path = tmp_path / "REFL_234277_3_234279_autoreduction.dat"
+    """A file no registered instrument claims — the case this exists for.
+
+    Deliberately not a REF_L name. The motivating format is now a built-in
+    (``REF_L_autoreduction``), and a test that used one would be asserting
+    about that instrument rather than about the declaration mechanism.
+    """
+    path = tmp_path / "d17_012345_reduced.mft"
     path.write_text(
-        "# columns = Q, R, dR, dQ (sigma)\n"
-        "0.01 1.0 0.01 0.0001\n"
-        "0.02 0.5 0.01 0.0002\n"
+        "# instrument: D17\n0.01 1.0 0.01 0.0001\n0.02 0.5 0.01 0.0002\n"
     )
     return path
 
