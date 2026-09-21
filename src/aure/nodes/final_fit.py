@@ -1,13 +1,14 @@
 """
 FINAL_FIT node: optional MCMC (dream) polish of the finalize-selected model.
 
-Exploration is fast local/global optimization (``FIT_METHOD``, e.g. ``amoeba``
-or ``de``): it finds the best model structure cheaply but reports no — or only
-crude — parameter uncertainties. When uncertainties are wanted, this step runs
-one more fit with ``FIT_METHOD_FINAL`` (typically ``dream``) on the single model
-the ``finalize`` node already selected, seeded from its fitted values. amoeba
-finds the basin; dream then characterises it — which is exactly the regime dream
-performs well in (a cold dream from a poor start is what performs badly).
+Exploration is local or global optimization (``FIT_METHOD``, preferably
+``de``): it finds the best model structure but reports no — or only crude —
+parameter uncertainties. When uncertainties are wanted, this step runs one more
+fit with ``FIT_METHOD_FINAL`` (typically ``dream``) on the single model the
+``finalize`` node already selected, seeded from its fitted values. Exploration
+finds the basin; dream then characterises it — which is exactly the regime
+dream performs well in (a cold dream from a poor start is what performs
+badly).
 
 Where it runs
 -------------

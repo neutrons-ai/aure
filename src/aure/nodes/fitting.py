@@ -377,6 +377,17 @@ def _enumerate_thin_layer_modes(model: dict, state: ReflectivityState) -> dict:
             trial["layers"][i]["sld"] = float(seed)
             try:
                 problem = build_problem(trial)
+                # amoeba deliberately, not the run's FIT_METHOD and not `de`.
+                # This sweep exists to escape a local optimiser's dependence
+                # on where it starts, by starting it in several places — so a
+                # *global* optimiser here does not improve the sweep, it makes
+                # it redundant: `de` reached the same χ² from every seed on
+                # run 234277 (2.204, to three decimals) where amoeba's answer
+                # varied by a factor of three. Seed-dependence is the
+                # mechanism being exploited, not a defect to fix. It is also
+                # 71x cheaper, which matters for a step that runs once per
+                # seed per thin layer, but that is the second reason.
+                # See docs/plan-new-reduction-format.md.
                 bumps_fit(problem, method="amoeba", steps=1000)
                 c2 = float(data_chisq(problem))
             except Exception as e:

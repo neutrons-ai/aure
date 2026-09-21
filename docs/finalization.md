@@ -130,13 +130,19 @@ After finalize, `current_model` / `current_chi2` **are** the reported answer —
 
 ## 4. Step 2 — `final_fit`: optional MCMC polish for uncertainties
 
-[`nodes/final_fit.py`](../src/aure/nodes/final_fit.py). Fast exploration
-optimizers (`amoeba`, `de`) find the best structure cheaply but report no usable
+[`nodes/final_fit.py`](../src/aure/nodes/final_fit.py). Exploration
+optimizers (`de`, `lm`, `amoeba`) find the best structure but report no usable
 parameter uncertainties. When you want error bars, set `FIT_METHOD_FINAL`
 (typically `dream`) and this step runs **one** MCMC fit on the
-finalize-selected model, seeded from its fitted values. amoeba finds the basin;
-dream characterizes it — the regime dream is good at (a cold dream from a poor
-start is what performs badly).
+finalize-selected model, seeded from its fitted values. Exploration finds the
+basin; dream characterizes it — the regime dream is good at (a cold dream from
+a poor start is what performs badly).
+
+`de` is the exploration method to prefer: it searches the whole box, so unlike
+`lm` and `amoeba` its answer does not depend on where it started. On run
+234277's three segments it reached the same χ² from every SLD seed while
+amoeba's answer varied by a factor of three with the seed — see
+`docs/plan-new-reduction-format.md`.
 
 **Self-gating.** Returns an empty update — no state change, no checkpoint —
 unless *all* hold:

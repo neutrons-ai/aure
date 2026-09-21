@@ -292,7 +292,7 @@ leave to a convention. `docs/instruments.md` now opens its escape-hatch
 section with the three options as a table, ordered by effort, and says why
 none of them is a lesser version of the others.
 
-### Phase 5 — `de` rather than amoeba for the exploration step
+### Phase 5 — `de` rather than amoeba for the exploration step — **benchmarked; docs done, escalation pending**
 
 Not a format change, and tracked here because it came out of the same
 beamtime. It ships as its own commit.
@@ -336,7 +336,34 @@ most of the work.
 The one judgement call is the mode-enumeration polish. It runs one fit *per
 seed per thin layer*, so it is the place where amoeba's speed is actually
 being bought — `de` there could turn a cheap pre-pass into the dominant cost
-of a run. **Benchmark both on the ionomer runs before switching that one.**
+of a run. **Benchmarked** on run 234277's three segments (sample1 air, the hand-fitted
+air-noox stack, Cr's SLD enumerated across its range, 1000 steps, the budget
+the sweep actually uses):
+
+| seed ρ | amoeba χ² | t | `de` χ² | t |
+|---|---|---|---|---|
+| 2.00 | 7.045 | 0.3 s | 2.204 | 21.9 s |
+| 2.80 | 2.463 | 0.3 s | 2.204 | 23.5 s |
+| 3.60 | 2.364 | 0.3 s | 2.204 | 23.1 s |
+| | **best 2.364** | **1.0 s** | **best 2.204** | **68.4 s (71x)** |
+
+(Relative numbers only — this model omits the per-segment intensity and
+background the hand fit carried, so the absolute χ² is not comparable to the
+2.30 in the project's notes.)
+
+**Keep amoeba in the mode-enumeration sweep**, and not because `de` is slow.
+`de` reaches the same χ² from every seed, to three decimals. That is the
+sweep's whole purpose — escaping a local optimiser's dependence on where it
+starts — so a global optimiser does not improve the sweep, **it makes the
+sweep redundant**: you would run `de` once and skip the enumeration entirely.
+amoeba's seed-dependence is not a defect to be fixed here, it is the mechanism
+the sweep exploits, and the 71x is a second reason rather than the first.
+
+That is also the cleanest statement of where each belongs. amoeba: cheap,
+local, and *informative* precisely because its answer depends on where it
+started. `de`: expensive, global, and informative because its answer does not.
+The first is a probe of the landscape; the second is an attempt at the answer.
+
 The other sites are documentation and can change immediately.
 
 **The shape this should take: the loop decides, rather than the default

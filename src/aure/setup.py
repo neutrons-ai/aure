@@ -74,7 +74,7 @@ class SetupConfig(TypedDict, total=False):
     max_refinements: int
     chi2_max: float  # a fit at or below this χ² ends the refinement loop
     chi2_min: float  # below this χ², the deterministic stop stands down
-    fit_method: str  # "lm" | "de" | "dream"
+    fit_method: str  # "de" (global) | "lm" | "amoeba" (local) | "dream" (MCMC)
     fit_steps: int
     fit_burn: int
     fit_method_final: str  # optional final uncertainty fit; unset → off

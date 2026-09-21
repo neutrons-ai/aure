@@ -203,11 +203,13 @@ states:
 # Pinned into the run state like `chi2_max`, so `aure resume` inherits it.
 # chi2_min: 0.5               # default 0.5 (CHI2_MIN; 0 disables the floor)
 #
-# fit_method: dream           # lm | de | dream  (exploration / refinement loop)
+# fit_method: dream           # de | lm | amoeba | dream  (refinement loop)
+#                             # `de` searches the whole box, so its answer does not
+#                             # depend on the starting point; `lm`/`amoeba` are local.
 # fit_steps: 1000
 # fit_burn: 1000
 #
-# Optional final uncertainty fit. Explore fast with `fit_method` (e.g. amoeba),
+# Optional final uncertainty fit. Explore with `fit_method` (e.g. `de`),
 # then run ONE MCMC fit on the finalize-selected model to get proper 1σ error
 # bars. Off unless `fit_method_final` is set and differs from `fit_method`.
 # Give it a much larger budget than exploration — a small step count yields
