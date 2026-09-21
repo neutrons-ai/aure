@@ -31,7 +31,8 @@ YAML and the checkpoints unchanged.
 from __future__ import annotations
 
 import logging
-from typing import Optional, Protocol, runtime_checkable
+import re
+from typing import List, Optional, Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +118,16 @@ class Instrument(Protocol):
         """Whether *role* may carry per-file resolution parameters."""
         ...
 
+    # Optional, and looked up by name rather than required here so that an
+    # instrument written against an earlier protocol keeps working:
+    #
+    #   authoritative_fields : tuple  — fields this format *defines*, which
+    #       outrank the LLM header parse. See above.
+    #   run_title(file_path) -> str  — this file's own run title, when the
+    #       generic label match would find the wrong thing.
+    #   header_issues(file_path) -> list[str]  — defects in what the header
+    #       says, surfaced to the run as warnings.
+
 
 #: Optional attribute name. An instrument may set ``authoritative_fields`` to
 #: the :data:`DEFAULT_HEADER_METADATA` keys its format *defines* rather than
@@ -131,6 +142,110 @@ AUTHORITATIVE_FIELDS_ATTR = "authoritative_fields"
 def authoritative_fields(instrument) -> tuple:
     """The fields *instrument* is authoritative about; ``()`` if it says none."""
     return tuple(getattr(instrument, AUTHORITATIVE_FIELDS_ATTR, ()) or ())
+
+
+# ---------------------------------------------------------------------------
+# Optional extension points
+#
+# Both are looked up by name rather than declared on :class:`Instrument`, for
+# the same reason ``authoritative_fields`` is: an instrument written against
+# an earlier version of this protocol must keep working. An instrument that
+# implements neither behaves exactly as instruments did before they existed.
+# ---------------------------------------------------------------------------
+
+#: Header label spellings that carry the operator's free-form run title, e.g.
+#: ``# Run title: CuPt_d8-THF_FullQ-218386-1.``. Comment lines only, case
+#: insensitively. Lived in ``nodes.intake`` until a format arrived whose
+#: ``# Run Title:`` line holds a JSON array of every segment's title rather
+#: than this file's own — matching it there captured the array as the title.
+_RUN_TITLE_RE = re.compile(r"^#\s*(?:run\s+)?title\s*:\s*(.+?)\s*$", re.IGNORECASE)
+
+#: Longest run title retained. A pathological header line must not be able to
+#: dominate a downstream prompt.
+MAX_RUN_TITLE_LEN = 200
+
+#: Optional method name: ``run_title(file_path) -> str``.
+RUN_TITLE_ATTR = "run_title"
+
+#: Optional method name: ``header_issues(file_path) -> list[str]``.
+HEADER_ISSUES_ATTR = "header_issues"
+
+
+def generic_run_title(file_path: str) -> str:
+    """The free-form run title from a header, by the label-matching rule.
+
+    The fallback for an instrument that does not extract its own, and the
+    behaviour AuRE has always had. Returns ``""`` when no title line is
+    present, which is the common case outside REF_L.
+
+    The value is kept verbatim apart from surrounding whitespace (trailing
+    punctuation included) because it is provenance, not data — normalizing it
+    would make the checkpoint disagree with the file. The first matching
+    comment line wins.
+    """
+    header = read_file_header(file_path)
+    if not header:
+        return ""
+    for line in header.split("\n"):
+        if not line.strip():
+            continue
+        if not line.startswith("#"):
+            break  # reached the data block; no title in the header
+        m = _RUN_TITLE_RE.match(line)
+        if m:
+            return m.group(1)[:MAX_RUN_TITLE_LEN]
+    return ""
+
+
+def run_title(instrument, file_path: str) -> str:
+    """*instrument*'s reading of the run title, or the generic one.
+
+    A format whose title line does not hold this file's own title has to say
+    so, because nothing downstream can tell a wrong title from a right one:
+    the value is free text, and in a whole-run header it is identical in every
+    file, so even a cross-file comparison finds no disagreement to report.
+    """
+    reader = getattr(instrument, RUN_TITLE_ATTR, None)
+    if callable(reader):
+        try:
+            return str(reader(file_path) or "")[:MAX_RUN_TITLE_LEN]
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning(
+                "[INSTRUMENTS] %s.run_title raised on %s: %s",
+                getattr(instrument, "name", instrument),
+                file_path,
+                e,
+            )
+    return generic_run_title(file_path)
+
+
+def header_issues(instrument, file_path: str) -> List[str]:
+    """Problems *instrument* found in this file's header; ``[]`` if none.
+
+    For what a header *says* that is wrong or self-contradictory — arrays that
+    no longer line up, a resolution convention stated in terms this cannot
+    read. Distinct from a file being unreadable, which every method already
+    handles by returning defaults.
+
+    These reach the run as warnings rather than errors. A header defect is
+    frequently survivable, and refusing to load a file over one would be worse
+    than proceeding with a stated caveat; what must not happen is proceeding
+    *silently*, which is how a reduction convention change reached a fit
+    unremarked in the first place.
+    """
+    reporter = getattr(instrument, HEADER_ISSUES_ATTR, None)
+    if not callable(reporter):
+        return []
+    try:
+        return [str(i) for i in (reporter(file_path) or [])]
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(
+            "[INSTRUMENTS] %s.header_issues raised on %s: %s",
+            getattr(instrument, "name", instrument),
+            file_path,
+            e,
+        )
+        return []
 
 
 class GenericInstrument:
@@ -160,6 +275,13 @@ class GenericInstrument:
 
     def header_metadata(self, file_path: str) -> dict:
         return dict(DEFAULT_HEADER_METADATA)
+
+    def run_title(self, file_path: str) -> str:
+        return generic_run_title(file_path)
+
+    def header_issues(self, file_path: str) -> List[str]:
+        """Nothing. It cannot read the header, so it has no standing to judge it."""
+        return []
 
     def role_supports_nuisance(self, role: str) -> bool:
         return False

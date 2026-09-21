@@ -281,8 +281,8 @@ def _title_slots(fields: dict, segment: int) -> list:
     return slots
 
 
-def _check_array_lengths(fields: dict, file_path: str) -> None:
-    """Warn when the header's two array families disagree about the segments.
+def _check_array_lengths(fields: dict) -> list:
+    """Report when the header's two array families disagree about the segments.
 
     The long arrays (``Run Title``, ``Angles``) are per *acquisition* and grow
     on every reprocess; the arrays under ``Config`` are built from the
@@ -297,31 +297,30 @@ def _check_array_lengths(fields: dict, file_path: str) -> None:
     titles = fields.get("Run Title")
     titles = titles.get("title") if isinstance(titles, dict) else None
     if not isinstance(titles, list):
-        return
+        return []
     segments = set()
     for title in titles:
         match = _TITLE_SEGMENT_RE.search(str(title))
         if match:
             segments.add(int(match.group("seg")))
     if not segments:
-        return
+        return []
     config = fields.get("Config")
     config = config if isinstance(config, dict) else {}
+    issues = []
     for key in _PER_SEGMENT_CONFIG_KEYS:
         series = config.get(key)
         if isinstance(series, list) and len(series) != len(segments):
-            logger.warning(
-                "[REF_L] %s: header names %d segment(s) but Config.%s has %d "
-                "entr(y/ies) — the per-segment arrays no longer line up with "
-                "the measurement; treat anything read from them as suspect",
-                os.path.basename(file_path),
-                len(segments),
-                key,
-                len(series),
+            issues.append(
+                f"header names {len(segments)} segment(s) but Config.{key} has "
+                f"{len(series)} entr(y/ies) — the per-segment arrays no longer "
+                f"line up with the measurement; treat anything read from them "
+                f"as suspect"
             )
+    return issues
 
 
-def _autoreduction_theta(fields: dict, file_path: str) -> float:
+def _autoreduction_theta(fields: dict, file_path: str, issues: list) -> float:
     """The incident angle in degrees, or ``0.0`` when it cannot be resolved.
 
     Takes the **last** slot naming this segment. Because the arrays are
@@ -353,20 +352,17 @@ def _autoreduction_theta(fields: dict, file_path: str) -> float:
         return 0.0
 
     if len(set(values)) > 1:
-        logger.warning(
-            "[REF_L] %s: segment %d is recorded at %s deg by different "
-            "reduction passes; using the most recent (%s). The reduction "
-            "appends to these arrays rather than replacing them, so the "
-            "earlier value is superseded, not an alternative",
-            os.path.basename(file_path),
-            segment,
-            ", ".join(f"{v:g}" for v in values),
-            f"{values[-1]:g}",
+        issues.append(
+            f"segment {segment} is recorded at "
+            f"{', '.join(f'{v:g}' for v in values)} deg by different reduction "
+            f"passes; using the most recent ({values[-1]:g}). The reduction "
+            f"appends to these arrays rather than replacing them, so the "
+            f"earlier value is superseded, not an alternative"
         )
     return values[-1]
 
 
-def _autoreduction_dq_is_fwhm(header: str, file_path: str) -> bool:
+def _autoreduction_dq_is_fwhm(header: str, issues: list) -> bool:
     """Whether the fourth column is a full width, per the ``columns`` line.
 
     Falls back to :data:`DEFAULT_HEADER_METADATA`'s ``True`` when the line is
@@ -383,20 +379,50 @@ def _autoreduction_dq_is_fwhm(header: str, file_path: str) -> bool:
             return False
         if label in _FWHM_LABELS:
             return True
-        logger.warning(
-            "[REF_L] %s: unrecognised dQ column label %r; assuming FWHM. If "
-            "it means one sigma the resolution is 2.355x too narrow — declare "
-            "`dq_is_fwhm: false` on this file in the setup (docs/instruments.md)",
-            os.path.basename(file_path),
-            match.group("label"),
+        issues.append(
+            f"unrecognised dQ column label {match.group('label')!r}; assuming "
+            f"FWHM. If it means one sigma the resolution is 2.355x too narrow "
+            f"— declare `dq_is_fwhm: false` on this file in the setup "
+            f"(docs/instruments.md)"
         )
         return DEFAULT_HEADER_METADATA["dq_is_fwhm"]
 
-    logger.warning(
-        "[REF_L] %s: no `# columns = ... dQ (...)` line; assuming FWHM",
-        os.path.basename(file_path),
-    )
+    issues.append("no `# columns = ... dQ (...)` line; assuming FWHM")
     return DEFAULT_HEADER_METADATA["dq_is_fwhm"]
+
+
+def _autoreduction_scan(file_path: str, instrument_name: str) -> tuple:
+    """Read the header once, returning ``(metadata, issues)``.
+
+    One reader behind both :meth:`REFLAutoreductionInstrument.header_metadata`
+    and :meth:`~REFLAutoreductionInstrument.header_issues`, so the two can
+    never disagree about what the file says.
+    """
+    meta = dict(DEFAULT_HEADER_METADATA)
+    meta["instrument"] = instrument_name
+    issues: list = []
+
+    header = read_file_header(file_path)
+    if not header:
+        return meta, issues
+
+    fields = _autoreduction_fields(header)
+    issues.extend(_check_array_lengths(fields))
+    meta["dq_is_fwhm"] = _autoreduction_dq_is_fwhm(header, issues)
+    meta["theta"] = _autoreduction_theta(fields, file_path, issues)
+
+    # The number of distinct segments the run produced — not the length of the
+    # title array, which counts reduction passes as well.
+    titles = fields.get("Run Title")
+    titles = titles.get("title") if isinstance(titles, dict) else None
+    if isinstance(titles, list):
+        segments = {
+            int(m.group("seg"))
+            for m in (_TITLE_SEGMENT_RE.search(str(t)) for t in titles)
+            if m
+        }
+        meta["num_segments"] = len(segments)
+    return meta, issues
 
 
 class REFLAutoreductionInstrument:
@@ -447,29 +473,20 @@ class REFLAutoreductionInstrument:
         return match.group("run") if match else None
 
     def header_metadata(self, file_path: str) -> dict:
-        meta = dict(DEFAULT_HEADER_METADATA)
-        meta["instrument"] = self.name
-        header = read_file_header(file_path)
-        if not header:
-            return meta
-
-        fields = _autoreduction_fields(header)
-        _check_array_lengths(fields, file_path)
-        meta["dq_is_fwhm"] = _autoreduction_dq_is_fwhm(header, file_path)
-        meta["theta"] = _autoreduction_theta(fields, file_path)
-
-        # The number of distinct segments the run produced — not the length of
-        # the title array, which counts reduction passes as well.
-        titles = fields.get("Run Title")
-        titles = titles.get("title") if isinstance(titles, dict) else None
-        if isinstance(titles, list):
-            segments = {
-                int(m.group("seg"))
-                for m in (_TITLE_SEGMENT_RE.search(str(t)) for t in titles)
-                if m
-            }
-            meta["num_segments"] = len(segments)
+        meta, issues = _autoreduction_scan(file_path, self.name)
+        for issue in issues:
+            logger.warning("[REF_L] %s: %s", os.path.basename(file_path), issue)
         return meta
+
+    def header_issues(self, file_path: str) -> list:
+        """What this file's header says that is wrong or unreadable.
+
+        The same checks :meth:`header_metadata` logs, returned so the run can
+        surface them where a scientist reading the report will see them — a
+        log line scrolls past, and these are exactly the defects that are
+        survivable but must not be survived quietly.
+        """
+        return _autoreduction_scan(file_path, self.name)[1]
 
     def run_title(self, file_path: str) -> str:
         """This segment's own title, not the JSON array that holds it.

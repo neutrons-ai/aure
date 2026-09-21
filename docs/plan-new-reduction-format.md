@@ -210,7 +210,7 @@ One behaviour change to know about: a state of these files is now classified
 `partials` rather than `combined`, so its files must share one run number and
 `theta_offset` / `sample_broadening` become available on it.
 
-### Phase 2 — three protocol gaps this format exposes
+### Phase 2 — three protocol gaps this format exposes — **done**
 
 Each optional, each defaulting to today's behaviour.
 
@@ -224,6 +224,13 @@ Each optional, each defaulting to today's behaviour.
   unknown dQ label; we must not quietly fall back to FWHM.
 - The multi-file-unknown case says so plainly: a state of several files that
   no instrument claims is currently called `combined` on a debug-level note.
+
+Both members are looked up by name rather than declared on the `Instrument`
+protocol, so an instrument that implements neither is unchanged and one whose
+implementation raises is logged and skipped — a third-party instrument must
+not be able to fail an analysis. `ref_l.py`'s checks now run through one
+`_autoreduction_scan`, so `header_metadata` (which logs them) and
+`header_issues` (which returns them) cannot disagree about what a file says.
 
 ### Phase 3 — discoverability
 
@@ -260,6 +267,56 @@ copy.
 
   And the negative test: **if you find yourself editing a file under
   `nodes/`, the seam is wrong and that is the bug to fix.**
+
+### Phase 5 — `de` rather than amoeba for the exploration step
+
+Not a format change, and tracked here because it came out of the same
+beamtime. It ships as its own commit.
+
+**The evidence.** On sample2's D2O state, a 23-parameter model started at
+χ² 1074; amoeba stopped at 88.5 with the ionomer and hydrated-layer SLDs the
+wrong way round, and `de` on the identical problem — same spec, same data,
+same bounds — reached 17.7, with three seeds agreeing to within 0.06. No model
+change was involved, so no model change could have been the fix. amoeba is a
+simplex: it walks downhill from where it starts and stops at the first minimum
+it reaches, so on many parameters and a distant starting point it reports a
+local minimum with no sign that it is one. nr-workbench put `de` on its fitter
+menu for this (`7ee93ea`); the ionomer project's
+`samples/sample2/reports/why-sample2-will-not-fit-the-sample1-stack.md`
+records the numbers.
+
+**What that does *not* license**, and the reason the phase says this out loud:
+`de` beating amoeba says the *search* was the problem. `de` reaching the same
+bad minimum from every seed says the *model* is, and no further optimiser will
+help. On the same sample2, the air run bottomed out near χ² 62 under a
+240k-evaluation `de` search with every bound reopened — the stack was wrong,
+not the fitter. Swapping the default must not make "try another optimiser"
+feel like progress; AuRE's refinement loop is exactly where that could become
+an automated version of the loop nr-workbench's fitters module exists to
+prevent.
+
+**Where amoeba actually appears in AuRE**, which is less than the phase title
+suggests:
+
+| Site | What it is |
+|---|---|
+| `nodes/fitting.py` `method="amoeba"` | hard-coded, the mode-enumeration cheap polish |
+| `nodes/final_fit.py`, `docs/finalization.md`, `aure_config.example.yaml` | prose recommending amoeba as the exploration method |
+
+`FIT_METHOD` itself defaults to `dream` (`.env.example`, `fitting.py`), and
+`setup.py` documents the menu as `lm | de | dream` — so **amoeba is not on
+AuRE's menu at all**, yet it is hard-coded in one hot loop and recommended in
+three documents. That inconsistency is the first thing to fix, and it may be
+most of the work.
+
+The one judgement call is the mode-enumeration polish. It runs one fit *per
+seed per thin layer*, so it is the place where amoeba's speed is actually
+being bought — `de` there could turn a cheap pre-pass into the dominant cost
+of a run. Options, in preference order: keep a cheap local polish for the
+sweep and reserve `de` for the main fit; make the sweep's method its own
+setting defaulting to `de` with a reduced evaluation budget; or measure both
+on the ionomer runs before choosing. **Measure before switching that one** —
+the other sites are documentation and can change immediately.
 
 ## Decisions taken
 

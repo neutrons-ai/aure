@@ -384,6 +384,21 @@ def _parse_states(
                     "them; anything not declared takes the defaults (dQ as "
                     "FWHM, no incident angle)"
                 )
+            elif len(unclaimed) > 1:
+                # Several unrecognised files in one state is the worse case
+                # and used to read the same as one. They are almost always
+                # angle segments of a single measurement, and unclaimed they
+                # become that many independent complete curves: no grouping
+                # check, no per-angle optics, and each probe built from Q
+                # alone.
+                consequence = (
+                    f"treating all {len(unclaimed)} as separate complete "
+                    "curves with default conventions (dQ as FWHM, no incident "
+                    "angle). If they are angle segments of one measurement, "
+                    "that is wrong in both directions — declare `theta` / "
+                    "`dq_is_fwhm` per file, or teach AuRE the format "
+                    "(docs/instruments.md)"
+                )
             else:
                 consequence = (
                     "treating as a combined curve with default conventions "

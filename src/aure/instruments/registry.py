@@ -25,6 +25,8 @@ import os
 from typing import List, Optional
 
 from .base import GenericInstrument, Instrument, read_file_header
+from .base import header_issues as _header_issues
+from .base import run_title as _run_title
 
 logger = logging.getLogger(__name__)
 
@@ -178,3 +180,13 @@ def group_key(file_path: str) -> Optional[str]:
 def header_metadata(file_path: str) -> dict:
     """Deterministic header metadata, header sniff included."""
     return resolve(file_path).header_metadata(file_path)
+
+
+def run_title(file_path: str) -> str:
+    """The operator's free-form run title, as this file's instrument reads it."""
+    return _run_title(resolve(file_path), file_path)
+
+
+def header_issues(file_path: str) -> List[str]:
+    """Defects this file's instrument found in its header; ``[]`` if none."""
+    return _header_issues(resolve(file_path), file_path)

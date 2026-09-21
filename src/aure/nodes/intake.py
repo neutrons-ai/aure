@@ -43,17 +43,9 @@ logger = logging.getLogger(__name__)
 # instrument-specific (the run title) plus the LLM-based parse below.
 _read_file_header = instruments.read_file_header
 
-
-
-
-# Header label spellings that carry the operator's free-form run title, e.g.
-# ``# Run title: CuPt_d8-THF_FullQ-218386-1.``. Matched against comment lines
-# only, case-insensitively.
-_RUN_TITLE_RE = re.compile(r"^#\s*(?:run\s+)?title\s*:\s*(.+?)\s*$", re.IGNORECASE)
-
-#: Longest run title retained. A pathological header line must not be able to
-#: dominate a downstream prompt.
-_MAX_RUN_TITLE_LEN = 200
+#: Longest run title retained. Owned by the instrument layer now; re-exported
+#: because the cap is a property of what a prompt can absorb, not of a format.
+_MAX_RUN_TITLE_LEN = instruments.MAX_RUN_TITLE_LEN
 
 
 def _parse_run_title_from_header(file_path: str) -> str:
@@ -65,24 +57,15 @@ def _parse_run_title_from_header(file_path: str) -> str:
     records *what the file says*; whether that text is allowed to influence the
     analysis is a separate decision, gated by :func:`_use_run_title_enabled`.
 
-    The value is kept verbatim apart from surrounding whitespace (trailing
-    punctuation included) because it is provenance, not data — normalizing it
-    would make the checkpoint disagree with the file. The first matching
-    comment line wins. Returns ``""`` when no title line is present, which is
-    the common case outside REF_L.
+    Delegates to the file's instrument, falling back to the label match that
+    lived here. A format whose ``# Run Title:`` line holds something other than
+    this file's own title has to be able to say so: REF_L's ``new_reduction``
+    dialect puts a JSON array of every segment's title there, identical in
+    every file of the run — so the array parsed as a title, and because it was
+    identical everywhere, the cross-file consistency check found nothing to
+    disagree about.
     """
-    header = _read_file_header(file_path)
-    if not header:
-        return ""
-    for line in header.split("\n"):
-        if not line.strip():
-            continue
-        if not line.startswith("#"):
-            break  # reached the data block; no title in the header
-        m = _RUN_TITLE_RE.match(line)
-        if m:
-            return m.group(1)[:_MAX_RUN_TITLE_LEN]
-    return ""
+    return instruments.run_title(file_path)
 
 
 def _use_run_title_enabled() -> bool:
@@ -569,6 +552,13 @@ def _enrich_dataset(ds: dict) -> dict:
     # Deterministic, unconditional, and independent of the LLM header call --
     # recorded even when USE_RUN_TITLE is off (see _parse_run_title_from_header).
     enriched.setdefault("run_title", _parse_run_title_from_header(ds["file"]))
+    # What the header says that is wrong or unreadable, per its instrument.
+    # Recorded on the dataset so it reaches the checkpoint, and surfaced as a
+    # message by the caller: a defect that only ever reached a log line is how
+    # a changed resolution convention got into a fit unremarked.
+    issues = instruments.header_issues(ds["file"])
+    if issues:
+        enriched["header_issues"] = issues
     return enriched
 
 
@@ -748,6 +738,32 @@ def intake_node(state: ReflectivityState) -> Dict[str, Any]:
             )
         ]
         return updates
+
+    # ========== 1b. Surface header defects ==========
+    # Per-file, because a run-wide header can be wrong about one segment and
+    # right about the others. These do not stop the run: a header defect is
+    # usually survivable and refusing to load over one would be worse than
+    # proceeding with a stated caveat. What must not happen is proceeding
+    # silently.
+    for ds in updates.get("data_files") or []:
+        label = ds.get("label") or ds.get("file")
+        for issue in ds.get("header_issues") or []:
+            updates["messages"].append(
+                Message(
+                    role="system",
+                    content=f"Header warning ({label}): {issue}",
+                    timestamp=None,
+                )
+            )
+    if not (updates.get("data_files") or []) and state.get("data_file"):
+        for issue in instruments.header_issues(state["data_file"]):
+            updates["messages"].append(
+                Message(
+                    role="system",
+                    content=f"Header warning: {issue}",
+                    timestamp=None,
+                )
+            )
 
     # ========== 2. Detect dQ Convention ==========
     # Inspect the primary data file header to determine if dQ is FWHM.

@@ -80,6 +80,46 @@ ORSO uses this: its `sQz` column is one standard deviation by specification,
 so the convention is not something to guess about. REF_L declares nothing,
 leaving the LLM's reading in charge.
 
+### Optional: `run_title`
+
+AuRE records the operator's free-form run title from every file, as
+provenance. By default it takes the first `# Run title: …` comment line.
+Implement this if your format puts something else there:
+
+```python
+    def run_title(self, file_path):
+        """This file's own title, or "" if it has none."""
+        return ...
+```
+
+REF_L's `new_reduction` dialect needs it: its `# Run Title:` line holds a JSON
+array of *every* segment's title, identical in every file of the run, so the
+generic match captures the array — and because it is identical everywhere, the
+cross-file consistency check finds no disagreement to report.
+
+### Optional: `header_issues`
+
+For what the header *says* that is wrong or self-contradictory — as distinct
+from the file being unreadable, which every method already handles by
+returning defaults:
+
+```python
+    def header_issues(self, file_path):
+        """Defects worth telling the scientist about; [] if none."""
+        return ["Config.ThetaShift has 2 entries for 3 segments"]
+```
+
+These reach the run as warnings and are recorded on the dataset in the
+checkpoint. They do not stop the run: a header defect is usually survivable,
+and refusing to load a file over one would be worse than proceeding with a
+stated caveat. What must not happen is proceeding *silently* — a resolution
+convention that changed without anyone noticing is how this whole area of the
+code came to be written.
+
+Both members are looked up by name rather than required by the protocol, so an
+instrument that implements neither behaves exactly as instruments did before
+they existed, and one whose implementation raises is logged and skipped.
+
 ## Registering it
 
 Three ways, in increasing permanence.
