@@ -119,6 +119,7 @@ function _restorePlottedFiles(savedFiles, onDone) {
       _syncDataFileInput();
       _renderPlottedFilesList();
       _renderSetupReflectivityPlot();
+      _classifyFiles(plottedFiles.map(function (f) { return f.path; }));
       _restoringFiles = false;
       if (typeof onDone === "function") onDone();
       return;
@@ -439,6 +440,7 @@ function _addDataFile(path) {
       _syncDataFileInput();
       _renderPlottedFilesList();
       _renderSetupReflectivityPlot();
+      _classifyFiles([path]);
     })
     .catch(function (err) {
       alert("Could not load reflectivity file:\n" + err.message);
@@ -981,14 +983,61 @@ function _singleStateName() {
   return names.length === 1 ? names[0] : SINGLE_STATE_DEFAULT;
 }
 
-// Mirror the server's partials detection (config.py _PARTIAL_RE / _detect_kind):
-// theta_offset and sample_broadening are only valid for partial-data states.
-const _PARTIAL_FILE_RE = /_\d+_\d+_partial\.txt$/i;
+// Whether a state's files are angle segments, which is what makes
+// theta_offset and sample_broadening meaningful. The server decides this
+// through the instrument registry (config.py _detect_kind -> instruments), so
+// ask it rather than keeping a second copy of the rule here: this file used to
+// carry its own REF_L filename regex, and a format taught to AuRE stayed
+// unknown to the browser — the Setup tab would hide the two fields the server
+// would have accepted.
+//
+// Answers are cached per path and fetched when files are added. The regex
+// below is the fallback for a path not classified yet (the first render after
+// a file is added, before the request returns) and covers only the case it
+// always covered.
+const fileRoles = {};
+const _PARTIAL_FILE_RE_FALLBACK = /_\d+_\d+_partial\.txt$/i;
 
 function _filesArePartials(files) {
   return (files || []).some(function (f) {
-    return _PARTIAL_FILE_RE.test(_basename(f.path || f.file || ""));
+    const path = f.path || f.file || "";
+    const known = fileRoles[path];
+    if (known) return known === "partial";
+    return _PARTIAL_FILE_RE_FALLBACK.test(_basename(path));
   });
+}
+
+function _classifyFiles(paths, onDone) {
+  // Fetch roles for any path not already cached, then re-render the panel the
+  // answer gates. Failures are silent: the fallback above still applies, and
+  // a classification request must not be able to break the Setup tab.
+  const wanted = (paths || []).filter(function (p) {
+    return p && !(p in fileRoles);
+  });
+  if (!wanted.length) {
+    if (typeof onDone === "function") onDone();
+    return;
+  }
+  const params = new URLSearchParams();
+  wanted.forEach(function (p) {
+    params.append("path", p);
+  });
+  fetch("/api/instruments/classify?" + params.toString())
+    .then(function (r) {
+      return r.json();
+    })
+    .then(function (payload) {
+      (payload.files || []).forEach(function (info) {
+        if (info && info.file && info.role) fileRoles[info.file] = info.role;
+      });
+      if (typeof _renderOverridesPanel === "function") _renderOverridesPanel();
+    })
+    .catch(function () {
+      /* keep the fallback */
+    })
+    .then(function () {
+      if (typeof onDone === "function") onDone();
+    });
 }
 
 function _fitFilesForState(name) {

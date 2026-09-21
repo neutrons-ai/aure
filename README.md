@@ -561,6 +561,27 @@ aure check-llm [--json] [--no-test]
 | `--json` | Output as JSON |
 | `--no-test` | Skip the live connection test |
 
+### `aure formats`
+
+Show which data formats AuRE understands, and what it makes of a file.
+
+```bash
+aure formats [DATA_FILES...] [--json]
+```
+
+With no arguments, lists the registered instruments in the order they are
+consulted. Given files, reports for each which instrument claimed it and
+whether by filename or by header, the role and set id, the incident angle and
+dQ convention read from the header, and any defects found in it.
+
+This is the command for "why was my file not recognised?" and "why did it use
+that angle?" — both answerable without starting a run. Teaching AuRE a new
+format is [docs/instruments.md](docs/instruments.md).
+
+| Option | Description |
+|--------|-------------|
+| `--json` | Output as JSON |
+
 ### `aure analyze`
 
 Run a full analysis workflow on a reflectivity data file.

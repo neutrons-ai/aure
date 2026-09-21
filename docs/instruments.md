@@ -170,6 +170,28 @@ naming the files and the registered instruments, and a setup declaring
 `theta_offset` or `sample_broadening` on such files fails at load rather
 than proceeding on a guess.
 
+## Asking what AuRE understands
+
+```bash
+aure formats                      # the registered instruments, in priority order
+aure formats data/*.dat           # what it makes of these files
+aure formats file.dat --json      # the same, for a script
+```
+
+With files, it reports for each which instrument claimed it and **whether by
+filename or by header**, the role and set id, the incident angle and dQ
+convention it read, the run title, whether `theta_offset` /
+`sample_broadening` apply, and any defects the instrument found in the header.
+
+The distinction between claimed-by-filename and claimed-by-header is worth
+attention: a file claimed only by its header still works, but a rename — or
+running before the data lands — changes the answer, because
+`resolve_by_name` is what runs while a setup file is parsed.
+
+This is the command for "why was my file not recognised?" and "why did it use
+that angle?", and it answers both without starting a run. The Setup tab asks
+the same question of the same code through `/api/instruments/classify`.
+
 ## When AuRE cannot read your format yet
 
 Writing an instrument is the durable fix, but it is not the only one, and it

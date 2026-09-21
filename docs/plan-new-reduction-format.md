@@ -232,7 +232,7 @@ not be able to fail an analysis. `ref_l.py`'s checks now run through one
 `_autoreduction_scan`, so `header_metadata` (which logs them) and
 `header_issues` (which returns them) cannot disagree about what a file says.
 
-### Phase 3 — discoverability
+### Phase 3 — discoverability — **done**
 
 `aure formats`: list registered instruments, built-in and plugin, and given
 paths show what each resolves to, whether by name or by header, and what that
@@ -245,6 +245,15 @@ eliminates the filename as a suspect while changing nothing. The equivalent
 mistake here would be a registry with no way to ask what it contains. Same
 data behind `GET /api/instruments/classify`, so `setup.js` can drop its regex
 copy.
+
+Shipped as `aure formats` (`cli._classify_for_report` behind both surfaces) and
+`GET /api/instruments/classify`. `setup.js` now caches a role per path from
+that endpoint and re-renders the overrides panel when it arrives; the old
+regex survives only as the fallback for the first render before the request
+returns, renamed to say so. The report distinguishes claimed-by-filename from
+claimed-by-header, because a file claimed only by its header still works but
+its classification changes on a rename — and `resolve_by_name` is what runs
+while a setup is parsed.
 
 ### Phase 4 — documentation and a skill
 
@@ -312,11 +321,32 @@ most of the work.
 The one judgement call is the mode-enumeration polish. It runs one fit *per
 seed per thin layer*, so it is the place where amoeba's speed is actually
 being bought — `de` there could turn a cheap pre-pass into the dominant cost
-of a run. Options, in preference order: keep a cheap local polish for the
-sweep and reserve `de` for the main fit; make the sweep's method its own
-setting defaulting to `de` with a reduced evaluation budget; or measure both
-on the ionomer runs before choosing. **Measure before switching that one** —
-the other sites are documentation and can change immediately.
+of a run. **Benchmark both on the ionomer runs before switching that one.**
+The other sites are documentation and can change immediately.
+
+**The shape this should take: the loop decides, rather than the default
+forcing.** Not a global swap to `de`, but an escalation the refinement loop
+chooses — `evaluation` already detects a stalled χ² (≥2 iterations without
+improvement), which is exactly the signal that distinguishes a search problem
+from a model problem, and it already routes on that signal to propose
+structural hypotheses. Escalating the optimiser is a cheaper first move than
+changing the structure, and it belongs in the same decision.
+
+What makes this better than a new default is that **the escalation produces
+the diagnostic**. Run `de` once on a stalled fit and the answer is
+informative either way: a decisive improvement says the search was the limit
+and the structure was fine; the same minimum reached again says the model is
+the limit, which is the finding that tells the loop to stop trying optimisers
+and start changing the stack. A forced default gets the first outcome and
+throws away the second, because there is nothing to compare against. The
+sample2 air run is the case in point — χ² 62 under a 240k-evaluation `de`
+search with every bound reopened, where the answer was the stack.
+
+So the escalation is recorded like any other attempt: which optimiser ran,
+what it reached, and whether it agreed with its predecessor. That also keeps
+the guard rail — one escalation per stall, not an optimiser menu the loop can
+cycle through, which is the failure nr-workbench's `fitters.py` exists to
+prevent and which an automated loop could reproduce far faster than a person.
 
 ## Decisions taken
 

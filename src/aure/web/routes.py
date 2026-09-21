@@ -539,6 +539,33 @@ def api_export_model():
     return jsonify({"error": "No problem.json found"}), 404
 
 
+@bp.route("/api/instruments/classify")
+def api_instruments_classify():
+    """Classify data files through the instrument registry.
+
+    Query params:
+        path  – one or more file paths (repeat the param, or comma-separate).
+
+    The Setup tab used to answer "are these partials?" with its own copy of
+    the REF_L filename regex — a copy the registry could not reach, so a
+    format taught to AuRE stayed unknown to the browser. This is that question
+    asked of the registry instead. The answer is per file, and the same data
+    ``aure formats`` prints.
+    """
+    from ..cli import _classify_for_report
+
+    raw = request.args.getlist("path") or []
+    paths = [p for entry in raw for p in entry.split(",") if p.strip()]
+    out = []
+    for p in paths:
+        try:
+            out.append(_classify_for_report(p))
+        except Exception as e:  # pragma: no cover - defensive
+            # A browser panel must never be the thing that fails a session.
+            out.append({"file": p, "error": str(e)})
+    return jsonify({"files": out})
+
+
 @bp.route("/api/llm-status")
 def api_llm_status():
     rd = _run_data()

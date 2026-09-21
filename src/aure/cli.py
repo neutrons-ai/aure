@@ -311,6 +311,152 @@ def check_llm(output_json: bool, no_test: bool):
 
 
 # ============================================================================
+# Formats
+# ============================================================================
+
+
+def _classify_for_report(file_path: str) -> dict:
+    """Everything ``aure formats`` and the web UI need about one file.
+
+    Resolution is reported twice on purpose: ``by_name`` is what runs while a
+    setup file is parsed, before the data need exist, and ``instrument`` is
+    what runs once the file is readable. When they differ, the file is claimed
+    by its *header* — which works, but means a rename or a missing file
+    changes the answer, and that is worth seeing.
+    """
+    from . import instruments
+
+    by_name = instruments.resolve_by_name(file_path)
+    resolved = instruments.resolve(file_path)
+    meta = resolved.header_metadata(file_path)
+    role = resolved.file_role(file_path)
+    return {
+        "file": file_path,
+        "exists": Path(file_path).exists(),
+        "instrument": resolved.name,
+        "by_name": by_name.name,
+        "claimed_by": "filename" if by_name is resolved else "header",
+        "role": role,
+        "group_key": resolved.group_key(file_path),
+        "supports_nuisance": bool(resolved.role_supports_nuisance(role)),
+        "theta": meta.get("theta"),
+        "dq_is_fwhm": meta.get("dq_is_fwhm"),
+        "num_segments": meta.get("num_segments"),
+        "authoritative": list(instruments.authoritative_fields(resolved)),
+        "run_title": instruments.run_title(file_path),
+        "issues": instruments.header_issues(file_path),
+    }
+
+
+@cli.command("formats")
+@click.argument("data_files", nargs=-1, type=click.Path())
+@click.option("--json", "output_json", is_flag=True, help="Output as JSON")
+def formats(data_files: tuple, output_json: bool):
+    """
+    Show which data formats AuRE understands, and what it makes of a file.
+
+    With no arguments, lists the registered instruments in the order they are
+    consulted.  Given files, says for each which instrument claimed it,
+    whether by filename or by header, and what that instrument reads out of
+    it — so "why is my file not recognised?" and "why did it use that angle?"
+    have an answer that does not require starting a run.
+
+    \b
+    Examples:
+        aure formats
+        aure formats data/*.dat
+        aure formats REFL_234277_1_234277_autoreduction.dat --json
+    """
+    from . import instruments
+
+    registered = instruments.registered()
+    reports = [_classify_for_report(f) for f in data_files]
+
+    if output_json:
+        click.echo(
+            json.dumps(
+                {
+                    "instruments": [
+                        {
+                            "name": i.name,
+                            "authoritative": list(
+                                instruments.authoritative_fields(i)
+                            ),
+                        }
+                        for i in registered
+                    ],
+                    "files": reports,
+                },
+                indent=2,
+            )
+        )
+        return
+
+    click.echo()
+    click.echo(click.style("  Registered instruments", fg="blue", bold=True))
+    click.echo(click.style("  " + "─" * 40, fg="blue"))
+    click.echo()
+    if not registered:
+        click.echo("    (none)")
+    for i, inst in enumerate(registered, 1):
+        auth = instruments.authoritative_fields(inst)
+        suffix = f"  (authoritative: {', '.join(auth)})" if auth else ""
+        click.echo(f"    {i}. {inst.name}{suffix}")
+    click.echo()
+    click.echo(
+        "    Consulted in this order; the first to claim a file wins. A file "
+        "nothing"
+    )
+    click.echo(
+        "    claims is read with default conventions (dQ as FWHM, no incident "
+        "angle)."
+    )
+    click.echo(
+        "    Add your own: docs/instruments.md. Force one: AURE_INSTRUMENT=<name>."
+    )
+
+    if not reports:
+        click.echo()
+        return
+
+    click.echo()
+    click.echo(click.style("  Files", fg="blue", bold=True))
+    click.echo(click.style("  " + "─" * 40, fg="blue"))
+    for r in reports:
+        click.echo()
+        click.echo(f"    {Path(r['file']).name}")
+        if not r["exists"]:
+            click.echo(click.style("      file not found", fg="yellow"))
+        if r["instrument"] == instruments.generic().name:
+            click.echo(
+                click.style("      instrument:  none — unrecognised", fg="yellow")
+            )
+        else:
+            click.echo(
+                f"      instrument:  {r['instrument']} "
+                f"(claimed by {r['claimed_by']})"
+            )
+        click.echo(f"      role:        {r['role']}")
+        click.echo(f"      set id:      {r['group_key'] or '—'}")
+        theta = r["theta"] or 0.0
+        angle = f"{theta:g}°" if theta else "— (no single angle; Q-based probe)"
+        click.echo(f"      incident θ:  {angle}")
+        click.echo(
+            f"      dQ column:   {'FWHM' if r['dq_is_fwhm'] else '1-sigma'}"
+            + ("  (stated by the format)" if "dq_is_fwhm" in r["authoritative"] else "")
+        )
+        if r["run_title"]:
+            click.echo(f"      run title:   {r['run_title']}")
+        click.echo(
+            f"      θ-offset / broadening: "
+            f"{'allowed' if r['supports_nuisance'] else 'not applicable'}"
+        )
+        for issue in r["issues"]:
+            click.echo(click.style(f"      header: {issue}", fg="yellow"))
+    click.echo()
+
+
+# ============================================================================
 # Analysis Commands
 # ============================================================================
 
