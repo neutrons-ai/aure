@@ -15,6 +15,7 @@ from typing import Any, Optional
 
 import click
 
+from . import __version__
 from .env_config import load_env
 
 # Load environment variables from .env then ~/.aure (project .env wins)
@@ -176,7 +177,7 @@ def _check_llm_status(
 
 
 @click.group()
-@click.version_option(version="0.1.0", prog_name="aure")
+@click.version_option(version=__version__, prog_name="aure")
 def cli():
     """
     Reflectivity Analysis Workflow CLI.
