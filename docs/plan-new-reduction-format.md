@@ -263,7 +263,7 @@ claimed-by-header, because a file claimed only by its header still works but
 its classification changes on a rename — and `resolve_by_name` is what runs
 while a setup is parsed.
 
-### Phase 4 — documentation and a skill
+### Phase 4 — documentation and a skill — **done**
 
 - `docs/instruments.md`: the new built-in, the new optional protocol members,
   `aure formats`, and a user-facing "my file is not recognised" section giving
@@ -284,6 +284,13 @@ while a setup is parsed.
 
   And the negative test: **if you find yourself editing a file under
   `nodes/`, the seam is wrong and that is the bug to fix.**
+
+Shipped as `.claude/skills/add-data-format/SKILL.md`, with
+`tests/test_developer_skills.py` pinning the two-directory split — a file in
+the wrong one fails silently in both directions, so it is not something to
+leave to a convention. `docs/instruments.md` now opens its escape-hatch
+section with the three options as a table, ordered by effort, and says why
+none of them is a lesser version of the others.
 
 ### Phase 5 — `de` rather than amoeba for the exploration step
 

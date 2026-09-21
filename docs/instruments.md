@@ -198,10 +198,26 @@ the same question of the same code through `/api/instruments/classify`.
 
 ## When AuRE cannot read your format yet
 
-Writing an instrument is the durable fix, but it is not the only one, and it
-should not stand between you and a fit today. A setup file's `data_files`
-entry may declare the two values AuRE would otherwise have read from the
-header, and a declared value wins over the header parse:
+Start with `aure formats <your files>`. If it says *unrecognised*, you have
+three options, in increasing order of effort and permanence:
+
+| | What it costs | When it is right |
+|---|---|---|
+| **1. Declare the values** in the setup file | a line per file | a one-off run, or another program already reads your files and can write the setup |
+| **2. `AURE_INSTRUMENT=`** force an existing instrument | a shell variable | your files *are* a known format under an unfamiliar name |
+| **3. Write an instrument** | a small class | the knowledge should outlive one setup file |
+
+None of them is a workaround for the others. (1) is not a lesser (3): if
+something upstream has already parsed your headers correctly, passing what it
+read is better than having AuRE re-derive it. (3) is not overkill for one
+beamtime: it is roughly a page of code, and it is the only one that makes the
+next person's files work without them knowing any of this.
+
+### 1. Declare the values
+
+A setup file's `data_files` entry may declare the two values AuRE would
+otherwise have read from the header, and a declared value wins over the header
+parse:
 
 ```yaml
 states:
@@ -222,9 +238,31 @@ before. Any *other* key on a `data_files` entry is an error — a `thetas:` typo
 that parsed and vanished would leave the run quietly using the header value
 you believed you had overridden.
 
-This is the right tool when another program has already read your files
-correctly and can write the setup: it needs no code in AuRE and no release.
-Reach for an instrument when the knowledge should outlive one setup file.
+It needs no code in AuRE and no release. What it does not do is travel: the
+next person with the same files starts from the same place.
+
+### 2. Force an existing instrument
+
+If your files are a format AuRE already knows under a name it does not
+recognise — a facility's own naming on top of a standard layout, say:
+
+```bash
+AURE_INSTRUMENT=ORSO aure analyze data.txt "..."
+```
+
+That applies to *every* file in the process, so it suits a directory of one
+kind of data and not a mixed one. `aure formats` lists the names, and
+`AURE_INSTRUMENT=generic` turns detection off entirely.
+
+### 3. Write an instrument
+
+The protocol at the top of this page, plus a registration. Roughly a page of
+code; the walkthrough is this whole document, and the checklist for doing it
+well is the `add-data-format` skill in `.claude/skills/`.
+
+This is the only option that makes the format work for someone who has never
+read this page — which, if the format is your facility's, is most of the
+people who will meet it.
 
 ## Naming, versions and lifecycle
 

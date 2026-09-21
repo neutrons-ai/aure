@@ -80,6 +80,14 @@ State is serialized to JSON after every node into `output_dir/checkpoints/NNN_<n
 
 ### Agent Skills ([src/aure/skills/](src/aure/skills/))
 
+Two directories hold `SKILL.md` files and they are for opposite audiences.
+`src/aure/skills/` holds **science** skills, selected at run time and rendered
+into LLM prompts. `.claude/skills/` holds **developer** skills — checklists for
+someone editing this repo, e.g. `add-data-format` for teaching AuRE a new file
+format. A file in the wrong one fails silently in both directions
+(`tests/test_developer_skills.py` pins the split). The rest of this section is
+about the science skills.
+
 Each skill is a directory containing a `SKILL.md` (Agent Skills spec format). `selector.select_skills(...)` chooses which to inject into LLM prompts based on the parsed sample (e.g. `polymer-films`, `metal-oxide-interfaces`, `solvent-contrast-matching`, `sei-layer-analysis`, `neutron-reflectometry`). The `structural-hypothesis-ranking` skill is special — it drives the initial hypothesis list used by the refinement loop, not the modeling prompt directly. That list is then mutated through a single guarded merge in [nodes/hypotheses.py](src/aure/nodes/hypotheses.py): `modeling` may only change entry *status* (membership-frozen), while `evaluation` may append new entries and re-rank. Skills are loaded via `SkillRegistry` and rendered into prompts in `nodes/prompts.py`.
 
 ### LLM layer ([src/aure/llm/](src/aure/llm/))
