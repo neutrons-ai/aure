@@ -292,7 +292,7 @@ leave to a convention. `docs/instruments.md` now opens its escape-hatch
 section with the three options as a table, ordered by effort, and says why
 none of them is a lesser version of the others.
 
-### Phase 5 — `de` rather than amoeba for the exploration step — **benchmarked; docs done, escalation pending**
+### Phase 5 — `de` rather than amoeba for the exploration step — **benchmarked; docs done, escalation deferred to `TODO.md`**
 
 Not a format change, and tracked here because it came out of the same
 beamtime. It ships as its own commit.

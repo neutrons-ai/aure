@@ -720,3 +720,91 @@ carry-over in `nodes/modeling.py`, refinement rule 14 in `nodes/prompts.py`, the
 `functional-constraints` skill, `docs/derived-parameters.md`, and
 `tests/test_derived_parameters.py`. All present up to the commit that removed
 them.
+
+---
+
+## Wish: let the refinement loop escalate the optimizer once, and read the result
+
+**Where:** [`src/aure/nodes/evaluation.py`](src/aure/nodes/evaluation.py) —
+the stall test inside `_should_revise_hypotheses`;
+[`src/aure/nodes/routing.py`](src/aure/nodes/routing.py) —
+`route_after_evaluation`'s existing `fitting` edge;
+[`src/aure/nodes/fitting.py`](src/aure/nodes/fitting.py) — the `FIT_METHOD`
+lookup.
+
+**The observation.** A stalled fit has two quite different causes and the loop
+cannot currently tell them apart. Either the search is stuck in a local
+minimum, or the model is wrong. `evaluation` treats every stall as the second
+and proposes a structural change, because a structural change is the only
+instrument it has.
+
+On the ionomer beamtime both cases occurred in one sample. Sample2's D2O state:
+a 23-parameter model started at χ² 1074, amoeba stopped at 88.5 with the
+ionomer and hydrated-layer SLDs the wrong way round, and `de` on the identical
+problem — same spec, same data, same bounds — reached 17.7 with three seeds
+agreeing to 0.06. No model change was involved, so no model change could have
+been the fix. Sample2's air state, same beamtime: χ² ~62 under a 240k-evaluation
+`de` search with every bound reopened, multiple seeds reaching the *same*
+minimum. There the stack was wrong, and no optimizer was going to help. The
+project's
+`samples/sample2/reports/why-sample2-will-not-fit-the-sample1-stack.md`
+records both.
+
+**What it costs.** Facing case one, the loop dismantles a model that was
+correct. Facing case two, it keeps proposing structure without ever
+establishing that the search had been given a fair chance — which is the work
+a person had to do by hand, twice, on that beamtime.
+
+**The change.** When the fit is unacceptable, χ² has stalled (the ≥3-fit, <5%
+rule already in `_should_revise_hypotheses`, extracted so both callers share
+one definition), and the method in use is local (`lm` / `amoeba`), set
+`state["fit_method"] = "de"` and take the `fitting` edge that already exists
+for bounds-only re-fits — same model, fit it again, no LLM round. Latch rather
+than probe: if `de` improves χ², stay on it, because a search that was the
+limit at iteration 4 is still the limit at iteration 5; if it does not, latch
+back rather than pay ~70× again.
+
+**The point is the diagnostic, not the better fit.** Record
+`optimizer_escalation = {from, to, iteration, chi2_before, chi2_after,
+verdict}` and put one line in the evaluator's prompt. `model-limited` — a
+global search over the whole box reached the same χ² — says the next change
+*must* be structural. `search-limited` says the structure was fine and
+protects a model the loop was about to take apart. A forced global default
+gets the better fit and throws the diagnostic away, because nothing is left to
+compare against.
+
+**Guard rails.** Never escalate from `de` or `dream`. Once per run — allowing
+repeats is precisely how "try another optimizer" becomes the loop, which is
+the failure nr-workbench's `fitters.py` exists to prevent and which an
+automated loop can reproduce far faster than a person. Make the cost visible,
+since one iteration goes from seconds to a minute or more.
+
+**Three things to settle first.**
+
+1. **It is inert under the shipped default.** `FIT_METHOD` defaults to
+   `dream`, which is never escalated from, so this only fires for runs set to
+   `lm` or `amoeba` for speed. Whether AuRE's *exploration* default should
+   move to `de` — with `dream` reserved for `FIT_METHOD_FINAL`, which is what
+   `.env.example` already advises — is a separate and larger decision, with
+   its own implications for the `validation/` corpus.
+2. **Default off**, behind `OPTIMIZER_ESCALATION` / a setup key, for the
+   reason `USE_RUN_TITLE` and `MODE_ENUMERATION` are: turning it on changes
+   results for every run that would trigger it, and the reference fits in
+   `validation/` are the baseline that comparability depends on.
+3. **The regression guardrail needs reading first.** `evaluation` restores the
+   previous model when χ² gets worse after a refinement. An escalation that
+   lands worse must not be mistaken for a failed refinement — the model did
+   not change, so there is nothing to restore.
+
+**Cost:** ~120 lines plus tests. The trigger, latch and verdict are pure
+functions over `fit_history`, so they test without running a fit (see
+`tests/test_evaluation_chi2_clamp.py` for the shape); only an end-to-end check
+on run 234277 needs a real one.
+
+**Related measurement**, already recorded in
+[`docs/plan-new-reduction-format.md`](docs/plan-new-reduction-format.md) phase
+5: on run 234277, `de` reached the same χ² from every SLD seed (2.204, to
+three decimals) where amoeba's varied from 2.364 to 7.045, at 71× the cost.
+That is why the thin-layer mode-enumeration sweep keeps amoeba — its
+seed-dependence is the mechanism the sweep exploits — and why `de` belongs
+where the answer, not the landscape, is what is wanted.
