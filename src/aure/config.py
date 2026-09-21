@@ -150,6 +150,59 @@ def _empty_config() -> UserConfig:
 
 _NUISANCE_KEYS = ("theta_offset", "sample_broadening")
 
+#: Keys accepted on a ``data_files`` entry.
+#:
+#: ``theta`` and ``dq_is_fwhm`` let a caller declare what it has already read
+#: out of the file's header, which is the escape hatch for a format no
+#: registered instrument understands yet: both are honoured over the header
+#: parse (see :func:`aure.nodes.intake._enrich_dataset`) and both are already
+#: consumed per file by ``model_builder``. Anything else is rejected rather
+#: than dropped — silently discarding a ``theta:`` someone wrote by hand is
+#: how a 2.355x resolution error and a wrong incident angle reached a fit
+#: unremarked; see ``docs/plan-new-reduction-format.md``.
+_DATASET_KEYS = ("file", "path", "label", "theta", "dq_is_fwhm")
+
+
+def _parse_dataset_overrides(state_name: str, index: int, item: dict) -> dict:
+    """Validate a ``data_files`` entry's declared header values.
+
+    Returns only the keys actually present, so a caller that declares nothing
+    is indistinguishable from one written before these keys existed and the
+    header parse stays in charge.
+
+    Both are refused rather than coerced. ``dq_is_fwhm`` is the field that
+    differs by 2.355 between two live REF_L reductions and is absorbed into
+    roughness rather than reported, and ``theta`` in degrees is routinely
+    confused with the radians a REF_L header stores — neither is a place to
+    accept a truthy string and hope.
+    """
+    out: dict = {}
+
+    if "theta" in item:
+        theta = item["theta"]
+        if isinstance(theta, bool) or not isinstance(theta, (int, float)):
+            raise ConfigError(
+                f"State {state_name!r} data_files[{index}]: `theta` must be a "
+                f"number of degrees, got {theta!r}."
+            )
+        if theta < 0:
+            raise ConfigError(
+                f"State {state_name!r} data_files[{index}]: `theta` must be "
+                f"non-negative (degrees), got {theta!r}."
+            )
+        out["theta"] = float(theta)
+
+    if "dq_is_fwhm" in item:
+        flag = item["dq_is_fwhm"]
+        if not isinstance(flag, bool):
+            raise ConfigError(
+                f"State {state_name!r} data_files[{index}]: `dq_is_fwhm` must "
+                f"be true or false, got {flag!r}."
+            )
+        out["dq_is_fwhm"] = flag
+
+    return out
+
 
 def _parse_states(
     raw: Any, *, base_dir: Path, data_dir: Optional[Path] = None
@@ -216,6 +269,7 @@ def _parse_states(
 
         data_files: List[dict] = []
         for j, item in enumerate(files_raw):
+            declared: dict = {}
             if isinstance(item, str):
                 file_path = item
                 label = None
@@ -226,6 +280,13 @@ def _parse_states(
                     raise ConfigError(
                         f"State {name!r} data_files[{j}] is missing `file`."
                     )
+                unknown = [k for k in item if k not in _DATASET_KEYS]
+                if unknown:
+                    raise ConfigError(
+                        f"State {name!r} data_files[{j}]: unknown key(s) "
+                        f"{sorted(unknown)}. Accepted: {list(_DATASET_KEYS)}."
+                    )
+                declared = _parse_dataset_overrides(name, j, item)
             else:
                 raise ConfigError(
                     f"State {name!r} data_files[{j}] must be a path or mapping."
@@ -256,6 +317,7 @@ def _parse_states(
                 {
                     "file": str(resolved),
                     "label": label or resolved.stem,
+                    **declared,
                 }
             )
 
@@ -303,12 +365,37 @@ def _parse_states(
         # worth knowing before the fit rather than after.
         unclaimed = [fn for fn, inst, role in roles if role == instruments.UNKNOWN]
         if unclaimed:
+            # Say what will actually happen, not what happens by default. A
+            # setup that declares `theta` / `dq_is_fwhm` has already supplied
+            # what the missing instrument would have read, and a warning that
+            # announces "dQ as FWHM" over a file declared as sigma sends the
+            # reader looking for a bug that is not there.
+            declared_keys = sorted(
+                {
+                    key
+                    for ds in data_files
+                    for key in ("theta", "dq_is_fwhm")
+                    if key in ds and Path(ds["file"]).name in unclaimed
+                }
+            )
+            if declared_keys:
+                consequence = (
+                    f"using the {', '.join(declared_keys)} declared in the setup for "
+                    "them; anything not declared takes the defaults (dQ as "
+                    "FWHM, no incident angle)"
+                )
+            else:
+                consequence = (
+                    "treating as a combined curve with default conventions "
+                    "(dQ as FWHM, no incident angle) — declare `theta` / "
+                    "`dq_is_fwhm` per file to override (see docs/instruments.md)"
+                )
             logger.warning(
                 "[CONFIG] State %r: no registered instrument recognises %s — "
-                "treating as a combined curve with default conventions "
-                "(dQ as FWHM, no incident angle). Known instruments: %s.",
+                "%s. Known instruments: %s.",
                 name,
                 ", ".join(unclaimed),
+                consequence,
                 ", ".join(i.name for i in instruments.registered()),
             )
 

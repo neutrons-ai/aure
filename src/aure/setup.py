@@ -499,12 +499,22 @@ def _state_for_dump(state: dict) -> dict:
 
 
 def _dataset_for_dump(ds: dict) -> dict:
-    """Render one DatasetInfo: keep ``file`` and ``label`` only, drop Q/R/dR."""
+    """Render one DatasetInfo: the declared fields only, drop Q/R/dR.
+
+    ``theta`` / ``dq_is_fwhm`` are emitted only when the entry carries them,
+    which after intake it always does — so this runs on the *parsed setup*,
+    not on an enriched state, and re-emitting a header-derived value as though
+    the user had declared it would turn one run's guess into the next run's
+    instruction.
+    """
     out: dict = {}
     if "file" in ds:
         out["file"] = ds["file"]
     if ds.get("label"):
         out["label"] = ds["label"]
+    for key in ("theta", "dq_is_fwhm"):
+        if key in ds:
+            out[key] = ds[key]
     return out
 
 

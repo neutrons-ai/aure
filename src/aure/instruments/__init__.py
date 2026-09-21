@@ -15,7 +15,7 @@ from .base import (
     read_file_header,
 )
 from .orso import ORSOInstrument
-from .ref_l import REFLInstrument
+from .ref_l import REFLAutoreductionInstrument, REFLInstrument
 from .registry import (
     file_role,
     generic,
@@ -27,9 +27,12 @@ from .registry import (
     resolve_by_name,
 )
 
-# Built-ins, in priority order. REF_L first because its filename patterns are
-# the most specific; ORSO claims by extension and would otherwise be
-# indistinguishable for a ``.txt`` REF_L file.
+# Built-ins, in priority order. The two REF_L reductions first because their
+# filename patterns are the most specific; ORSO claims by extension and would
+# otherwise be indistinguishable for a ``.txt`` REF_L file. The two REF_L
+# entries cannot collide — disjoint patterns, disjoint header markers — so
+# their order records which is more specific, not a conflict.
+register(REFLAutoreductionInstrument())
 register(REFLInstrument())
 register(ORSOInstrument())
 
@@ -42,6 +45,7 @@ __all__ = [
     "Instrument",
     "GenericInstrument",
     "REFLInstrument",
+    "REFLAutoreductionInstrument",
     "ORSOInstrument",
     "read_file_header",
     "register",

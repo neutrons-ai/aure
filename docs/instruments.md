@@ -130,6 +130,36 @@ naming the files and the registered instruments, and a setup declaring
 `theta_offset` or `sample_broadening` on such files fails at load rather
 than proceeding on a guess.
 
+## When AuRE cannot read your format yet
+
+Writing an instrument is the durable fix, but it is not the only one, and it
+should not stand between you and a fit today. A setup file's `data_files`
+entry may declare the two values AuRE would otherwise have read from the
+header, and a declared value wins over the header parse:
+
+```yaml
+states:
+  - name: state0
+    data_files:
+      - {file: seg1.dat, theta: 0.45,  dq_is_fwhm: false}
+      - {file: seg2.dat, theta: 1.251, dq_is_fwhm: false}
+```
+
+`theta` is the incident angle in **degrees** — the value the header states,
+not the nominal setting it was rounded from. `dq_is_fwhm` is `false` when the
+fourth column is one standard deviation rather than a full width; the two
+differ by 2.355, and a fit absorbs the difference into roughness rather than
+reporting it.
+
+Both keys are optional, and an entry that declares neither behaves exactly as
+before. Any *other* key on a `data_files` entry is an error — a `thetas:` typo
+that parsed and vanished would leave the run quietly using the header value
+you believed you had overridden.
+
+This is the right tool when another program has already read your files
+correctly and can write the setup: it needs no code in AuRE and no release.
+Reach for an instrument when the knowledge should outlive one setup file.
+
 ## The built-ins
 
 **REF_L** ([`ref_l.py`](../src/aure/instruments/ref_l.py)) — classifies by
@@ -139,6 +169,29 @@ role but no group key, since the role patterns do not require the `REFL_`
 prefix. Reads theta from the header's `TwoTheta(deg)` table, halving it; a
 multi-segment table yields `0.0`, which is what tells `model_builder` to
 build a Q-based probe instead of an angle-based one.
+
+**REF_L_autoreduction** ([`ref_l.py`](../src/aure/instruments/ref_l.py)) —
+REF_L's `new_reduction` pipeline, `REFL_<run>_<seg>_<subrun>_autoreduction.dat`.
+A different dialect from the file above, not a rename: the header is
+`# Key = value` lines mixing JSON and Python notation, it describes the **whole
+run** and is byte-identical in every one of that run's segment files, and its
+fourth column is **one sigma** where the older reduction writes a FWHM. Always
+`PARTIAL` — the dialect has no combined form — and it shares REF_L's group key
+so a beamtime mid-migration can co-refine both in one state. Declares both
+`dq_is_fwhm` and `theta` authoritative; `theta` because the LLM header parse is
+given the header text and not the filename, and the angle can only be found by
+the segment number the filename carries.
+
+The angle lookup is the part worth knowing about. `Angles.THS` and
+`Run Title.title` are longer than the segment count, because the reduction
+**appends to them on reprocess instead of replacing them** — a run reduced
+twice carries two complete passes. So a file finds its angle by matching the
+trailing `-<segment>.` in the title array, taking the **last** match (the first
+is the oldest pass, stale by construction), and it warns if the passes
+disagree. Positional indexing is accidentally correct for a whole repeated
+block and wrong for a ragged one; on run 234277 it gives segment 3 an angle of
+1.251° instead of 3.5°, a factor of ~2.8 in Q that fits cleanly to a wrong
+thickness.
 
 **ORSO** ([`orso.py`](../src/aure/instruments/orso.py)) — claims `.ort`, or
 any file whose header carries the ORSO banner. Parses the commented YAML
