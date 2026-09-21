@@ -547,7 +547,22 @@ def _enrich_dataset(ds: dict) -> dict:
     else:
         enriched["dR"] = [0.0] * len(data["Q"])
 
+    # Values the setup file declared. They win over the header parse: the
+    # caller has read the file with a reader that understands its format,
+    # which is not something AuRE can improve on by guessing. See
+    # ``config._DATASET_KEYS``.
+    declared = {k: ds[k] for k in ("theta", "dq_is_fwhm") if k in ds}
+
     meta = parse_file_header(ds["file"])
+    if declared:
+        logger.info(
+            "[INTAKE] %s: honouring declared %s from the setup file "
+            "(header parse read theta=%.4f, dq_is_fwhm=%s)",
+            os.path.basename(ds["file"]),
+            ", ".join(f"{k}={v!r}" for k, v in sorted(declared.items())),
+            meta["theta"],
+            meta["dq_is_fwhm"],
+        )
     enriched.setdefault("theta", meta["theta"])
     enriched.setdefault("dq_is_fwhm", meta["dq_is_fwhm"])
     enriched.setdefault("num_segments", meta.get("num_segments", 0))
@@ -737,8 +752,26 @@ def intake_node(state: ReflectivityState) -> Dict[str, Any]:
     # ========== 2. Detect dQ Convention ==========
     # Inspect the primary data file header to determine if dQ is FWHM.
     # The result is stored in the state so model_builder can pass it to load4.
-    primary_meta = parse_file_header(state["data_file"])
-    updates["dq_is_fwhm"] = primary_meta["dq_is_fwhm"]
+    # Prefer the primary file's already-enriched entry, so a convention
+    # declared in the setup reaches the single-file build path as well:
+    # ``build_problem`` consults only this state-level flag, while the
+    # multi-file and multi-state builders read it per dataset. Falling back to
+    # a fresh parse keeps the programmatic path (no ``states``, no
+    # ``data_files``) behaving exactly as before.
+    primary = os.path.abspath(state["data_file"])
+    primary_entry = next(
+        (
+            ds
+            for ds in (updates.get("data_files") or [])
+            if os.path.abspath(str(ds.get("file", ""))) == primary
+            and "dq_is_fwhm" in ds
+        ),
+        None,
+    )
+    if primary_entry is not None:
+        updates["dq_is_fwhm"] = primary_entry["dq_is_fwhm"]
+    else:
+        updates["dq_is_fwhm"] = parse_file_header(state["data_file"])["dq_is_fwhm"]
 
     # ========== 2b. Record the header's run title ==========
     # Extraction is unconditional; only interpretation is gated. Recording the

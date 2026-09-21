@@ -130,6 +130,36 @@ naming the files and the registered instruments, and a setup declaring
 `theta_offset` or `sample_broadening` on such files fails at load rather
 than proceeding on a guess.
 
+## When AuRE cannot read your format yet
+
+Writing an instrument is the durable fix, but it is not the only one, and it
+should not stand between you and a fit today. A setup file's `data_files`
+entry may declare the two values AuRE would otherwise have read from the
+header, and a declared value wins over the header parse:
+
+```yaml
+states:
+  - name: state0
+    data_files:
+      - {file: seg1.dat, theta: 0.45,  dq_is_fwhm: false}
+      - {file: seg2.dat, theta: 1.251, dq_is_fwhm: false}
+```
+
+`theta` is the incident angle in **degrees** — the value the header states,
+not the nominal setting it was rounded from. `dq_is_fwhm` is `false` when the
+fourth column is one standard deviation rather than a full width; the two
+differ by 2.355, and a fit absorbs the difference into roughness rather than
+reporting it.
+
+Both keys are optional, and an entry that declares neither behaves exactly as
+before. Any *other* key on a `data_files` entry is an error — a `thetas:` typo
+that parsed and vanished would leave the run quietly using the header value
+you believed you had overridden.
+
+This is the right tool when another program has already read your files
+correctly and can write the setup: it needs no code in AuRE and no release.
+Reach for an instrument when the knowledge should outlive one setup file.
+
 ## The built-ins
 
 **REF_L** ([`ref_l.py`](../src/aure/instruments/ref_l.py)) — classifies by

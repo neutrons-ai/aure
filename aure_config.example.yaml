@@ -69,6 +69,30 @@ states:
 #       - file: mid-Q.dat
 #       - file: high-Q.dat
 
+# Example: declaring what the header says, when AuRE cannot read it itself.
+#
+# AuRE normally reads the incident angle and the dQ convention out of each
+# file's header. When your format is one it does not recognise (`aure` logs a
+# warning naming the file), declare them per file and they are used verbatim:
+#
+# states:
+#   - name: state0
+#     data_files:
+#       - {file: REFL_234277_1_234277_autoreduction.dat, theta: 0.45,  dq_is_fwhm: false}
+#       - {file: REFL_234277_2_234278_autoreduction.dat, theta: 1.251, dq_is_fwhm: false}
+#       - {file: REFL_234277_3_234279_autoreduction.dat, theta: 3.5,   dq_is_fwhm: false}
+#
+#   theta        incident angle in DEGREES (the value the header states — do
+#                not round it to the nominal setting). Omit, or 0, for a
+#                combined curve that has no single angle.
+#   dq_is_fwhm   false when the fourth column is one sigma rather than a full
+#                width. The two differ by 2.355, and a fit absorbs the
+#                difference into roughness instead of reporting it, so this is
+#                worth checking in the header rather than assuming.
+#
+# A better long-term fix is to teach AuRE your format once — see
+# docs/instruments.md.
+
 # Example: solvent-contrast multi-state co-refinement.
 # states:
 #   - name: D2O
