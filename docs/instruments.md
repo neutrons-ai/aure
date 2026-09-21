@@ -29,7 +29,8 @@ infer from numbers alone:
 from aure.instruments import COMBINED, PARTIAL, UNKNOWN
 
 class MyInstrument:
-    name = "MYREF"                      # recorded in checkpoints
+    name = "MYREF"                      # recorded in checkpoints — see
+                                        # "Naming, versions and lifecycle"
 
     def matches(self, file_path, header=""):
         """Claim the file, by name where possible.
@@ -77,8 +78,11 @@ rather than hinting at it, say so and the LLM's reading is overridden:
 ```
 
 ORSO uses this: its `sQz` column is one standard deviation by specification,
-so the convention is not something to guess about. REF_L declares nothing,
-leaving the LLM's reading in charge.
+so the convention is not something to guess about. REF_L_v2 declares both
+`dq_is_fwhm` and `theta` — for `theta` the LLM parse cannot succeed even in
+principle, since it is given the header text and not the filename, and that
+format's angle can only be found via the segment number the filename carries.
+REF_L_v1 declares nothing, leaving the LLM's reading in charge.
 
 ### Optional: `run_title`
 
@@ -222,9 +226,48 @@ This is the right tool when another program has already read your files
 correctly and can write the setup: it needs no code in AuRE and no release.
 Reach for an instrument when the knowledge should outlive one setup file.
 
+## Naming, versions and lifecycle
+
+A facility's format changes over time, and two versions of it are routinely
+live at once. AuRE names an instrument after **which version of the format it
+reads** — `REF_L_v1`, `REF_L_v2` — and keeps every changing judgement about
+that version outside the name:
+
+```python
+class REFLv2Instrument:
+    name = "REF_L_v2"              # stable: which format this is
+    format_version = 2
+    lifecycle = PROTOTYPE          # revisable: what we think of it
+    lifecycle_note = "a stop-gap ahead of a larger reduction rewrite"
+    aliases = ("REF_L_autoreduction",)
+```
+
+The split is not cosmetic. **`name` is written into every checkpoint that
+touches a file**, so it has to mean the same thing years later. A name
+describing the pipeline (`REF_L_autoreduction`) is wrong as soon as the
+pipeline is renamed; a name carrying the judgement (`REF_L_legacy`) is wrong
+as soon as the judgement changes — and correcting either means old checkpoints
+refer to an instrument that no longer exists. Which format a file is in does
+not change. What we think of that format does.
+
+`lifecycle` is one of `current` (the default, for anything that says nothing),
+`legacy`, `prototype` or `deprecated`, and `lifecycle_note` says why in one
+line — an unexplained label invites the wrong inference. `legacy` on REF_L_v1
+does **not** mean stop using it: that format is what the archive is full of
+and what most beamtimes still produce. `prototype` on REF_L_v2 does mean do
+not build on its details, and do not assume a v3 will resemble it.
+
+`aliases` lists earlier names the instrument still answers to, so
+`AURE_INSTRUMENT=REF_L` keeps working after a rename. Without it the failure
+would be invisible: an ignored override just means resolution goes back to
+normal, which looks like nothing being wrong.
+
+`aure formats` shows all of it.
+
 ## The built-ins
 
-**REF_L** ([`ref_l.py`](../src/aure/instruments/ref_l.py)) — classifies by
+**REF_L_v1** ([`ref_l.py`](../src/aure/instruments/ref_l.py)) — REF_L's
+established reduction, and the conventions AuRE was built on. Classifies by
 filename: `*_combined_data_auto.txt` is one curve, `*_<n>_<m>_partial.txt` is
 one angle, and `REFL_<setid>_...` supplies the group key. A file may have a
 role but no group key, since the role patterns do not require the `REFL_`
@@ -232,8 +275,8 @@ prefix. Reads theta from the header's `TwoTheta(deg)` table, halving it; a
 multi-segment table yields `0.0`, which is what tells `model_builder` to
 build a Q-based probe instead of an angle-based one.
 
-**REF_L_autoreduction** ([`ref_l.py`](../src/aure/instruments/ref_l.py)) —
-REF_L's `new_reduction` pipeline, `REFL_<run>_<seg>_<subrun>_autoreduction.dat`.
+**REF_L_v2** ([`ref_l.py`](../src/aure/instruments/ref_l.py)) — REF_L's
+`new_reduction` pipeline, `REFL_<run>_<seg>_<subrun>_autoreduction.dat`.
 A different dialect from the file above, not a rename: the header is
 `# Key = value` lines mixing JSON and Python notation, it describes the **whole
 run** and is byte-identical in every one of that run's segment files, and its

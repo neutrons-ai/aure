@@ -47,7 +47,7 @@ def test_it_lists_the_registered_instruments(runner):
     result = runner.invoke(cli, ["formats"])
 
     assert result.exit_code == 0
-    for name in ("REF_L_autoreduction", "REF_L", "ORSO"):
+    for name in ("REF_L_v2", "REF_L_v1", "ORSO"):
         assert name in result.output
 
 
@@ -81,7 +81,7 @@ def test_it_reports_what_was_read_from_a_file(runner, autored):
     result = runner.invoke(cli, ["formats", autored])
 
     assert result.exit_code == 0
-    assert "REF_L_autoreduction (claimed by filename)" in result.output
+    assert "REF_L_v2 (claimed by filename" in result.output
     assert "3.5" in result.output  # the angle, title-matched
     assert "1-sigma" in result.output
     assert "stated by the format" in result.output
@@ -116,7 +116,7 @@ def test_json_output_is_machine_readable(runner, autored):
     result = runner.invoke(cli, ["formats", autored, "--json"])
 
     payload = json.loads(result.output)
-    assert [i["name"] for i in payload["instruments"]][0] == "REF_L_autoreduction"
+    assert [i["name"] for i in payload["instruments"]][0] == "REF_L_v2"
     entry = payload["files"][0]
     assert entry["role"] == "partial"
     assert entry["theta"] == pytest.approx(3.5)

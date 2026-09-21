@@ -90,7 +90,10 @@ class Instrument(Protocol):
     not exist — resolution happens during config parsing, before any run.
     """
 
-    #: Short identifier, e.g. ``"REF_L"``. Recorded in checkpoints.
+    #: Short identifier, e.g. ``"REF_L_v1"``. **Recorded in checkpoints**, so
+    #: it must still mean the same thing years later: put the version of the
+    #: format in it, and the changing judgement about that format
+    #: (``lifecycle``, below) outside it. Rename only with ``aliases``.
     name: str
 
     def matches(self, file_path: str, header: str = "") -> bool:
@@ -123,6 +126,10 @@ class Instrument(Protocol):
     #
     #   authoritative_fields : tuple  — fields this format *defines*, which
     #       outrank the LLM header parse. See above.
+    #   format_version : int  — which version of its format this reads.
+    #   lifecycle : str  — one of LIFECYCLES; defaults to CURRENT.
+    #   lifecycle_note : str  — one line on why.
+    #   aliases : tuple  — earlier names this still answers to.
     #   run_title(file_path) -> str  — this file's own run title, when the
     #       generic label match would find the wrong thing.
     #   header_issues(file_path) -> list[str]  — defects in what the header
@@ -163,6 +170,60 @@ _RUN_TITLE_RE = re.compile(r"^#\s*(?:run\s+)?title\s*:\s*(.+?)\s*$", re.IGNORECA
 #: Longest run title retained. A pathological header line must not be able to
 #: dominate a downstream prompt.
 MAX_RUN_TITLE_LEN = 200
+
+#: Lifecycle vocabulary. An instrument may set ``lifecycle`` to one of these.
+#:
+#: This is deliberately **not** part of the name. A name is recorded in every
+#: checkpoint it touches, so it has to mean the same thing in five years; a
+#: lifecycle is a statement about now, and a prototype that becomes the
+#: standard would otherwise either carry a lie in its name forever or force a
+#: rename that makes old checkpoints refer to an instrument that no longer
+#: exists. The version a format *is* goes in the name; what we currently think
+#: of it goes here.
+CURRENT = "current"
+#: Superseded by a newer version of the same format, but still written and
+#: still read. Not a warning — most data in an archive is legacy.
+LEGACY = "legacy"
+#: Short-lived by intent, expected to be replaced rather than evolved. A
+#: reason to be careful about building on its details.
+PROTOTYPE = "prototype"
+#: Still read, but no longer produced; expect no fixes upstream.
+DEPRECATED = "deprecated"
+
+LIFECYCLES = (CURRENT, LEGACY, PROTOTYPE, DEPRECATED)
+
+#: Optional attribute names describing an instrument's place in a lineage.
+LIFECYCLE_ATTR = "lifecycle"
+LIFECYCLE_NOTE_ATTR = "lifecycle_note"
+FORMAT_VERSION_ATTR = "format_version"
+#: Optional attribute: earlier names this instrument answers to, so renaming
+#: one does not break ``AURE_INSTRUMENT`` for whoever was already using it.
+ALIASES_ATTR = "aliases"
+
+
+def lifecycle(instrument) -> str:
+    """*instrument*'s lifecycle, defaulting to :data:`CURRENT`."""
+    value = str(getattr(instrument, LIFECYCLE_ATTR, "") or "").strip().lower()
+    return value if value in LIFECYCLES else CURRENT
+
+
+def lifecycle_note(instrument) -> str:
+    """One line on why *instrument* carries that lifecycle; ``""`` if unsaid."""
+    return str(getattr(instrument, LIFECYCLE_NOTE_ATTR, "") or "").strip()
+
+
+def format_version(instrument) -> Optional[int]:
+    """Which version of its format *instrument* reads, or ``None``."""
+    try:
+        return int(getattr(instrument, FORMAT_VERSION_ATTR, None))
+    except (TypeError, ValueError):
+        return None
+
+
+def aliases(instrument) -> tuple:
+    """Earlier names *instrument* still answers to; ``()`` if none."""
+    return tuple(getattr(instrument, ALIASES_ATTR, ()) or ())
+
 
 #: Optional method name: ``run_title(file_path) -> str``.
 RUN_TITLE_ATTR = "run_title"

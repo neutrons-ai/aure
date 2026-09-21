@@ -343,6 +343,8 @@ def _classify_for_report(file_path: str) -> dict:
         "dq_is_fwhm": meta.get("dq_is_fwhm"),
         "num_segments": meta.get("num_segments"),
         "authoritative": list(instruments.authoritative_fields(resolved)),
+        "format_version": instruments.format_version(resolved),
+        "lifecycle": instruments.lifecycle(resolved),
         "run_title": instruments.run_title(file_path),
         "issues": instruments.header_issues(file_path),
     }
@@ -382,6 +384,10 @@ def formats(data_files: tuple, output_json: bool):
                             "authoritative": list(
                                 instruments.authoritative_fields(i)
                             ),
+                            "format_version": instruments.format_version(i),
+                            "lifecycle": instruments.lifecycle(i),
+                            "lifecycle_note": instruments.lifecycle_note(i),
+                            "aliases": list(instruments.aliases(i)),
                         }
                         for i in registered
                     ],
@@ -399,9 +405,23 @@ def formats(data_files: tuple, output_json: bool):
     if not registered:
         click.echo("    (none)")
     for i, inst in enumerate(registered, 1):
+        life = instruments.lifecycle(inst)
+        # A lifecycle is a claim about now, so it is shown rather than folded
+        # into the name — the name is what lands in a checkpoint and has to
+        # keep meaning the same thing.
+        tag = "" if life == instruments.CURRENT else click.style(
+            f"  [{life}]", fg="yellow" if life != instruments.LEGACY else None
+        )
+        click.echo(f"    {i}. {inst.name}{tag}")
+        note = instruments.lifecycle_note(inst)
+        if note:
+            click.echo(f"         {note}")
         auth = instruments.authoritative_fields(inst)
-        suffix = f"  (authoritative: {', '.join(auth)})" if auth else ""
-        click.echo(f"    {i}. {inst.name}{suffix}")
+        if auth:
+            click.echo(f"         authoritative: {', '.join(auth)}")
+        also = instruments.aliases(inst)
+        if also:
+            click.echo(f"         also answers to: {', '.join(also)}")
     click.echo()
     click.echo(
         "    Consulted in this order; the first to claim a file wins. A file "
@@ -432,9 +452,11 @@ def formats(data_files: tuple, output_json: bool):
                 click.style("      instrument:  none — unrecognised", fg="yellow")
             )
         else:
+            life = r["lifecycle"]
+            tag = "" if life == instruments.CURRENT else f", {life}"
             click.echo(
                 f"      instrument:  {r['instrument']} "
-                f"(claimed by {r['claimed_by']})"
+                f"(claimed by {r['claimed_by']}{tag})"
             )
         click.echo(f"      role:        {r['role']}")
         click.echo(f"      set id:      {r['group_key'] or '—'}")

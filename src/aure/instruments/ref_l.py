@@ -1,13 +1,26 @@
 """ORNL REF_L (SNS Liquids Reflectometer).
 
 **Two reductions are live**, and they are not two spellings of one format.
-:class:`REFLInstrument` reads the established ``_partial.txt`` /
-``_combined_data_auto.txt`` files; :class:`REFLAutoreductionInstrument` reads
-the ``new_reduction`` pipeline's ``_autoreduction.dat``. They share only their
-data columns and their run-numbering, so they share only ``group_key`` here —
-a beamtime mid-migration can co-refine both in one state. Everything else
-differs, most consequentially the dQ column, which is a FWHM in the first and
-one sigma in the second. See ``docs/plan-new-reduction-format.md``.
+
+``REF_L_v1`` (:class:`REFLv1Instrument`) reads the established
+``_partial.txt`` / ``_combined_data_auto.txt`` files. ``REF_L_v2``
+(:class:`REFLv2Instrument`) reads the ``new_reduction`` pipeline's
+``_autoreduction.dat``. They share only their data columns and their
+run-numbering, so they share only ``group_key`` here — a beamtime
+mid-migration can co-refine both in one state. Everything else differs, most
+consequentially the dQ column, which is a FWHM in the first and one sigma in
+the second. See ``docs/plan-new-reduction-format.md``.
+
+**Why the names are versions and not descriptions.** v2 is a prototype: a
+stop-gap ahead of a larger reduction rewrite, so it will probably be
+superseded rather than settle. A name says which format a file is in and is
+written into every checkpoint that touches it, so it has to still mean that
+years later — ``REF_L_autoreduction`` would be wrong the moment the pipeline
+is renamed, and a name carrying "legacy" or "prototype" would be wrong the
+moment that judgement changes. The version goes in the name; the judgement
+goes in ``lifecycle``, where it can be revised without making old checkpoints
+refer to an instrument that no longer exists. Both classes keep their previous
+names as ``aliases``, so ``AURE_INSTRUMENT`` keeps working.
 
 The regexes below were previously duplicated in :mod:`aure.config`,
 :mod:`aure.nodes.intake` and :mod:`aure.refl1d_import`. They are reproduced
@@ -22,7 +35,7 @@ Two families of pattern, and the distinction matters:
   always been treated as a partial.
 * the **strict** patterns additionally capture the set id, and do require the
   prefix. A file can therefore have a role but no group key, which is why
-  :meth:`REFLInstrument.group_key` may return ``None`` for a file this
+  :meth:`REFLv1Instrument.group_key` may return ``None`` for a file this
   instrument claims.
 """
 
@@ -33,7 +46,15 @@ import os
 import re
 from typing import Optional
 
-from .base import COMBINED, DEFAULT_HEADER_METADATA, PARTIAL, UNKNOWN, read_file_header
+from .base import (
+    COMBINED,
+    DEFAULT_HEADER_METADATA,
+    LEGACY,
+    PARTIAL,
+    PROTOTYPE,
+    UNKNOWN,
+    read_file_header,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -107,10 +128,29 @@ def _parse_theta_from_header(file_path: str) -> float:
         return 0.0
 
 
-class REFLInstrument:
-    """The ORNL REF_L conventions, as AuRE has always applied them."""
+class REFLv1Instrument:
+    """REF_L's established reduction — the conventions AuRE was built on.
 
-    name = "REF_L"
+    ``REFL_<run>_<seg>_<subrun>_partial.txt`` and
+    ``REFL_<run>_combined_data_auto.txt``, with a per-segment ``# Meta:``
+    header and a dQ column in FWHM.
+    """
+
+    name = "REF_L_v1"
+
+    #: Superseded by v2, but very far from gone: it is what the archive is
+    #: full of, what most beamtimes still produce, and the format every
+    #: reference fit in ``validation/`` was made against. Legacy here means
+    #: "an older version of a live format", not "on the way out".
+    format_version = 1
+    lifecycle = LEGACY
+    lifecycle_note = (
+        "the reduction AuRE was built on; still produced and still the bulk "
+        "of the archive"
+    )
+
+    #: What this was called before the lineage was versioned.
+    aliases = ("REF_L",)
 
     def matches(self, file_path: str, header: str = "") -> bool:
         name = os.path.basename(file_path)
@@ -394,8 +434,8 @@ def _autoreduction_dq_is_fwhm(header: str, issues: list) -> bool:
 def _autoreduction_scan(file_path: str, instrument_name: str) -> tuple:
     """Read the header once, returning ``(metadata, issues)``.
 
-    One reader behind both :meth:`REFLAutoreductionInstrument.header_metadata`
-    and :meth:`~REFLAutoreductionInstrument.header_issues`, so the two can
+    One reader behind both :meth:`REFLv2Instrument.header_metadata`
+    and :meth:`~REFLv2Instrument.header_issues`, so the two can
     never disagree about what the file says.
     """
     meta = dict(DEFAULT_HEADER_METADATA)
@@ -425,18 +465,34 @@ def _autoreduction_scan(file_path: str, instrument_name: str) -> tuple:
     return meta, issues
 
 
-class REFLAutoreductionInstrument:
+class REFLv2Instrument:
     """REF_L's ``new_reduction`` output.
 
     Files are named ``REFL_<run>_<segment>_<subrun>_autoreduction.dat``.
 
-    Registered ahead of :class:`REFLInstrument`, though the two cannot collide:
-    their filename patterns are disjoint and neither header marker appears in
-    the other's files. The order records which is more specific, not a
-    conflict.
+    Registered ahead of :class:`REFLv1Instrument`, though the two cannot
+    collide: their filename patterns are disjoint and neither header marker
+    appears in the other's files. The order records which is more specific,
+    not a conflict.
     """
 
-    name = "REF_L_autoreduction"
+    name = "REF_L_v2"
+
+    #: A stop-gap ahead of a larger reduction rewrite, so it is expected to be
+    #: replaced rather than evolved — and it already shows it: a whole-run
+    #: header duplicated into every segment file, per-acquisition arrays that
+    #: are appended to on reprocess, and JSON and Python notation mixed line by
+    #: line. Read what it says; do not build on how it says it, and do not
+    #: assume a v3 will resemble it.
+    format_version = 2
+    lifecycle = PROTOTYPE
+    lifecycle_note = (
+        "a stop-gap ahead of a larger reduction rewrite; expect it to be "
+        "replaced rather than settle"
+    )
+
+    #: What this shipped as before the lineage was versioned.
+    aliases = ("REF_L_autoreduction",)
 
     #: This format *states* both. ``dq_is_fwhm`` is written on the ``columns``
     #: line, and leaving it to be inferred is the error that made this
@@ -463,7 +519,7 @@ class REFLAutoreductionInstrument:
         return PARTIAL
 
     def group_key(self, file_path: str) -> Optional[str]:
-        """The run number, matching :meth:`REFLInstrument.group_key`.
+        """The run number, matching :meth:`REFLv1Instrument.group_key`.
 
         Deliberately the same scheme as the older dialect, so a state may mix
         the two during a migration and still be recognised as one measurement
@@ -510,3 +566,10 @@ class REFLAutoreductionInstrument:
 
     def role_supports_nuisance(self, role: str) -> bool:
         return role == PARTIAL
+
+
+# Previous class names. Kept because they are importable API and a rename is
+# not worth breaking an import over; the instrument ``name`` values they carry
+# have their own ``aliases``.
+REFLInstrument = REFLv1Instrument
+REFLAutoreductionInstrument = REFLv2Instrument

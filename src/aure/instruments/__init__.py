@@ -6,9 +6,18 @@ implements, and ``docs/instruments.md`` for a walkthrough.
 
 from .base import (
     COMBINED,
+    CURRENT,
+    DEPRECATED,
+    LEGACY,
+    LIFECYCLES,
     MAX_RUN_TITLE_LEN,
+    PROTOTYPE,
+    aliases,
     authoritative_fields,
+    format_version,
     generic_run_title,
+    lifecycle,
+    lifecycle_note,
     DEFAULT_HEADER_METADATA,
     PARTIAL,
     UNKNOWN,
@@ -17,7 +26,12 @@ from .base import (
     read_file_header,
 )
 from .orso import ORSOInstrument
-from .ref_l import REFLAutoreductionInstrument, REFLInstrument
+from .ref_l import (
+    REFLAutoreductionInstrument,
+    REFLInstrument,
+    REFLv1Instrument,
+    REFLv2Instrument,
+)
 from .registry import (
     file_role,
     generic,
@@ -36,8 +50,8 @@ from .registry import (
 # otherwise be indistinguishable for a ``.txt`` REF_L file. The two REF_L
 # entries cannot collide — disjoint patterns, disjoint header markers — so
 # their order records which is more specific, not a conflict.
-register(REFLAutoreductionInstrument())
-register(REFLInstrument())
+register(REFLv2Instrument())
+register(REFLv1Instrument())
 register(ORSOInstrument())
 
 __all__ = [
@@ -48,6 +62,8 @@ __all__ = [
     "DEFAULT_HEADER_METADATA",
     "Instrument",
     "GenericInstrument",
+    "REFLv1Instrument",
+    "REFLv2Instrument",
     "REFLInstrument",
     "REFLAutoreductionInstrument",
     "ORSOInstrument",
@@ -56,6 +72,15 @@ __all__ = [
     "run_title",
     "header_issues",
     "MAX_RUN_TITLE_LEN",
+    "CURRENT",
+    "LEGACY",
+    "PROTOTYPE",
+    "DEPRECATED",
+    "LIFECYCLES",
+    "lifecycle",
+    "lifecycle_note",
+    "format_version",
+    "aliases",
     "register",
     "registered",
     "generic",

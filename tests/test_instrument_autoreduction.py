@@ -22,9 +22,9 @@ import pytest
 
 from aure import instruments
 from aure.instruments import PARTIAL
-from aure.instruments.ref_l import REFLAutoreductionInstrument
+from aure.instruments.ref_l import REFLv2Instrument
 
-INST = REFLAutoreductionInstrument()
+INST = REFLv2Instrument()
 
 # Run 234277: one full pass over segments 1,2 then a partial reprocess of 2,3,
 # giving `[1, 2, 2, 3]`. The only run in the beamtime that is NOT a whole-block
@@ -74,20 +74,20 @@ def write(tmp_path, header, segment=1, subrun=234277, run=234277, name=None):
 def test_the_registry_resolves_it_to_this_instrument(tmp_path):
     path = write(tmp_path, RAGGED)
 
-    assert instruments.resolve(path).name == "REF_L_autoreduction"
+    assert instruments.resolve(path).name == "REF_L_v2"
 
 
 def test_it_is_claimed_without_reading_the_file(tmp_path):
     """Resolution runs while parsing a setup, before the data need exist."""
     missing = str(tmp_path / "REFL_234277_1_234277_autoreduction.dat")
 
-    assert instruments.resolve_by_name(missing).name == "REF_L_autoreduction"
+    assert instruments.resolve_by_name(missing).name == "REF_L_v2"
 
 
 def test_a_header_claims_a_file_whose_name_does_not(tmp_path):
     path = write(tmp_path, RAGGED, name="exported.txt")
 
-    assert instruments.resolve(path).name == "REF_L_autoreduction"
+    assert instruments.resolve(path).name == "REF_L_v2"
 
 
 def test_the_older_reduction_is_untouched(tmp_path):
@@ -95,7 +95,7 @@ def test_the_older_reduction_is_untouched(tmp_path):
     partial = tmp_path / "REFL_226642_1_2001_partial.txt"
     partial.write_text("# DataRun NormRun TwoTheta(deg)\n# 226642 226643 0.9\n" + ROWS)
 
-    assert instruments.resolve(str(partial)).name == "REF_L"
+    assert instruments.resolve(str(partial)).name == "REF_L_v1"
     assert not INST.matches(str(partial), partial.read_text())
 
 
@@ -111,12 +111,12 @@ def test_the_dialect_is_always_per_segment(tmp_path):
 
 def test_the_group_key_matches_the_older_dialect(tmp_path):
     """So a beamtime mid-migration can co-refine both in one state."""
-    from aure.instruments.ref_l import REFLInstrument
+    from aure.instruments.ref_l import REFLv1Instrument
 
     new = write(tmp_path, RAGGED, segment=2, subrun=234278)
     old = str(tmp_path / "REFL_234277_2_234278_partial.txt")
 
-    assert INST.group_key(new) == REFLInstrument().group_key(old) == "234277"
+    assert INST.group_key(new) == REFLv1Instrument().group_key(old) == "234277"
 
 
 def test_a_state_of_these_files_is_partials_not_combined(tmp_path):
@@ -310,7 +310,7 @@ def test_a_truncated_header_still_yields_what_it_can(tmp_path):
 
     assert meta["dq_is_fwhm"] is False
     assert meta["theta"] == 0.0  # no titles, so no slot
-    assert meta["instrument"] == "REF_L_autoreduction"
+    assert meta["instrument"] == "REF_L_v2"
 
 
 def test_a_missing_file_is_not_an_error(tmp_path):
@@ -324,3 +324,80 @@ def test_a_missing_file_is_not_an_error(tmp_path):
 def test_the_run_title_is_this_segments_own(tmp_path):
     """Not the JSON array, which is what intake's generic regex captures."""
     assert INST.run_title(write(tmp_path, RAGGED, 3, 234279)) == "Sample1_air-234277-3."
+
+
+# ---------------------------------------------------------------------------
+# The versioned naming convention
+# ---------------------------------------------------------------------------
+
+
+def test_the_name_carries_the_version_not_the_judgement():
+    """A name is written into every checkpoint that touches the file.
+
+    So it has to still mean the same thing years from now. `REF_L_autoreduction`
+    would be wrong the moment the pipeline is renamed, and a name carrying
+    "prototype" would be wrong the moment v2 either settles or is replaced.
+    Which format a file is in does not change; what we think of that format
+    does.
+    """
+    from aure.instruments.ref_l import REFLv1Instrument
+
+    assert REFLv1Instrument.name == "REF_L_v1"
+    assert REFLv2Instrument.name == "REF_L_v2"
+    for name in (REFLv1Instrument.name, REFLv2Instrument.name):
+        for judgement in ("legacy", "prototype", "deprecated", "new", "old"):
+            assert judgement not in name.lower()
+
+
+def test_the_lineage_is_declared():
+    from aure.instruments.ref_l import REFLv1Instrument
+
+    assert instruments.format_version(REFLv1Instrument()) == 1
+    assert instruments.format_version(REFLv2Instrument()) == 2
+    assert instruments.lifecycle(REFLv1Instrument()) == instruments.LEGACY
+    assert instruments.lifecycle(REFLv2Instrument()) == instruments.PROTOTYPE
+
+
+def test_each_lifecycle_says_why():
+    """An unexplained label invites the wrong inference.
+
+    "legacy" on v1 does not mean stop using it — it is what the archive is
+    full of. "prototype" on v2 does mean do not build on its details.
+    """
+    from aure.instruments.ref_l import REFLv1Instrument
+
+    assert instruments.lifecycle_note(REFLv1Instrument())
+    assert instruments.lifecycle_note(REFLv2Instrument())
+
+
+@pytest.mark.parametrize(
+    "former,expected",
+    [("REF_L", "REF_L_v1"), ("REF_L_autoreduction", "REF_L_v2")],
+)
+def test_the_former_names_still_force_an_instrument(monkeypatch, former, expected):
+    """Renaming must not silently stop honouring an existing override.
+
+    The failure would be invisible: an ignored AURE_INSTRUMENT just means
+    resolution goes back to normal, which looks like nothing being wrong.
+    """
+    from aure.instruments.registry import _ENV_OVERRIDE
+
+    monkeypatch.setenv(_ENV_OVERRIDE, former)
+
+    assert instruments.resolve_by_name("/d/anything.xyz").name == expected
+
+
+def test_a_lifecycle_defaults_to_current():
+    """An instrument that says nothing is not thereby legacy."""
+    from aure.instruments import ORSOInstrument
+
+    assert instruments.lifecycle(ORSOInstrument()) == instruments.CURRENT
+    assert instruments.format_version(ORSOInstrument()) is None
+
+
+def test_the_previous_class_names_still_import():
+    from aure.instruments import REFLAutoreductionInstrument, REFLInstrument
+    from aure.instruments.ref_l import REFLv1Instrument
+
+    assert REFLInstrument is REFLv1Instrument
+    assert REFLAutoreductionInstrument is REFLv2Instrument

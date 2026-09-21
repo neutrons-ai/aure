@@ -109,8 +109,8 @@ def test_partials_without_a_set_id_are_still_tolerated():
 
 
 def test_ref_l_claims_its_filenames():
-    assert I.resolve_by_name("/d/REFL_1_2_3_partial.txt").name == "REF_L"
-    assert I.resolve_by_name("/d/REFL_1_combined_data_auto.txt").name == "REF_L"
+    assert I.resolve_by_name("/d/REFL_1_2_3_partial.txt").name == "REF_L_v1"
+    assert I.resolve_by_name("/d/REFL_1_combined_data_auto.txt").name == "REF_L_v1"
 
 
 def test_orso_claims_the_ort_extension():
@@ -137,7 +137,7 @@ def test_resolve_falls_back_to_a_header_sniff(tmp_path):
     header sniff is what preserves that for an oddly-named REF_L file."""
     p = tmp_path / "oddly-named.dat"
     p.write_text("# Some preamble\n# TwoTheta(deg) other\n# 0.6 1\n0.01 1.0 0.1\n")
-    assert I.resolve(str(p)).name == "REF_L"
+    assert I.resolve(str(p)).name == "REF_L_v1"
     assert I.header_metadata(str(p))["theta"] == pytest.approx(0.3)
 
 
@@ -296,7 +296,7 @@ def test_a_registered_instrument_claims_its_files(fake_registered):
 
 
 def test_registering_does_not_disturb_ref_l(fake_registered):
-    assert I.resolve_by_name("/d/REFL_1_2_3_partial.txt").name == "REF_L"
+    assert I.resolve_by_name("/d/REFL_1_2_3_partial.txt").name == "REF_L_v1"
 
 
 def test_a_custom_instrument_drives_the_state_classifier(fake_registered):
@@ -339,7 +339,7 @@ def test_env_override_accepts_generic(monkeypatch):
 
 def test_unknown_env_override_is_ignored(monkeypatch):
     monkeypatch.setenv(_ENV_OVERRIDE, "NOPE")
-    assert I.resolve_by_name("/d/REFL_1_2_3_partial.txt").name == "REF_L"
+    assert I.resolve_by_name("/d/REFL_1_2_3_partial.txt").name == "REF_L_v1"
 
 
 # ---------------------------------------------------------------------------
@@ -423,7 +423,7 @@ def test_state_records_which_instrument_claimed_it(tmp_path):
     from aure.config import load_user_config
 
     cfg = _state_yaml(tmp_path, "REFL_1_combined_data_auto.txt")
-    assert load_user_config(cfg)["states"][0]["_instrument"] == "REF_L"
+    assert load_user_config(cfg)["states"][0]["_instrument"] == "REF_L_v1"
 
 
 def test_state_records_generic_for_an_unclaimed_file(tmp_path):

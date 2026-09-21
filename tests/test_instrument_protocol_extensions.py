@@ -10,7 +10,7 @@ import pytest
 
 from aure import instruments
 from aure.instruments import PARTIAL, UNKNOWN
-from aure.instruments.ref_l import REFLAutoreductionInstrument
+from aure.instruments.ref_l import REFLv2Instrument
 from aure.nodes import intake
 from aure.nodes.intake import intake_node
 from aure.state import create_initial_state
@@ -285,7 +285,7 @@ def test_one_unclaimed_file_keeps_the_single_file_wording(tmp_path, caplog):
 
 
 def test_the_autoreduction_instrument_declares_both_members():
-    inst = REFLAutoreductionInstrument()
+    inst = REFLv2Instrument()
 
     assert callable(getattr(inst, "run_title", None))
     assert callable(getattr(inst, "header_issues", None))

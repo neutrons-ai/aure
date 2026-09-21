@@ -180,9 +180,17 @@ missing instrument an inconvenience rather than a wall.
 
 ### Phase 1 — the format, through the seam — **done**
 
-`REFLAutoreductionInstrument` in `instruments/ref_l.py`, registered ahead of
-`REFLInstrument`, sharing its `group_key` scheme so a beamtime mid-migration
-can co-refine both dialects in one state.
+`REFLv2Instrument` (`REF_L_v2`) in `instruments/ref_l.py`, registered ahead of
+`REFLv1Instrument` (`REF_L_v1`), sharing its `group_key` scheme so a beamtime
+mid-migration can co-refine both dialects in one state.
+
+The names are versions because v2 is a stop-gap ahead of a larger reduction
+rewrite and will probably be superseded rather than settle. A name is written
+into every checkpoint that touches a file, so it must still mean the same
+thing years later: `REF_L_autoreduction` is wrong as soon as the pipeline is
+renamed, and `REF_L_prototype` as soon as that judgement changes. The version
+goes in the name; the judgement goes in `lifecycle` / `lifecycle_note`, and
+`aliases` keeps `AURE_INSTRUMENT=REF_L` working.
 
 - Field parsing per nr-workbench's `_autoreduction_fields`: JSON first, then
   `ast.literal_eval`, per line. Parsing with only one of them half-works —

@@ -25,6 +25,7 @@ import os
 from typing import List, Optional
 
 from .base import GenericInstrument, Instrument, read_file_header
+from .base import aliases as _aliases
 from .base import header_issues as _header_issues
 from .base import run_title as _run_title
 
@@ -107,6 +108,20 @@ def _override() -> Optional[Instrument]:
             return inst
     if forced.lower() == _GENERIC.name:
         return _GENERIC
+    # A name this instrument used to go by. Renaming one must not silently
+    # stop honouring an override someone already has in a script or a shell
+    # profile — the failure would be invisible, since an ignored override just
+    # means resolution goes back to normal and looks fine.
+    for inst in registered():
+        for alias in _aliases(inst):
+            if str(alias).lower() == forced.lower():
+                logger.info(
+                    "[INSTRUMENTS] %s=%r is the former name of %s; using it",
+                    _ENV_OVERRIDE,
+                    forced,
+                    inst.name,
+                )
+                return inst
     logger.warning(
         "[INSTRUMENTS] %s=%r names no registered instrument; ignoring "
         "(known: %s)",

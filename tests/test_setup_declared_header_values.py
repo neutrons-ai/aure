@@ -24,7 +24,7 @@ def data_file(tmp_path):
     """A file no registered instrument claims — the case this exists for.
 
     Deliberately not a REF_L name. The motivating format is now a built-in
-    (``REF_L_autoreduction``), and a test that used one would be asserting
+    (``REF_L_v2``), and a test that used one would be asserting
     about that instrument rather than about the declaration mechanism.
     """
     path = tmp_path / "d17_012345_reduced.mft"
