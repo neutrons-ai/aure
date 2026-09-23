@@ -2,7 +2,7 @@
   <img src="docs/logo.svg" alt="AuRE" width="360">
 </p>
 
-[![DOI](https://zenodo.org/badge/1154042964.svg)](https://doi.org/10.5281/zenodo.18940694)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22881138.svg)](https://doi.org/10.5281/zenodo.22881138)
 
 <h1 align="center">Automated Reflectivity Evaluator</h1>
 
