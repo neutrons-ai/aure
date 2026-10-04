@@ -21,6 +21,8 @@ import json
 import os
 import stat
 import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -39,6 +41,10 @@ calls = state / "calls.jsonl"
 n = len(calls.read_text().splitlines()) if calls.exists() else 0
 with calls.open("a") as fh:
     fh.write(json.dumps(sys.argv[1:]) + "\\n")
+# The prompt arrives on stdin, read whole before anything else, as the CLI does.
+prompt = "" if sys.stdin.isatty() else sys.stdin.buffer.read().decode("utf-8")
+with (state / "prompts.jsonl").open("a") as fh:
+    fh.write(json.dumps(prompt) + "\\n")
 
 replies = json.loads((state / "replies.json").read_text())
 spec = replies[min(n, len(replies) - 1)]
@@ -54,11 +60,10 @@ if spec.get("stdout_raw") is not None:
 
 result = spec.get("result", "")
 if spec.get("echo_prompt"):
-    argv = sys.argv[1:]
-    target = argv[argv.index("-p") + 1]
-    result = Path(target[1:]).read_text()
+    result = prompt
 
-sys.stdout.write(json.dumps({
+# UTF-8 bytes whatever the locale, as the CLI writes them.
+sys.stdout.buffer.write(json.dumps({
     "type": "result",
     "subtype": spec.get("subtype", "success"),
     "is_error": spec.get("is_error", False),
@@ -77,7 +82,7 @@ sys.stdout.write(json.dumps({
         "claude-haiku-4-5-20251001": {"outputTokens": 11},
         "claude-sonnet-5": {"outputTokens": 40},
     }),
-}))
+}, ensure_ascii=False).encode("utf-8"))
 """
 
 
@@ -105,11 +110,12 @@ def fake_claude(tmp_path, monkeypatch):
                 return []
             return [json.loads(line) for line in path.read_text().splitlines()]
 
-        def prompt_of(self, index=0):
-            argv = self.calls[index]
-            return (tmp_path / "x").with_name(
-                argv[argv.index("-p") + 1][1:].split("/")[-1]
-            )
+        @property
+        def prompts(self):
+            path = state / "prompts.jsonl"
+            if not path.exists():
+                return []
+            return [json.loads(line) for line in path.read_text().splitlines()]
 
     handle = Handle()
     handle.script({"result": "ok"})
@@ -206,14 +212,62 @@ def test_model_is_passed_when_configured(fake_claude):
     assert argv[argv.index("--model") + 1] == "claude-sonnet-5"
 
 
-def test_prompt_goes_through_a_file_not_argv(fake_claude):
-    """A modeling prompt with skill context runs to tens of kilobytes."""
+def test_prompt_goes_on_stdin_not_in_argv_or_a_named_file(fake_claude):
+    """A modeling prompt with skill context runs to tens of kilobytes.
+
+    Not argv, where ARG_MAX is a ceiling, and not ``-p @<file>``, which Claude
+    Code stops attaching once the file is large: the model then answers a
+    prompt it never saw.
+    """
     fake_claude.script({"echo_prompt": True})
     big = "x" * 300_000
     reply = _chat().invoke([HumanMessage(content=big)])
     (argv,) = fake_claude.calls
-    assert argv[argv.index("-p") + 1].startswith("@")
+    assert not any(arg.startswith("@") for arg in argv)
+    assert big not in argv
+    assert fake_claude.prompts == [big]
     assert reply.content == big
+
+
+def test_a_non_ascii_prompt_survives_a_non_utf8_locale(fake_claude):
+    """Python opens a text pipe in the locale's encoding: cp1252 on Windows,
+    ASCII under a bare C locale. The CLI reads and writes UTF-8 whatever the
+    locale, and the skills put ρ, σ, χ² and → into modeling prompts.
+
+    A locale is fixed when the interpreter starts, hence the child process. C
+    with Python's UTF-8 handling off is the non-UTF-8 locale every platform has.
+    """
+    fake_claude.script({"echo_prompt": True})
+    prompt = "Å ρ σ χ² → ≈ — Δ"
+    child = (
+        "import json\n"
+        "from aure.llm.providers import claude_code as cc\n"
+        "reply = cc.create_claude_code({'model': None}, 0.0).invoke("
+        f"{json.dumps(prompt)})\n"
+        "print(json.dumps(reply.content))\n"
+    )
+    source = str(Path(cc.__file__).resolve().parents[3])
+    env = {
+        **os.environ,
+        "LC_ALL": "C",
+        "PYTHONCOERCECLOCALE": "0",
+        "PYTHONUTF8": "0",
+        "PYTHONPATH": os.pathsep.join(
+            p for p in (source, os.environ.get("PYTHONPATH")) if p
+        ),
+    }
+
+    done = subprocess.run(
+        [sys.executable, "-c", child],
+        env=env,
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+
+    assert done.returncode == 0, done.stderr.decode("utf-8", "replace")
+    assert json.loads(done.stdout) == prompt
+    assert fake_claude.prompts == [prompt]
 
 
 def test_system_messages_reach_the_system_prompt(fake_claude):
@@ -393,6 +447,24 @@ def test_live_round_trip(monkeypatch):
     assert "AURE-OK" in reply.content
     assert reply.usage_metadata["input_tokens"] > 0
     assert reply.response_metadata["total_cost_usd"] >= 0
+
+
+@pytest.mark.live
+@live
+def test_live_a_large_prompt_reaches_the_model(monkeypatch):
+    """Named as ``-p @<file>``, a 120 KB prompt never reached the model.
+
+    Haiku, because this is about delivery rather than judgement, and a prompt
+    this size is the expensive part.
+    """
+    monkeypatch.delenv("AURE_CLAUDE_BIN", raising=False)
+    rows = "".join(
+        f"| {i} | a filler row for the prompt-size test |\n" for i in range(3000)
+    )
+    prompt = f"Reply with only the codeword on the last line.\n\n{rows}Codeword: AURE-LARGE-OK\n"
+    assert len(prompt) > 120_000
+    reply = cc.create_claude_code({"model": "haiku"}, 0.0).invoke(prompt)
+    assert "AURE-LARGE-OK" in reply.content
 
 
 @pytest.mark.live

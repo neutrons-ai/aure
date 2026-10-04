@@ -26,6 +26,17 @@ analysis of pure overhead on top of the prompts themselves.
 restricts authentication to ``ANTHROPIC_API_KEY`` and never reads OAuth or the
 keychain — removing the one property this provider exists for.
 
+**The prompt goes on stdin.** Not in argv, because a modeling prompt with
+skill context runs to tens of kilobytes and ARG_MAX is a real ceiling. Not as
+``-p @<file>`` either: past some size Claude Code does not attach a file named
+that way, and with every tool denied and one turn, the model answers without
+ever seeing the prompt. Measured with claude 2.1.232: a 20 KB file arrived, a
+120 KB one did not, and the same 120 KB on stdin arrived whole.
+
+Both ways, the pipe is UTF-8 by name. Python otherwise opens it in the locale's
+encoding (cp1252 on Windows). The skills that reach a modeling prompt carry ρ,
+σ, χ² and →, and the CLI reads and writes UTF-8 whatever the locale.
+
 **Temperature is not a knob here.** ``claude`` exposes none. Every AuRE call
 site asks for 0, which is what an agentic harness approximates anyway, so the
 argument is accepted and ignored rather than being quietly honoured.
@@ -68,8 +79,6 @@ import logging
 import os
 import shutil
 import subprocess
-import tempfile
-from pathlib import Path
 from typing import Any, Optional
 
 from ..config import get_llm_timeout
@@ -361,11 +370,10 @@ class _ClaudeCodeChat:
             response_metadata=_response_metadata(envelope),
         )
 
-    def _argv(self, prompt_file: Path, system_prompt: str) -> list:
+    def _argv(self, system_prompt: str) -> list:
         argv = [
             _binary(),
             "-p",
-            f"@{prompt_file}",
             "--output-format",
             "json",
             "--system-prompt",
@@ -406,13 +414,8 @@ class _ClaudeCodeChat:
         env[_RECURSION_FLAG] = "1"
 
         timeout = float(get_llm_timeout())
-        with tempfile.TemporaryDirectory(prefix="aure-claude-") as tmp:
-            # Via a file, not argv: a modeling prompt with skill context runs to
-            # tens of kilobytes and ARG_MAX is a real ceiling.
-            prompt_file = Path(tmp) / "prompt.txt"
-            prompt_file.write_text(user_text, encoding="utf-8")
-            argv = self._argv(prompt_file, system_prompt)
-            code, out, err = _run(argv, env, timeout)
+        # On stdin; the module docstring says why neither argv nor `@<file>`.
+        code, out, err = _run(self._argv(system_prompt), env, timeout, user_text)
 
         if code != 0:
             raise ValueError(
@@ -432,24 +435,33 @@ class _ClaudeCodeChat:
         return envelope
 
 
-def _run(argv: list, env: dict, timeout: float) -> tuple:
-    """Run *argv*, killing the child if anything interrupts the wait.
+def _run(argv: list, env: dict, timeout: float, prompt: str) -> tuple:
+    """Run *argv* with *prompt* on its stdin, killing the child if anything
+    interrupts the wait.
 
     The kill matters twice over. ``subprocess.TimeoutExpired`` leaves the child
     running, and so does the ``LLMTimeoutError`` that :mod:`aure.llm.timeout`
     raises from a SIGALRM handler *inside* this call — in both cases the
     request would otherwise keep going, and keep billing, after the caller has
     given up on it.
+
+    ``communicate`` writes the prompt while it reads the output, so a prompt
+    larger than the pipe buffer cannot deadlock against the child, and the
+    timeout covers the write as well.
     """
     proc = subprocess.Popen(
         argv,
+        stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        # UTF-8 by name, never the locale's codec: see the module docstring.
+        encoding="utf-8",
+        errors="replace",
         env=env,
     )
     try:
-        out, err = proc.communicate(timeout=timeout)
+        out, err = proc.communicate(input=prompt, timeout=timeout)
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.wait()
