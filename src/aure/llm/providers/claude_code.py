@@ -33,6 +33,10 @@ that way, and with every tool denied and one turn, the model answers without
 ever seeing the prompt. Measured with claude 2.1.232: a 20 KB file arrived, a
 120 KB one did not, and the same 120 KB on stdin arrived whole.
 
+Both ways, the pipe is UTF-8 by name. Python otherwise opens it in the locale's
+encoding (cp1252 on Windows). The skills that reach a modeling prompt carry ρ,
+σ, χ² and →, and the CLI reads and writes UTF-8 whatever the locale.
+
 **Temperature is not a knob here.** ``claude`` exposes none. Every AuRE call
 site asks for 0, which is what an agentic harness approximates anyway, so the
 argument is accepted and ignored rather than being quietly honoured.
@@ -451,6 +455,9 @@ def _run(argv: list, env: dict, timeout: float, prompt: str) -> tuple:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        # UTF-8 by name, never the locale's codec: see the module docstring.
+        encoding="utf-8",
+        errors="replace",
         env=env,
     )
     try:

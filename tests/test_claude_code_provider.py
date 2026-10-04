@@ -21,6 +21,8 @@ import json
 import os
 import stat
 import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -40,7 +42,7 @@ n = len(calls.read_text().splitlines()) if calls.exists() else 0
 with calls.open("a") as fh:
     fh.write(json.dumps(sys.argv[1:]) + "\\n")
 # The prompt arrives on stdin, read whole before anything else, as the CLI does.
-prompt = "" if sys.stdin.isatty() else sys.stdin.read()
+prompt = "" if sys.stdin.isatty() else sys.stdin.buffer.read().decode("utf-8")
 with (state / "prompts.jsonl").open("a") as fh:
     fh.write(json.dumps(prompt) + "\\n")
 
@@ -60,7 +62,8 @@ result = spec.get("result", "")
 if spec.get("echo_prompt"):
     result = prompt
 
-sys.stdout.write(json.dumps({
+# UTF-8 bytes whatever the locale, as the CLI writes them.
+sys.stdout.buffer.write(json.dumps({
     "type": "result",
     "subtype": spec.get("subtype", "success"),
     "is_error": spec.get("is_error", False),
@@ -79,7 +82,7 @@ sys.stdout.write(json.dumps({
         "claude-haiku-4-5-20251001": {"outputTokens": 11},
         "claude-sonnet-5": {"outputTokens": 40},
     }),
-}))
+}, ensure_ascii=False).encode("utf-8"))
 """
 
 
@@ -224,6 +227,47 @@ def test_prompt_goes_on_stdin_not_in_argv_or_a_named_file(fake_claude):
     assert big not in argv
     assert fake_claude.prompts == [big]
     assert reply.content == big
+
+
+def test_a_non_ascii_prompt_survives_a_non_utf8_locale(fake_claude):
+    """Python opens a text pipe in the locale's encoding: cp1252 on Windows,
+    ASCII under a bare C locale. The CLI reads and writes UTF-8 whatever the
+    locale, and the skills put ρ, σ, χ² and → into modeling prompts.
+
+    A locale is fixed when the interpreter starts, hence the child process. C
+    with Python's UTF-8 handling off is the non-UTF-8 locale every platform has.
+    """
+    fake_claude.script({"echo_prompt": True})
+    prompt = "Å ρ σ χ² → ≈ — Δ"
+    child = (
+        "import json\n"
+        "from aure.llm.providers import claude_code as cc\n"
+        "reply = cc.create_claude_code({'model': None}, 0.0).invoke("
+        f"{json.dumps(prompt)})\n"
+        "print(json.dumps(reply.content))\n"
+    )
+    source = str(Path(cc.__file__).resolve().parents[3])
+    env = {
+        **os.environ,
+        "LC_ALL": "C",
+        "PYTHONCOERCECLOCALE": "0",
+        "PYTHONUTF8": "0",
+        "PYTHONPATH": os.pathsep.join(
+            p for p in (source, os.environ.get("PYTHONPATH")) if p
+        ),
+    }
+
+    done = subprocess.run(
+        [sys.executable, "-c", child],
+        env=env,
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+
+    assert done.returncode == 0, done.stderr.decode("utf-8", "replace")
+    assert json.loads(done.stdout) == prompt
+    assert fake_claude.prompts == [prompt]
 
 
 def test_system_messages_reach_the_system_prompt(fake_claude):
