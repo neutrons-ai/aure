@@ -347,7 +347,7 @@ def _select_skills_llm(
     sample_info = _build_sample_info(sample_description, parsed_sample, extra_context)
     prompt = _SKILL_SELECTION_PROMPT.format(catalog=catalog, sample_info=sample_info)
 
-    model = _llm.get_llm(temperature=0)
+    model = _llm.get_llm()
     response = _llm.invoke_with_timeout(model, [HumanMessage(content=prompt)])
     content = response.content.strip()
 

@@ -1180,7 +1180,7 @@ def propose_hypothesis_revision_with_llm(
     failure). New hypotheses carry no id; the ranking references existing
     hypotheses by integer id and new ones by ``"new1"``/``"new2"``/….
     """
-    llm = get_llm(temperature=0)
+    llm = get_llm()
     prompt = format_hypothesis_revision_prompt(
         sample_description=state.get("sample_description") or "",
         current_model=state.get("current_model") or {},
@@ -1377,7 +1377,7 @@ def analyze_fit_quality_with_llm(
     if chi2_min is None:
         chi2_min = _get_chi2_min(chi2_max=chi2_max)
 
-    llm = get_llm(temperature=0)
+    llm = get_llm()
 
     prompt = format_fit_evaluation_prompt(
         sample_description=sample_description or "",

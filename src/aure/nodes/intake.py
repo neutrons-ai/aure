@@ -217,7 +217,7 @@ def parse_file_header(file_path: str) -> dict:
         from langchain_core.messages import HumanMessage
 
         prompt = _HEADER_METADATA_PROMPT.format(header=header)
-        llm = get_llm(temperature=0)
+        llm = get_llm()
         response = invoke_with_timeout(llm, [HumanMessage(content=prompt)])
         content = response.content.strip()
 
@@ -314,7 +314,7 @@ def parse_sample_with_llm(
             "and appropriate API keys. See .env.example for options."
         )
 
-    llm = get_llm(temperature=0)
+    llm = get_llm()
     prompt = format_sample_parse_prompt(
         description, hypothesis, skill_context=skill_context
     )
@@ -408,7 +408,7 @@ def generate_structural_hypotheses_with_llm(
         run_titles=run_titles,
         state_names=state_names,
     )
-    llm = get_llm(temperature=0)
+    llm = get_llm()
     try:
         response = invoke_with_timeout(llm, [HumanMessage(content=prompt)])
     except Exception as e:

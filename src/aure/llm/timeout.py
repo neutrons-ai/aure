@@ -115,13 +115,17 @@ def _do_invoke(llm, prompt):
             prompt=prompt,
             ok=False,
             error=f"{type(exc).__name__}: {exc}",
+            temperature=getattr(llm, "temperature", None),
         )
         raise
+    # Read after the call: a model that refused the configured temperature was
+    # retried without one, and the ledger should say what the call used.
     ledger.record(
         response,
         duration_s=time.monotonic() - started,
         model=getattr(llm, "model_name", None),
         prompt=prompt,
+        temperature=getattr(llm, "temperature", None),
     )
     return response
 

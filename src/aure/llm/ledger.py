@@ -13,8 +13,12 @@ This module closes it at the single chokepoint every node goes through
 always written once a sink is set::
 
     {"seq", "timestamp", "node", "model", "provider", "duration_s",
-     "input_tokens", "output_tokens", "total_tokens", "cached_tokens",
-     "cost_usd", "ok", "error"}
+     "temperature", "input_tokens", "output_tokens", "total_tokens",
+     "cached_tokens", "cost_usd", "ok", "error"}
+
+``temperature`` is what the call actually went out with; ``None`` means none
+was sent and the model used its own default (a model that refuses the
+configured value is retried that way, see :mod:`aure.llm.providers.openai_compat`).
 
 **The trace** — ``<output_dir>/llm_trace.jsonl``, one object per call, written
 only when ``AURE_LLM_LOG_TEXT`` is set::
@@ -303,6 +307,7 @@ def record(
     prompt: Any = None,
     ok: bool = True,
     error: Optional[str] = None,
+    temperature: Optional[float] = None,
 ) -> None:
     """Append one call to the ledger, and the exchange to the trace.
 
@@ -322,6 +327,7 @@ def record(
             "model": model,
             "provider": provider,
             "duration_s": round(duration_s, 3),
+            "temperature": temperature,
             "ok": ok,
             "error": error,
         }

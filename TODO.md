@@ -808,3 +808,19 @@ three decimals) where amoeba's varied from 2.364 to 7.045, at 71× the cost.
 That is why the thin-layer mode-enumeration sweep keeps amoeba — its
 seed-dependence is the mechanism the sweep exploits — and why `de` belongs
 where the answer, not the landscape, is what is wanted.
+
+## Six LLM calls bypass `invoke_with_timeout`, so the call ledger never sees them
+
+The convention is that every call goes through `invoke_with_timeout(get_llm(), …)`,
+which bounds it and writes its row in `llm_calls.jsonl`. Six call `llm.invoke`
+directly instead: `analyze_fit_quality_with_llm` (the verdict on every pass) and
+`propose_hypothesis_revision_with_llm` in `nodes/evaluation.py`, and
+`_refine_model`, `_refine_model_legacy`, `_extract_cross_state_unshared` and
+`_extract_per_state_structure` in `nodes/modeling.py`. They get no per-call
+timeout and no ledger row, and they carry the long prompts: on the 51-curve
+gpt-5.4 validation sweep the ledger held about 10 of a run's 21 calls but only
+18% of its prompt tokens, so token and cost totals read from it are low by about
+a factor of five. The validation harness recovers the
+rest by replaying checkpoints (`scripts/replay_llm_calls.py`). Found while adding
+the `temperature` field to the ledger; routing the six through the wrapper is
+the fix.

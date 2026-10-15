@@ -45,6 +45,72 @@ def _max_retries() -> int:
         return _DEFAULT_MAX_RETRIES
 
 
+# Models that refused the temperature we sent, keyed by (base_url, model). A
+# model in here is created with no temperature at all, so it runs at its own
+# default: some deployments accept only that (gpt-6.1-sol refuses anything but
+# 1), and sending 1 to a model that takes 0 would silently change the analysis.
+_TEMPERATURE_REFUSED: set = set()
+
+
+def _refuses_temperature(exc: BaseException) -> bool:
+    """True if a provider error is a refusal of the ``temperature`` parameter."""
+    if getattr(exc, "status_code", None) != 400:
+        return False
+    if getattr(exc, "param", None) == "temperature":
+        return True
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        error = body.get("error") if isinstance(body.get("error"), dict) else body
+        if error.get("param") == "temperature":
+            return True
+    message = str(exc).lower()
+    return "temperature" in message and "unsupported" in message
+
+
+_CHAT_CLASS = None
+
+
+def _chat_class():
+    """``ChatOpenAI`` with one retry, without a temperature, if the model refuses it.
+
+    Built on first use so that importing AuRE does not import LangChain.
+    """
+    global _CHAT_CLASS
+    if _CHAT_CLASS is None:
+        from langchain_openai import ChatOpenAI
+
+        class TemperatureFallbackChatOpenAI(ChatOpenAI):
+            def _generate(self, *args, **kwargs):
+                try:
+                    return super()._generate(*args, **kwargs)
+                except Exception as exc:
+                    if self.temperature is None or not _refuses_temperature(exc):
+                        raise
+                    self._drop_temperature()
+                    return super()._generate(*args, **kwargs)
+
+            async def _agenerate(self, *args, **kwargs):
+                try:
+                    return await super()._agenerate(*args, **kwargs)
+                except Exception as exc:
+                    if self.temperature is None or not _refuses_temperature(exc):
+                        raise
+                    self._drop_temperature()
+                    return await super()._agenerate(*args, **kwargs)
+
+            def _drop_temperature(self) -> None:
+                logger.warning(
+                    "[LLM] %s refused temperature=%s; using its default from now on",
+                    self.model_name,
+                    self.temperature,
+                )
+                _TEMPERATURE_REFUSED.add((self.openai_api_base, self.model_name))
+                self.temperature = None
+
+        _CHAT_CLASS = TemperatureFallbackChatOpenAI
+    return _CHAT_CLASS
+
+
 def create_openai_compatible(
     config: dict,
     temperature: float,
@@ -54,10 +120,10 @@ def create_openai_compatible(
 ):
     """Create a ``ChatOpenAI`` instance.
 
-    Shared code-path for the *openai* and *local* providers.
+    Shared code-path for the *openai* and *local* providers. The requested
+    temperature is sent as asked unless this model has already refused it, in
+    which case the call goes out with none and the model uses its default.
     """
-    from langchain_openai import ChatOpenAI
-
     kwargs: dict = dict(
         model=config["model"],
         temperature=temperature,
@@ -67,7 +133,16 @@ def create_openai_compatible(
     )
     if base_url:
         kwargs["base_url"] = base_url
-    return ChatOpenAI(**kwargs)
+    llm = _chat_class()(**kwargs)
+    if (llm.openai_api_base, llm.model_name) in _TEMPERATURE_REFUSED:
+        llm.temperature = None
+    elif temperature is not None and llm.temperature != temperature:
+        # langchain-openai drops any temperature but 1 for "gpt-5*" names, a
+        # rule written for OpenAI's own reasoning models. Deployments that
+        # accept 0 (Azure's gpt-5.4) then ran at their default without a word.
+        # Send what was asked; a model that refuses it falls back above.
+        llm.temperature = temperature
+    return llm
 
 
 # ── Thin per-provider wrappers ──────────────────────────────────────────

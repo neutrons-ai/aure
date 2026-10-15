@@ -150,7 +150,7 @@ def _generate_context_description(state: dict) -> str:
     try:
         from ..llm import get_llm, invoke_with_timeout
 
-        llm = get_llm(temperature=0)
+        llm = get_llm()
         response = invoke_with_timeout(llm, prompt, timeout_seconds=60)
         text = (
             response.content.strip()

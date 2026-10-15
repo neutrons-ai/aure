@@ -271,7 +271,7 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
         if user_feedback:
             updates["pending_user_feedback"] = None
 
-        llm = get_llm(temperature=0)
+        llm = get_llm()
         response = llm.invoke([HumanMessage(content=prompt)])
         raw = response.content.strip()
 
@@ -559,7 +559,7 @@ def _refine_model_legacy(state: ReflectivityState) -> Dict[str, Any]:
         if user_feedback:
             updates["pending_user_feedback"] = None
 
-        llm = get_llm(temperature=0)
+        llm = get_llm()
         response = llm.invoke([HumanMessage(content=prompt)])
         new_model = response.content.strip()
         new_model = _strip_code_fences(new_model)
@@ -666,7 +666,7 @@ def _extract_cross_state_unshared(sample_description: str, model_def: dict):
         import json
 
         prompt = format_cross_state_ties_prompt(sample_description, tieable)
-        response = get_llm(temperature=0).invoke([HumanMessage(content=prompt)])
+        response = get_llm().invoke([HumanMessage(content=prompt)])
         data = json.loads(_strip_code_fences(response.content.strip()))
         proposed = data.get("unshared_parameters") or []
         tieable_set = set(tieable)
@@ -713,7 +713,7 @@ def _extract_per_state_structure(
         prompt = format_per_state_structure_prompt(
             sample_description, state_names, template_names
         )
-        response = get_llm(temperature=0).invoke([HumanMessage(content=prompt)])
+        response = get_llm().invoke([HumanMessage(content=prompt)])
         per_state = (
             json.loads(_strip_code_fences(response.content.strip())).get(
                 "per_state_absent"
