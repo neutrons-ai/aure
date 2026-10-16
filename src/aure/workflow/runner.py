@@ -71,6 +71,17 @@ ROUTING_FUNCTIONS = {
 }
 
 
+def _node_limit(max_iterations: Optional[int]) -> int:
+    """How many loop nodes a run may execute before the safety stop.
+
+    After intake and analysis a pass costs at most three (modeling, fitting,
+    evaluation), so ``m`` passes need ``3m + 2``; this leaves four to spare.
+    finalize and final_fit run after the loop and are not counted. The flat 20
+    this replaces stopped any ``-m`` above 6 after six passes, without a word.
+    """
+    return max(20, 3 * int(max_iterations or 5) + 6)
+
+
 def _load_checkpoint_by_iteration(
     output_dir: Optional[str], iteration: int
 ) -> Optional[Dict[str, Any]]:
@@ -308,7 +319,7 @@ def run_workflow_with_checkpoints(
         )
     current_node = NODE_ORDER[start_idx] if start_idx < len(NODE_ORDER) else None
 
-    max_total_iterations = 20  # Safety limit
+    max_total_iterations = _node_limit(state.get("max_iterations"))  # Safety limit
     iteration_count = 0
 
     # Get trace context once (None if tracing disabled)
@@ -475,6 +486,13 @@ def run_workflow_with_checkpoints(
         else:
             # Try to find matching node
             current_node = next_route if next_route in NODE_FUNCTIONS else None
+
+    if current_node and iteration_count >= max_total_iterations:
+        logger.warning(
+            "[RUNNER] Stopped at the %d-node safety limit with %s still to run",
+            max_total_iterations,
+            current_node,
+        )
 
     # ---- Terminal packaging -----------------------------------------
     # The loop has six exits and only two of them consult a routing function:
