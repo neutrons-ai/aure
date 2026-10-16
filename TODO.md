@@ -824,3 +824,123 @@ a factor of five. The validation harness recovers the
 rest by replaying checkpoints (`scripts/replay_llm_calls.py`). Found while adding
 the `temperature` field to the ledger; routing the six through the wrapper is
 the fix.
+
+---
+
+## The profile veto throws away fits an analyst would repair
+
+**Where:** [`src/aure/tools/feature_tools.py`](src/aure/tools/feature_tools.py)
+— the excursion loop in `detect_profile_artifacts`;
+[`src/aure/nodes/finalize.py`](src/aure/nodes/finalize.py) — `_tier` and the
+tier-χ² guard in `_select` (`_DEFAULT_TIER_CHI2_FACTOR = 3.0`);
+[`src/aure/nodes/evaluation.py`](src/aure/nodes/evaluation.py) — the
+bounds-only refinement shortcut.
+
+**What is wrong.** Two things. A real overshoot is often one large roughness,
+wider than the layers it crosses can carry; an analyst finds it, fixes it and
+re-fits. AuRE instead ranks the fit last at finalize, and nothing in the loop
+asks what caused it. And the test that finds overshoots also finds things that
+are not one. `detect_profile_artifacts` flags any extremum of the profile that
+is not within 5 % of the SLD span of one of the slab sequence's own turning
+values. Two different things fail that test:
+
+- a thin layer whose SLD the profile never reaches, while it stays between its
+  neighbours: a 19 Å native oxide fitted at 3.63 peaks at 2.86, because the
+  titanium interface beside it is 11.8 Å wide. Any thin, rough layer looks like
+  this;
+- a profile that leaves the range of its neighbours, because a wide interface's
+  erf tail reaches through thinner layers: a 243 Å solvent interface spanning
+  ~150 Å of oxide, plated layer and SEI lifts the top of the copper from 6.53 to
+  7.33.
+
+Both go to tier 2, "physically impossible, so genuinely last". Only the second
+is a real artifact, and it is the repairable kind.
+
+**What it costs.** From a gpt-6-luna `de` sweep of the 51-curve copper series
+(2c05e66 plus the node limit, `-m 10`):
+
+- 201236: all five fits with the reference structure (four layers, χ² 1.61,
+  lowest BIC at 311) were vetoed for the first kind. The reported fit adds two
+  layers totalling ~400 Å at 6.26–6.32 against a 6.37 solvent. Every clean fit
+  had five or six layers, so no ranking rule could have recovered the
+  four-layer one.
+- 207027: nine of ten fits were vetoed, among them pass 10 (χ² 1.47), which has
+  the reference's shape and the second kind. The only clean fit, pass 8 at
+  χ² 4.09, was reported and judged unusable: a 220 Å layer near SLD 0 where the
+  reference has a 59 Å plated layer at 1.90. The guard did not fire: 4.09 is
+  2.8 × 1.47, and the factor is 3. Pass 10 was judged a good step in the right
+  direction, to be improved on, not vetoed; it was the run's last pass, so the
+  loop never got the chance.
+
+**The change.** Identify the artifact, fix it, re-fit; veto only what that
+cannot clean:
+
+1. Name the cause. `detect_profile_artifacts` already reports where the
+   profile turns; it can also report which interface's tail reaches there —
+   one whose roughness is wider than the layers between it and the excursion.
+2. When the cause is a roughness and the fit otherwise looks good (its χ² at or
+   near the best so far), fix that roughness at a value the layers can carry,
+   no wider than the thickness it crosses, and re-fit from that fit. In the
+   loop that is a bounds change, so it can take the shortcut an auto-expanded
+   bound already takes, straight back to `fitting` without a modeling round.
+   At finalize, do it once for a vetoed fit whose χ² beats every clean one,
+   rank the result with the rest, and let `final_fit` polish the winner.
+3. Keep the veto for an artifact with another cause, or one the re-fit does
+   not clean; and veto an extremum only when it lies outside the SLD range of
+   the layer it sits in and that layer's two neighbours. A thin layer that
+   falls short is a note on the fit, not an artifact.
+
+---
+
+## The solvent's SLD window follows the last fit, so one bad pass can shut out the right value
+
+**Where:** [`src/aure/nodes/model_builder.py`](src/aure/nodes/model_builder.py)
+— the ambient range in `_build_sample`;
+[`src/aure/nodes/modeling.py`](src/aure/nodes/modeling.py) — the same defaults
+in `build_refl1d_script`; and the refinement step, where the model sets the
+ambient's `sld_min` / `sld_max` itself.
+
+**What is wrong.** Without explicit bounds the ambient's window is ±20 % of its
+current SLD, and the current SLD is whatever the last model carried, so the
+window moves with the fit. When the model sets bounds itself, it sets them
+around the last fitted value too. Either way, one pass that puts the solvent in
+the wrong place decides where every later pass may look.
+
+**What it costs.** On the copper series the solvent is d-THF or THF, never a
+mixture, so the right value is near 6.2 or near 0.2 and nothing in between.
+Four runs from the gpt-6-luna sweeps:
+
+- 207020, `amoeba`: the first fit put the d-THF at 5.48. A later pass left the
+  bounds to the default, which centred the window on 5.48 (4.39–6.58), and the
+  run ended at 4.74, χ² 4.94 against the reference's 1.28.
+- 207027, `de`: the first fit put it at 6.78. From the second pass the model
+  bounded it at 6.5–8.0 (at times 7.0–8.0), which shuts out both the reference
+  6.10 and the textbook d-THF value, 6.35. Four of the five arms run on this
+  curve failed it, all with the solvent at 6.57–6.90.
+- 201290, `de`: the first fit had it right, at 6.13 against the reference's
+  6.20. The model then bounded it at 6.40–8.40, later 6.80–8.00, and the
+  reported fit sits on that 6.80 floor, with the top SEI's SLD on its own
+  floor (0.50).
+- 201334, `de`: pass 5 had the reference's structure, an SEI of 331 Å at 2.51
+  with the solvent at 6.20, but at χ² 2.90; pass 1, with no SEI and the solvent
+  on the 4.80 floor of the default window, won at 1.81. The final DREAM polish
+  then rebuilt the default window around 4.80 (3.84–5.76), and the solvent sank
+  to 4.22.
+
+Across the 51 curves, luna with `amoeba` on this code left the solvent between
+1.0 and 5.5 on 14; gpt-5.4 on v0.9.0, on 4.
+
+Why it sinks: a thick SEI whose far edge the data barely see can be absorbed
+into the ambient. On 207072 (`de`) the best pass, at χ² 0.99 against the
+reference's 1.38, has no SEI and the solvent at 4.50 — the reference SEI's own
+SLD is 4.47, over 473 Å. Only knowing the solvent rules that reading out, which
+is what an anchored window encodes.
+
+**The change.** Centre the window on the solvent's starting value — the one the
+setup or the description gives — and keep it there for the run; let the model
+narrow the window, but not past that value. Centring alone is not enough:
+±20 % around 6.0 is 4.8–7.2, and 201334's first pass sat on that 4.80 floor. A
+pure solvent's SLD moves by a few per cent at most (density, isotopic purity),
+so its window should be about that wide. The same two lines carry the
+inverted bounds for a negative ambient SLD noted in the code's `TODO(bug)`, so
+one change can fix both.
