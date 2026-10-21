@@ -8,7 +8,7 @@ The state tracks all information needed throughout the analysis:
 - Conversation with user
 """
 
-from typing import Any, TypedDict, List, Optional, Dict
+from typing import TypedDict, List, Optional, Dict
 
 
 class LayerInfo(TypedDict):
@@ -312,7 +312,22 @@ class _FitResultVerdict(TypedDict, total=False):
     profile_artifact: bool
 
 
-class FitResult(_FitResultVerdict):
+class _FitResultPosterior(TypedDict, total=False):
+    """What a DREAM draw says about the fit, optional for the same reason.
+
+    ``posterior`` is ``tools.posterior_tools.summarize_posterior``'s summary:
+    convergence, where the best point sits, Occam factors, the BIC error, the
+    bridge-sampling evidence and the ``fit_trusted`` / ``evidence_trusted``
+    verdicts. Only DREAM fits carry one. ``model_comparison`` records which
+    criterion judged this fit against the regression baseline (``evidence`` or
+    ``bic``) and with what margin — see ``docs/evidence.md`` §5.
+    """
+
+    posterior: dict
+    model_comparison: dict
+
+
+class FitResult(_FitResultVerdict, _FitResultPosterior):
     """Results from a refl1d fit."""
 
     iteration: int
@@ -496,6 +511,18 @@ class ReflectivityState(TypedDict):
     # not match. Absent on checkpoints written before the marker existed, which
     # is exactly the stale case it is there to catch.
     bic_formula: Optional[str]
+    # The provisional evidence of the fit that holds the BIC baseline
+    # (`posterior_tools.evidence_record`), when that fit carried one. Lets the
+    # BIC guardrail notice that a revert it is about to make is contested by the
+    # posterior, so the hypothesis is not recorded as ruled out on BIC alone.
+    best_bic_evidence: Optional[dict]
+    # The evidence regression baseline: the best fit by a *trusted* evidence
+    # (`posterior_tools.evidence_record`, which carries its formula marker) and
+    # its ModelDefinition. Only fits whose posterior passed the trust rules ever
+    # enter it; the guardrail compares on evidence only when both the latest fit
+    # and this baseline are trusted (docs/evidence.md §5.3).
+    best_evidence: Optional[dict]
+    best_evidence_model: Optional[dict]
     # Set by the terminal `finalize` node once the refinement loop has stopped.
     # `finalized` makes that node idempotent (the runner also calls it
     # defensively on loop-exit paths that never route through a node);
@@ -622,6 +649,9 @@ def create_initial_state(
         best_bic_model=None,
         best_bic_chi2=None,
         bic_formula=None,
+        best_bic_evidence=None,
+        best_evidence=None,
+        best_evidence_model=None,
         finalized=False,
         final_selection=None,
         final_fit=None,

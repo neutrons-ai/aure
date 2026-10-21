@@ -944,3 +944,57 @@ pure solvent's SLD moves by a few per cent at most (density, isotopic purity),
 so its window should be about that wide. The same two lines carry the
 inverted bounds for a negative ambient SLD noted in the code's `TODO(bug)`, so
 one change can fix both.
+
+---
+
+## The report's "Fit Results" ignore an adopted final DREAM polish
+
+**Where:** [`src/aure/cli.py`](src/aure/cli.py): `_selected_fit`, used by
+`_print_analysis_results` and by `--json`'s `fit_result`. Also
+[`src/aure/web/data.py`](src/aure/web/data.py): the default iteration of the
+Results tab.
+
+**What is wrong.** All three resolve the reported fit as
+`fit_results[final_selection["index"]]`, which is the exploration fit.
+`final_fit` appends its DREAM `FitResult` after that and, when it adopts it,
+writes the DREAM values into `current_model` and `current_chi2`. With a `de`
+exploration and an adopted polish, the terminal report shows:
+
+- under *Final Model*, the DREAM values;
+- under *Fit Results*, the exploration χ², `Method: de` and the exploration
+  values, with **no uncertainties**.
+
+The ± that the polish exists to produce never reach the parameter table or
+`--json`. Found while adding the posterior check, which resolves this correctly
+through `posterior_tools.posterior_for_report`.
+
+**The change.** Resolve the displayed fit as the final DREAM `FitResult` when
+`final_fit["adopted"]` is set, in one helper the CLI report, `--json`, `aure
+batch` and the web default all use. `posterior_for_report` is the pattern.
+
+---
+
+## bumps' posterior-entropy estimator has four defects (upstream)
+
+**Where:** bumps 1.0.4 `bumps/dream/entropy.py` (`entropy`,
+`scipy_stats_density`) behind `MCMCDraw.entropy(method="llf")`.
+
+**What is wrong.**
+
+1. The normalization subset is sliced with `N_entropy` instead of `N_norm`.
+2. The normalization and evaluation subsets are drawn independently, so they
+   overlap. The kernel density at a point that is also a kernel centre is
+   biased high.
+3. `scipy_stats_density` passes the sample to `gaussian_kde` untransposed, so it
+   raises "dimensions greater than samples" whenever there are more draws than
+   parameters. That is always the case, so without scikit-learn the method
+   fails outright.
+4. The method computes $\hat N=\langle e^{\ell}/\hat p\rangle=\int e^\ell$, which
+   is the evidence times the prior volume, and discards it.
+
+**What it costs aure.** Nothing: [docs/evidence.md](docs/evidence.md) §3.4
+explains why aure uses bridge sampling instead. It costs bumps users who call
+`state.entropy()`.
+
+**The change.** Report upstream with the four fixes, and propose returning
+$\hat N$ alongside the entropy.

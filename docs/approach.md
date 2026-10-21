@@ -352,6 +352,19 @@ numbering is topical, not chronological — `evaluation_node` runs 1 → 2 → 4
      node reverts to the best-BIC model and marks the hypothesis that was
      just tried as `rejected`.
 
+     BIC charges every parameter the same $\tfrac12\ln n$ and sees only the
+     best point. Every DREAM fit therefore also carries a posterior summary
+     ([evidence.md](evidence.md)). It holds the measured Occam factors, a
+     convergence check, whether the best point represents its posterior, and
+     the Bayesian evidence by bridge sampling.
+     - When both fits carry a *trusted* evidence, the evidence decides the
+       comparison instead of BIC.
+     - When BIC reverts a change that the *provisional* evidence clearly
+       favours, the revert stands, but the hypothesis stays `tried`
+       (inconclusive) rather than `rejected`. On the validation set this is
+       exactly the case of a real sub-resolution layer, which BIC rejected and
+       nested sampling favoured by 2.7 nats.
+
 6. **Clamp acceptance to the χ² acceptance window.** `CHI2_MAX` (or the setup's
    `chi2_max:`) is the run's contract with the user, so a **finite χ² inside the
    window `chi2_min ≤ χ² ≤ chi2_max` forces `acceptable = True`** and the run
@@ -764,6 +777,8 @@ The table below summarises who decides what.
 | Escape thin-layer local minima before fitting | Code | mode enumeration in `fitting.py` (gated by `MODE_ENUMERATION`) |
 | Revert on χ² regression | Code | χ² regression guardrail |
 | Revert on BIC regression + mark hypothesis `rejected` | Code | BIC regression guardrail |
+| Decide by posterior evidence when both DREAM draws are trusted; record a contested BIC revert as inconclusive | Code | `evaluation._complexity_comparison` + `fitting._update_evidence_baseline` ([evidence.md](evidence.md)) |
+| Summarize each DREAM posterior (convergence, Occam factors, evidence) | Code | `tools.posterior_tools.summarize_dream_fit` |
 | Enforce list membership (modeling = status-only) | Code | `merge_structural_hypotheses` guard |
 | Decide *when* revision is worth an LLM call | Code | `_should_revise_hypotheses` (cost-gate) |
 | Route to fitting on bounds-only iterations | Code | `route_after_evaluation` |
@@ -786,7 +801,13 @@ in *distinct local minima* separated by barriers the optimizer will not cross.
 The consequence is dangerous for automated model selection: if the more complex
 candidate model landed in the wrong basin, its χ² is too high, its BIC looks
 too large, and a real layer gets rejected as "not justified." **A BIC verdict is
-only as trustworthy as the optimization behind it.**
+only as trustworthy as the optimization behind it.** BIC also over-charges the
+thin layer's parameters even at the right optimum: they are constrained at the
+~1-nat level, while BIC charges $\tfrac12\ln n$. A DREAM fit's posterior check
+([evidence.md](evidence.md)) measures both problems. It reports where the
+optimum sits in its posterior, places an exploration optimum in the final DREAM
+posterior (§4.5 there), and records a BIC rejection that the posterior evidence
+contests as inconclusive.
 
 **Mode enumeration (fitting, §4.4).** The fix is not more optimizer effort but
 *discrete* exploration: seed the thin layer's SLD at a few levels spanning its

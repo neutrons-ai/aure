@@ -76,6 +76,28 @@ def _selected_fit(state: dict) -> Optional[dict]:
     return fit_results[-1]
 
 
+def _posterior_statement(state: dict) -> Optional[str]:
+    """One sentence when the reported fit's DREAM posterior is not trusted.
+
+    The record carries the DREAM uncertainties onward, so it has to say when the
+    chains behind them did not converge, or when the best point does not represent
+    its posterior (docs/evidence.md §4). None for a trusted posterior, and for a
+    run with no DREAM fit at all.
+    """
+    from ..tools.posterior_tools import posterior_digest, posterior_for_report
+
+    post, _source = posterior_for_report(state)
+    digest = posterior_digest(post)
+    if digest is None or digest.get("fit_trusted"):
+        return None
+    reasons = list(digest.get("concerns") or [])[:3]
+    return (
+        "NOTE: the DREAM posterior behind the reported fit did not pass AuRE's "
+        "posterior check, so its uncertainties are provisional."
+        + (" " + " ".join(reasons) if reasons else "")
+    )
+
+
 def _profile_veto_statement(state: dict) -> Optional[str]:
     """One sentence naming the rejected profile, or None when the fit passed.
 
@@ -222,6 +244,10 @@ class IsaacExporter(BaseExporter):
         if veto:
             context_description = veto + "\n\n" + context_description
             warnings.append(veto)
+        posterior_note = _posterior_statement(state)
+        if posterior_note:
+            context_description = posterior_note + "\n\n" + context_description
+            warnings.append(posterior_note)
         (ai_dir / "context.txt").write_text(context_description, encoding="utf-8")
         logger.info(
             "[ISAAC-EXPORT] Wrote context description → %s", ai_dir / "context.txt"

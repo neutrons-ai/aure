@@ -14,6 +14,19 @@ sample description to a fitted
 
 ## What's new
 
+- **Posterior evidence instead of trusting BIC blindly.** Every DREAM fit is now
+  summarized from its posterior:
+  - whether the chains converged (split-R̂);
+  - whether the best point sits where the posterior mass is;
+  - the Occam factor of each parameter, and BIC's resulting error;
+  - the Bayesian evidence by bridge sampling, with an error bar.
+
+  When two fits both have a trusted evidence, it replaces BIC in the regression
+  guardrail and in final selection. When BIC rejects a change that the
+  provisional evidence favours, the hypothesis is recorded as inconclusive
+  rather than ruled out. On the validation set, BIC rejected a real
+  sub-resolution layer that nested sampling favours by 2.7 nats. The report
+  gains a *Posterior Check* block. See [docs/evidence.md](docs/evidence.md).
 - **Thin-layer robustness** — thin layers sit on a contrast×thickness
   degeneracy ridge where a single optimizer run can silently pick the wrong
   basin (and BIC then rejects a real layer). AuRE now ships: an always-on
@@ -143,6 +156,7 @@ or resume a run from any point.
 | **[docs/launching.md](docs/launching.md)** | The CLI routes into a run: the ad-hoc positional form versus the setup YAML, which of them can express a single curve, a multi-file co-refinement and a multi-state co-refinement, how the two are merged, and where each run control comes from. |
 | **[docs/metrics.md](docs/metrics.md)** | Every number that judges a fit, with the math: χ² (what is and is not in it), the acceptance window, BIC and how `n` and `k` are counted, the regression guardrails, the deterministic feature-extraction formulas, residual-fringe analysis, profile-artifact detection, and final model selection. |
 | **[docs/finalization.md](docs/finalization.md)** | What happens after the loop stops: how the reported model is selected, the optional uncertainty polish, and the artifacts a run writes. |
+| **[docs/evidence.md](docs/evidence.md)** | How far to trust BIC, and what replaces it: the derivation from the evidence to BIC, what a DREAM posterior measures that BIC assumes, bridge-sampling evidence, the trust checks, the comparison rule, and the validation against nested sampling. |
 | **[CLAUDE.md](CLAUDE.md)** | Orientation for coding agents working in this repository. |
 
 ## Installation

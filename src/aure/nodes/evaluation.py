@@ -20,6 +20,13 @@ import numpy as np
 from langchain_core.messages import HumanMessage
 
 from ..state import ReflectivityState, FitResult, Message, LLMCallRecord
+from ..tools.posterior_tools import (
+    bridge_available,
+    compare_evidence,
+    evidence_baseline_current,
+    evidence_record,
+    evidence_settings,
+)
 from ..llm import llm_available, get_llm
 from ..config import format_user_criteria
 from ..skills import SkillRegistry, load_skill_context, select_skills
@@ -469,6 +476,119 @@ def bic_baseline_is_stale(state: dict) -> bool:
     return state.get("bic_formula") != BIC_FORMULA
 
 
+def _complexity_comparison(
+    state: ReflectivityState, latest_fit: FitResult, bic: Optional[float]
+) -> Optional[dict]:
+    """Which criterion judges *latest_fit* against its baseline, and its verdict.
+
+    * ``evidence``: ``fitting`` compared this fit with the evidence baseline
+      because both carry a trusted evidence, and recorded the comparison on the
+      fit. It is returned as recorded (docs/evidence.md §5.3).
+    * ``bic``: otherwise, the BIC verdict against ``best_bic``. When this fit and
+      the fit holding the BIC baseline both carry a bridge-sampling evidence,
+      trusted or not, the *provisional* evidence comparison of the same pair is
+      attached. ``contested`` marks a BIC revert that the provisional evidence
+      clearly disagrees with. It cannot stop the revert; it stops the
+      hypothesis being recorded as ruled out on BIC alone.
+
+    None when there is no baseline to compare against.
+    """
+    recorded = latest_fit.get("model_comparison")
+    if (
+        isinstance(recorded, dict)
+        and recorded.get("criterion") == "evidence"
+        and evidence_baseline_current(state.get("best_evidence"))
+        and state.get("best_evidence_model")
+    ):
+        return recorded
+
+    best_bic = None if bic_baseline_is_stale(state) else state.get("best_bic")
+    if bic is None or best_bic is None or not state.get("best_bic_model"):
+        return None
+    bic_worse = bic > best_bic
+    out: Dict[str, Any] = {
+        "criterion": "bic",
+        "bic": bic,
+        "baseline_bic": best_bic,
+        "delta_log_evidence_bic": -0.5 * (bic - best_bic),
+        "bic_verdict": "worse" if bic_worse else "better",
+        "provisional_evidence": None,
+        "contested": False,
+    }
+    if bic == best_bic:
+        # `fitting` just made this fit the baseline, so the incumbent it beat is
+        # gone and the only partner left is the fit itself. Nothing to contest:
+        # a fit that set the baseline is never reverted.
+        out["baseline_is_this_fit"] = True
+        return out
+    base = state.get("best_bic_evidence")
+    if bridge_available(latest_fit.get("posterior")) and evidence_baseline_current(
+        base
+    ):
+        latest_index = len(state.get("fit_results") or []) - 1
+        provisional = compare_evidence(
+            evidence_record(latest_fit, latest_index),
+            base,
+            margin=evidence_settings()["margin"],
+        )
+        out["provisional_evidence"] = provisional
+        out["contested"] = bool(bic_worse and provisional["verdict"] == "better")
+    return out
+
+
+def _evidence_revert_messages(cmp: dict) -> tuple:
+    """``(issue, hypothesis note)`` for a revert the evidence decided."""
+    delta, err = cmp["delta_log_evidence"], cmp["error"]
+    base_iter = cmp.get("baseline_iteration")
+    bic_said = cmp.get("bic_verdict")
+    if cmp.get("verdict") == "inconclusive":
+        issue = (
+            f"The posterior evidence cannot tell this model from the simpler one "
+            f"of iteration {base_iter} (Δln Z = {delta:+.2f} ± {err:.2f} nats, "
+            f"inside the {cmp['threshold']:.2f}-nat margin). Reverting to the "
+            f"simpler model by parsimony: the data do not rule the change out, "
+            f"they cannot resolve it at this noise level."
+        )
+        note = (
+            f"Evidence inconclusive (Δln Z = {delta:+.2f} ± {err:.2f} nats vs "
+            f"iteration {base_iter}); reverted to the simpler model by parsimony."
+        )
+    else:
+        issue = (
+            f"The posterior evidence fell by {-delta:.2f} ± {err:.2f} nats against "
+            f"iteration {base_iter}: the change is not supported by the data. "
+            f"Reverting to the better-supported model and trying a different "
+            f"approach."
+        )
+        if bic_said == "better":
+            issue += " (BIC alone would have kept it.)"
+        note = (
+            f"Evidence guardrail reverted it: Δln Z = {delta:+.2f} ± {err:.2f} "
+            f"nats vs iteration {base_iter}."
+        )
+    return issue, note
+
+
+def _contested_revert_messages(cmp: dict) -> tuple:
+    """``(issue suffix, hypothesis note)`` for a BIC revert the evidence contests."""
+    prov = cmp.get("provisional_evidence") or {}
+    delta, err = prov.get("delta_log_evidence", 0.0), prov.get("error", 0.0)
+    extra = (
+        f"The posterior evidence disagrees: it favours the change by "
+        f"{delta:.2f} ± {err:.2f} nats (provisional — at least one of the two "
+        f"DREAM draws did not pass the convergence check). BIC charges every "
+        f"parameter ½·ln n, which over-charges parameters the data constrain "
+        f"only weakly, such as a sub-resolution layer's. The change is recorded "
+        f"as inconclusive rather than ruled out; a longer DREAM run would settle "
+        f"it."
+    )
+    note = (
+        f"BIC guardrail reverted it, but the provisional posterior evidence "
+        f"favours it (Δln Z = {delta:+.2f} ± {err:.2f} nats); inconclusive."
+    )
+    return extra, note
+
+
 def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
     """
     Evaluate fit quality and suggest improvements using LLM.
@@ -522,6 +642,14 @@ def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
         n_params = 0
         n_layers = 0
         bic = None
+
+    # ========== Complexity Comparison ==========
+    # Settled before the LLM call so the evaluator is told which criterion will
+    # judge this fit and what it says (docs/evidence.md §5.3); the guardrail
+    # below acts on the same record.
+    comparison = _complexity_comparison(state, latest_fit, bic)
+    if comparison is not None:
+        latest_fit["model_comparison"] = comparison
 
     # ========== Boundary-Hit Detection ==========
     # Check if any fitted parameters are pinned at their range boundaries.
@@ -850,44 +978,68 @@ def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
                 f"and trying a different approach.",
             )
 
-        # ========== BIC Regression Guardrail ==========
-        # If χ² improved (or stayed similar) but BIC worsened, the
-        # added model complexity is not statistically justified.
-        # Revert to the best BIC model (the simpler one).
-        best_bic_val = state.get("best_bic")
-        best_bic_mdl = state.get("best_bic_model")
-        if bic_baseline_is_stale(state):
-            # Resumed across a change of BIC convention. The stored value is on
-            # a different scale, so a comparison would fire (or not) for
-            # arithmetic reasons rather than statistical ones.
-            logger.warning(
-                "[EVALUATION] Ignoring best_bic=%.1f — it predates the current "
-                "BIC convention (%s); this iteration re-establishes the baseline",
-                best_bic_val,
-                BIC_FORMULA,
-            )
-            best_bic_val = None
+        # ========== Complexity Guardrail: evidence when trusted, else BIC ==========
+        # When this fit and the evidence baseline both carry a trusted posterior
+        # evidence, `fitting` already compared them and the evidence decides
+        # (docs/evidence.md §5). Otherwise BIC decides, as it always has — but a
+        # revert the posterior evidence contests is recorded as inconclusive, not
+        # as a rejection. `bic_reverted` keeps its name: it means "the complexity
+        # guardrail reverted", whichever criterion made the call.
         bic_reverted = False
-        if (
-            bic is not None
-            and best_bic_val is not None
-            and best_bic_mdl
-            and bic > best_bic_val
-            and not chi2_reverted
-        ):
-            logger.warning(
-                f"[EVALUATION] BIC regressed ({bic:.1f} > best {best_bic_val:.1f}) "
-                f"\u2014 added complexity not justified, reverting to simpler model"
-            )
-            updates["current_model"] = copy.deepcopy(best_bic_mdl)
-            bic_reverted = True
-            analysis["issues"].insert(
-                0,
-                f"Added layer(s) lowered χ² but increased BIC "
-                f"({bic:.1f} vs best {best_bic_val:.1f}). The extra "
-                f"complexity is not statistically justified. Reverting to "
-                f"the simpler model and trying a different approach.",
-            )
+        revert_inconclusive = False
+        revert_note: Optional[str] = None
+        cmp = latest_fit.get("model_comparison") or {}
+        if cmp.get("criterion") == "evidence":
+            if cmp.get("revert") and not chi2_reverted:
+                updates["current_model"] = copy.deepcopy(state["best_evidence_model"])
+                bic_reverted = True
+                revert_inconclusive = cmp.get("verdict") == "inconclusive"
+                issue, revert_note = _evidence_revert_messages(cmp)
+                logger.warning(f"[EVALUATION] {issue}")
+                analysis["issues"].insert(0, issue)
+        else:
+            # If χ² improved (or stayed similar) but BIC worsened, the added
+            # model complexity is not statistically justified. Revert to the
+            # best BIC model (the simpler one).
+            best_bic_val = state.get("best_bic")
+            best_bic_mdl = state.get("best_bic_model")
+            if bic_baseline_is_stale(state):
+                # Resumed across a change of BIC convention. The stored value is
+                # on a different scale, so a comparison would fire (or not) for
+                # arithmetic reasons rather than statistical ones.
+                logger.warning(
+                    "[EVALUATION] Ignoring best_bic=%.1f — it predates the current "
+                    "BIC convention (%s); this iteration re-establishes the baseline",
+                    best_bic_val,
+                    BIC_FORMULA,
+                )
+                best_bic_val = None
+            if (
+                bic is not None
+                and best_bic_val is not None
+                and best_bic_mdl
+                and bic > best_bic_val
+                and not chi2_reverted
+            ):
+                logger.warning(
+                    f"[EVALUATION] BIC regressed ({bic:.1f} > best "
+                    f"{best_bic_val:.1f}) \u2014 added complexity not justified, "
+                    f"reverting to simpler model"
+                )
+                updates["current_model"] = copy.deepcopy(best_bic_mdl)
+                bic_reverted = True
+                issue = (
+                    f"Added layer(s) lowered χ² but increased BIC "
+                    f"({bic:.1f} vs best {best_bic_val:.1f}). The extra "
+                    f"complexity is not statistically justified. Reverting to "
+                    f"the simpler model and trying a different approach."
+                )
+                if cmp.get("contested"):
+                    revert_inconclusive = True
+                    extra, revert_note = _contested_revert_messages(cmp)
+                    issue = f"{issue} {extra}"
+                    logger.warning(f"[EVALUATION] {extra}")
+                analysis["issues"].insert(0, issue)
 
         # ========== Hypothesis status updates ==========
         # Mark the previously tried hypothesis (if any) as confirmed or
@@ -901,6 +1053,8 @@ def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
                 chi2=chi2,
                 best_chi2=best_chi2,
                 bic_reverted=bic_reverted,
+                revert_note=revert_note,
+                inconclusive=revert_inconclusive,
             )
 
         # ========== Hypothesis revision (gated) ==========
@@ -1014,6 +1168,8 @@ def _update_hypothesis_outcomes(
     best_chi2: float | None,
     bic_reverted: bool,
     accepted: bool = False,
+    revert_note: Optional[str] = None,
+    inconclusive: bool = False,
 ) -> list:
     """Update the status of a hypothesis that was tried in the previous turn.
 
@@ -1023,8 +1179,12 @@ def _update_hypothesis_outcomes(
     choosing *which* hypothesis to try next.
 
     * If a hypothesis was marked ``tried`` in the previous iteration and the
-      BIC guardrail just reverted the model, that hypothesis is marked
-      ``rejected``.
+      complexity guardrail (BIC, or the evidence when trusted) just reverted the
+      model, that hypothesis is marked ``rejected`` — unless *inconclusive*: the
+      evidence could not tell the change from the simpler model, or contested
+      BIC's verdict. Then it stays ``tried`` ("tried, inconclusive" in the
+      report), because the data did not rule the change out. *revert_note*
+      says which happened.
     * If χ² improved relative to the best-so-far, the hypothesis is marked
       ``confirmed``.
     * Otherwise the status is left as ``tried`` so the LLM can decide.
@@ -1045,10 +1205,11 @@ def _update_hypothesis_outcomes(
         if h.get("tried_in_iteration") != prev_iter:
             continue
         if bic_reverted:
-            h["status"] = "rejected"
-            h["notes"] = (
-                (h.get("notes", "") + " ") if h.get("notes") else ""
-            ) + "BIC guardrail reverted the structural change."
+            if not inconclusive:
+                h["status"] = "rejected"
+            h["notes"] = ((h.get("notes", "") + " ") if h.get("notes") else "") + (
+                revert_note or "BIC guardrail reverted the structural change."
+            )
         elif (accepted and best_chi2 is None) or (
             best_chi2 is not None and chi2 <= best_chi2 * 1.01
         ):
@@ -1401,6 +1562,8 @@ def analyze_fit_quality_with_llm(
         fit_history=fit_history,
         structural_hypotheses=structural_hypotheses,
         per_state_residual_analysis=per_state_residual_analysis,
+        posterior=fit_result.get("posterior"),
+        model_comparison=fit_result.get("model_comparison"),
     )
 
     response = llm.invoke([HumanMessage(content=prompt)])

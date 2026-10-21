@@ -33,6 +33,12 @@ Selection rule (deterministic — no LLM):
    don't pay for complexity that buys nothing — without depending on the stored
    ``bic``, which is computed on inconsistent bases between the fitting and
    evaluation nodes for multi-state runs.
+4. **Evidence, when every candidate has one.** If each fit in the preferred
+   tier carries a *trusted* posterior evidence (a converged DREAM draw,
+   ``docs/evidence.md``), rules 2–3 are replaced by the highest evidence with a
+   parsimony tie-break inside the evidence margin. The evidence already prices
+   each model's complexity from its own posterior, which is what rule 3
+   approximates. A pool where any fit lacks one is ranked by rules 2–3.
 
 ``best_model`` / ``best_chi2`` are deliberately **not** written here: they are
 the loop's own regression baseline, and a later ``aure resume`` compares
@@ -62,6 +68,7 @@ import os
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..state import Message, ReflectivityState
+from ..tools.posterior_tools import evidence_settings, evidence_usable
 from .evaluation import _count_free_params, _get_chi2_min
 
 logger = logging.getLogger(__name__)
@@ -427,6 +434,54 @@ def _free_params(definition: Any, fit: dict) -> int:
     return 0
 
 
+def _rank_by_evidence(pool: List[Tuple[int, dict]]) -> Optional[dict]:
+    """Rank a tier pool by posterior evidence, or None when that is not allowed.
+
+    Allowed only when there are at least two candidates and **every** one carries
+    a trusted evidence (``posterior_tools.evidence_usable``): an evidence cannot be
+    ranked against a χ². Boxes are priors, so all candidates are put on one common
+    prior: each parameter name is scored at the widest box any candidate gave it.
+    For a pair that shares the parameter this is exactly the guardrail's
+    adjustment (``prior_width_adjustment``). A parameter only one model has keeps
+    its own box, which is the Occam factor of that model's extra structure.
+
+    Returns ``{band, scores, margin, top_index}``: the candidates whose adjusted
+    ``ln Z`` is within ``max(EVIDENCE_MARGIN, 2σ)`` of the best, which the caller
+    breaks by parsimony exactly as it breaks the χ² band.
+    """
+    if len(pool) < 2 or not all(evidence_usable(fr.get("posterior")) for _, fr in pool):
+        return None
+    widest: Dict[str, float] = {}
+    for _, fr in pool:
+        for name, b in (fr.get("bounds") or {}).items():
+            if b and len(b) == 2:
+                w = float(b[1]) - float(b[0])
+                if w > 0 and math.isfinite(w):
+                    widest[name] = max(widest.get(name, 0.0), w)
+
+    scores: Dict[int, float] = {}
+    errors: Dict[int, float] = {}
+    for i, fr in pool:
+        post = fr["posterior"]
+        adjust = 0.0
+        for name, b in (fr.get("bounds") or {}).items():
+            if name in widest and b and len(b) == 2:
+                w = float(b[1]) - float(b[0])
+                if w > 0 and math.isfinite(w):
+                    adjust += math.log(w / widest[name])
+        scores[i] = float(post["log_evidence"]) + adjust
+        errors[i] = float(post.get("log_evidence_error") or 0.0)
+
+    margin = evidence_settings()["margin"]
+    top = max(scores, key=lambda i: scores[i])
+    band = []
+    for i, fr in pool:
+        threshold = max(margin, 2.0 * math.hypot(errors[i], errors[top]))
+        if scores[i] >= scores[top] - threshold:
+            band.append((i, fr))
+    return {"band": band, "scores": scores, "margin": margin, "top_index": top}
+
+
 def _select(
     state: ReflectivityState, scored: List[Tuple[int, dict]]
 ) -> Tuple[int, dict, Any, dict]:
@@ -493,7 +548,16 @@ def _select(
     ]
 
     best_chi2 = min(fr["chi_squared"] for _, fr in pool)
-    band = [(i, fr) for i, fr in pool if fr["chi_squared"] <= best_chi2 * (1.0 + tol)]
+    # Every candidate carries a trusted posterior evidence: rank on it. It
+    # already includes each model's Occam penalty, so it replaces both the χ²
+    # ranking and the χ² parsimony band (docs/evidence.md §5, §7.4).
+    evidence = _rank_by_evidence(pool)
+    if evidence is not None:
+        band = evidence["band"]
+    else:
+        band = [
+            (i, fr) for i, fr in pool if fr["chi_squared"] <= best_chi2 * (1.0 + tol)
+        ]
 
     resolved = [
         (
@@ -510,6 +574,22 @@ def _select(
         key=lambda t: (_free_params(t[2], t[1]), t[1].get("iteration", t[0])),
     )
     index, fit, definition = ranked[0]
+    if evidence is not None:
+        parsimony_tiebreak_flag = index != evidence["top_index"]
+        criterion = (
+            "highest posterior evidence (every candidate's DREAM draw trusted), "
+            "one common prior per parameter, parsimony within the evidence margin"
+        )
+    else:
+        parsimony_tiebreak_flag = fit["chi_squared"] > best_chi2
+        criterion = (
+            "lowest chi2 across every scored fit, parsimony tie-break — the "
+            "tier order was set aside because the preferred tier fitted the "
+            "data far worse"
+            if tier_override
+            else "lowest chi2 among profile-clean fits inside the acceptance "
+            "window, parsimony tie-break"
+        )
 
     # "Demoted" means a filter changed the answer, not merely that it matched: a
     # set-aside fit that would have lost on χ² anyway is not worth reporting as one.
@@ -522,18 +602,25 @@ def _select(
         fit,
         definition,
         {
-            "criterion": (
-                "lowest chi2 across every scored fit, parsimony tie-break — the "
-                "tier order was set aside because the preferred tier fitted the "
-                "data far worse"
-                if tier_override
-                else "lowest chi2 among profile-clean fits inside the acceptance "
-                "window, parsimony tie-break"
+            "criterion": criterion,
+            "evidence_ranked": evidence is not None,
+            **(
+                {
+                    # ln Z on the common prior (see _rank_by_evidence), so the
+                    # scores of different candidates compare directly.
+                    "evidence_score": evidence["scores"].get(index),
+                    "evidence_margin": evidence["margin"],
+                    "evidence_scores": {
+                        str(i): s for i, s in evidence["scores"].items()
+                    },
+                }
+                if evidence is not None
+                else {}
             ),
             "tier_chi2_override": tier_override,
             "tier_chi2_factor": factor,
             "tolerance": tol,
-            "parsimony_tiebreak": fit["chi_squared"] > best_chi2,
+            "parsimony_tiebreak": parsimony_tiebreak_flag,
             "lowest_chi2": best_chi2,
             "candidates_considered": len(scored),
             "candidates_in_band": len(band),
@@ -740,7 +827,19 @@ def _format_selection(sel: dict) -> str:
             f"(χ² = {_fmt_chi2(sel.get('last_iteration_chi2'))}) — the refinement "
             f"loop's final attempt was not its best."
         )
-    if sel.get("parsimony_tiebreak"):
+    if sel.get("evidence_ranked"):
+        lines.append(
+            "Ranked by posterior evidence: every candidate's DREAM draw passed the "
+            "convergence check, so each model's complexity was priced from its "
+            "own posterior rather than by BIC's flat ½·ln n per parameter."
+        )
+        if sel.get("parsimony_tiebreak"):
+            lines.append(
+                "Chosen over the highest-evidence fit because the two are within "
+                f"the {sel.get('evidence_margin', 1.0):g}-nat evidence margin and "
+                "this one has fewer free parameters."
+            )
+    elif sel.get("parsimony_tiebreak"):
         lines.append(
             f"Chosen over the lowest-χ² fit (χ² = {sel['lowest_chi2']:.4f}) "
             f"because it fits equally well within "

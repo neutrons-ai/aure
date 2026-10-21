@@ -131,6 +131,18 @@ high, its BIC looks too large, and the extra layer gets **rejected as
   from better starting points**, then re-compare BIC — not to conclude the
   layer isn't needed.
 
+BIC also over-charges a thin layer even at the right optimum. Its parameters
+are constrained only along the Δρ·t ridge, worth about 1 nat each, while BIC
+charges ½·ln n, which is 2.5 nats at n = 160. When the fit came from DREAM, the
+evaluation prompt shows the posterior evidence next to BIC:
+
+- If it says the provisional evidence **contests** a BIC revert, the data favour
+  the layer even though BIC rejected it. Treat the hypothesis as unresolved and
+  worth another, better-optimized attempt, not as ruled out.
+- If it lists the new layer's parameters as **barely constrained**, the data see
+  the layer's Δρ·t and not its individual ρ and t. Report the product, not the
+  pair.
+
 ## Escaping the trap: discrete SLD mode enumeration
 
 The reliable, cheap way to find the right basin for a thin layer is to **stop

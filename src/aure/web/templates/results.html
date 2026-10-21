@@ -13,6 +13,18 @@
   </div>
 </div>
 
+<!-- DREAM posterior check (docs/evidence.md). Hidden unless the displayed fit,
+     or the final DREAM polish of the selected answer, carries a posterior. -->
+<div class="row mb-3 d-none" id="posterior-row">
+  <div class="col">
+    <div class="alert mb-0" id="posterior-alert" role="status">
+      <div class="fw-semibold" id="posterior-title"></div>
+      <div class="small mt-1" id="posterior-detail"></div>
+      <ul class="small mt-1 mb-0" id="posterior-concerns"></ul>
+    </div>
+  </div>
+</div>
+
 <!-- Data loading report -->
 <div class="row mb-3" id="intake-report-row">
   <div class="col">
@@ -255,6 +267,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   renderIntakeReport(intakeData);
   renderProfileVeto(paramData.profile_veto);
+  renderPosterior(paramData.posterior);
 
   _reflData = reflData;
   _sldData = sldData;
@@ -654,6 +667,7 @@ async function onIterationChange(value) {
     _removeUserTraces("sld-chart");
     renderParams(paramData);
     renderProfileVeto(paramData.profile_veto);
+    renderPosterior(paramData.posterior);
     _positionDataAtFittedOffset();
   } catch (err) {
     console.warn("Failed to fetch iteration parameters:", err);
@@ -696,6 +710,57 @@ function renderProfileVeto(veto) {
     detail.textContent =
       `Iteration ${which} fitted better but failed the SLD-profile check, so it is not reported. ` +
       "That is why the reported χ² is not the lowest in the run.";
+  }
+  row.classList.remove("d-none");
+}
+
+/* ------------------------------------------------------------------ */
+/*  DREAM posterior check                                             */
+/* ------------------------------------------------------------------ */
+function renderPosterior(post) {
+  const row = document.getElementById("posterior-row");
+  if (!row) return;
+  if (!post) {
+    row.classList.add("d-none");
+    return;
+  }
+  const alert = document.getElementById("posterior-alert");
+  const title = document.getElementById("posterior-title");
+  const detail = document.getElementById("posterior-detail");
+  const list = document.getElementById("posterior-concerns");
+  const fmt = (v, d = 2) => (typeof v === "number" && isFinite(v) ? v.toFixed(d) : "n/a");
+  const where = post.source === "final_fit" ? "final DREAM fit" : "DREAM fit";
+
+  alert.classList.remove("alert-info", "alert-warning");
+  alert.classList.add(post.fit_trusted ? "alert-info" : "alert-warning");
+  title.textContent = post.fit_trusted
+    ? `Posterior check (${where}): trusted`
+    : `Posterior check (${where}): the uncertainties and evidence are provisional`;
+
+  const rhat = post.rhat_max_is_infinite ? "∞" : fmt(post.rhat_max);
+  const parts = [
+    post.converged
+      ? "Chains converged."
+      : `Chains did not converge (split-R̂ max ${rhat}, limit ${fmt(post.rhat_limit, 1)}).`,
+  ];
+  if (post.best_central === false) {
+    parts.push(`The best point is not where the posterior mass is (D²/k = ${fmt(post.best_mahalanobis2_per_param)}).`);
+  }
+  if (typeof post.log_evidence === "number") {
+    let ev = `ln Z = ${fmt(post.log_evidence)}`;
+    if (typeof post.log_evidence_error === "number") ev += ` ± ${fmt(post.log_evidence_error)}`;
+    ev += ` nats (${post.log_evidence_method}, ${post.evidence_trusted ? "trusted" : "provisional"})`;
+    if (typeof post.bic_error === "number") {
+      ev += `; BIC ${post.bic_error > 0 ? "over" : "under"}states it by ${fmt(Math.abs(post.bic_error), 1)} nats`;
+    }
+    parts.push(ev + ".");
+  }
+  detail.textContent = parts.join(" ");
+  list.innerHTML = "";
+  for (const c of post.concerns || []) {
+    const li = document.createElement("li");
+    li.textContent = c;
+    list.appendChild(li);
   }
   row.classList.remove("d-none");
 }
