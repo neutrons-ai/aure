@@ -286,6 +286,20 @@ of convention would otherwise compare two values on entirely different scales;
 stale) and the guardrails discard the baseline, logging it, so the next fit
 re-establishes it. Bump `BIC_FORMULA` whenever the formula changes.
 
+### 3.5 How far to trust it
+
+BIC charges every parameter the same `½·ln n` and uses only the best point. A
+DREAM draw measures what that assumes: each parameter's Occam factor, the
+correlation penalty, truncation by the box, whether the best point represents
+the posterior, and whether the sampler converged. From the same draw it also
+gives the Bayesian evidence by bridge sampling. Every DREAM fit carries this as
+`FitResult["posterior"]`.
+
+On the synthetic validation set BIC overstated the log-evidence by 4–19 nats.
+It also *rejected a real sub-resolution layer* that the evidence favours by 2.7
+nats. [evidence.md](evidence.md) has the derivation, the trust rules, and that
+validation against nested sampling.
+
 ## 4. Regression guardrails
 
 Both run in `evaluation`, **independently of the LLM's opinion**.
@@ -307,6 +321,22 @@ BIC  >  best_BIC   and not χ²-reverted   ⟹   restore best_bic_model, mark re
 
 **No slack** — deliberately tighter than the χ² guardrail, because it also marks
 the attempted hypothesis `rejected` and so does more damage when it misfires.
+
+**The posterior evidence takes over when it can, and contests when it cannot**
+([evidence.md §5](evidence.md#5-comparing-two-models-with-the-evidence)).
+
+- When the latest fit and the evidence baseline (`best_evidence`) both carry a
+  *trusted* evidence (a converged DREAM draw), the evidence decides instead of
+  BIC. It reverts when $\Delta\ln Z<-m$, and also inside the band
+  $|\Delta\ln Z|\le m$ when the new model is more complex. The margin is
+  $m=\max(\texttt{EVIDENCE\_MARGIN},2\sigma_\Delta)$.
+- Otherwise BIC decides, as above. If both fits carry a *provisional* bridge
+  evidence that clearly favours the change BIC is reverting, the revert still
+  happens, but the hypothesis stays `tried` ("inconclusive") with a note,
+  instead of `rejected`.
+
+The record of which criterion decided, and what BIC alone would have said, is
+`FitResult["model_comparison"]`.
 
 ### 4.3 Which fits may become the baseline
 
@@ -620,6 +650,13 @@ problem-derived `_n_free_params` and falls back to `_count_free_params` (§3.3).
 The model definition is resolved *before* ranking, so parsimony is counted on
 exactly the model that will be promoted.
 
+**When every candidate in the tier carries a trusted posterior evidence**, the
+χ² band is replaced. The winner is the highest $\ln Z$, on one common prior in
+which each parameter name gets the widest box any candidate gave it. Parsimony
+breaks ties within the evidence margin
+([evidence.md §7.4](evidence.md#74-finalize)). A tier where any candidate lacks
+one is ranked by χ² as above.
+
 `final_fit`'s uncertainty polish is skipped for a tier-1 or tier-2 selection.
 
 ---
@@ -640,7 +677,11 @@ exactly the model that will be promoted.
 | `THIN_LAYER_MODE_SEEDS` | `3` | `fitting` | SLD seeds per thin layer (§9) |
 | `ROUGHNESS_MAX_OUTER` | topmost layer's `roughness_max`, else `30.0` | `model_builder` | Upper bound on the outermost interface roughness |
 | `FIT_METHOD` | `dream` | `fitting` | refl1d optimizer (`lm` / `de` / `dream`) |
-| `FIT_STEPS` | `1000` | `fitting` | Optimizer steps |
+| `FIT_STEPS` | `1000` | `fitting` | Optimizer steps (for `dream`: the retained draw) |
+| `EVIDENCE_PROPOSALS` | `2000` | `fitting` | Bridge-sampling proposal draws, one likelihood evaluation each; `0` disables the evidence ([evidence.md](evidence.md) §7.7) |
+| `EVIDENCE_RHAT_MAX` | `1.2` | `fitting` | Split-R̂ ceiling for a converged DREAM draw |
+| `EVIDENCE_MAX_ERROR` | `0.5` | `fitting` | Largest bridge error (nats) at which an evidence may decide |
+| `EVIDENCE_MARGIN` | `1.0` | `fitting`, `evaluation`, `finalize` | Smallest Δln Z (nats) that decides a comparison |
 | — | `0.01` | `evaluation` | Boundary-hit value tolerance (§8) |
 | — | `2.0` | `evaluation` | Boundary-hit σ multiplier (§8) |
 | — | `0.75` | `evaluation` | Boundary-hit max interval width fraction (§8) |

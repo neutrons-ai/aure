@@ -65,6 +65,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from ..state import Message, ReflectivityState
+from ..tools.posterior_tools import locate_point, posterior_digest
 from .evaluation import _get_chi2_max
 from .finalize import (
     _apply_fitted_values,
@@ -352,6 +353,25 @@ def final_fit_node(state: ReflectivityState) -> Dict[str, Any]:
         "selected_iteration": sel_iter,
     }
 
+    # The posterior check of the reported answer (docs/evidence.md §4): whether
+    # the chains converged, whether the best point represents the posterior, and
+    # where the exploration optimum sits in it. That last one is the direct test
+    # of whether the loop's χ²/BIC comparisons were made at a local minimum.
+    post = result.get("posterior")
+    if isinstance(post, dict):
+        final_fit_record["posterior"] = posterior_digest(post)
+        explored = _selected_exploration_fit(state)
+        if explored is not None:
+            placed = locate_point(
+                post, explored.get("parameters") or {}, explored.get("_chi2_total")
+            )
+            if placed is not None:
+                placed["superseded"] = bool(
+                    (placed.get("share_of_draws_with_lower_chi2") or 0.0) > 0.5
+                    or (placed.get("mahalanobis2_per_param") or 0.0) > 1.0
+                )
+                final_fit_record["exploration_in_posterior"] = placed
+
     if adopted:
         # Same structure finalize chose, refined by MCMC: write its values back
         # and report them. problem.json follows via final_fit['export_dir'].
@@ -394,6 +414,81 @@ def final_fit_node(state: ReflectivityState) -> Dict[str, Any]:
     return updates
 
 
+def _selected_exploration_fit(state: ReflectivityState) -> Optional[dict]:
+    """The finalize-selected exploration ``FitResult`` (before the polish is appended)."""
+    fits = state.get("fit_results") or []
+    selection = state.get("final_selection") or {}
+    index = selection.get("index") if selection.get("selected") else None
+    if isinstance(index, int) and 0 <= index < len(fits):
+        return fits[index]
+    return fits[-1] if fits else None
+
+
+def _format_posterior_check(record: dict) -> str:
+    """The final fit's posterior verdict, in one or two sentences ('' if none)."""
+    post = record.get("posterior")
+    if not isinstance(post, dict):
+        return ""
+    bits = []
+    if post.get("converged"):
+        bits.append("the DREAM chains converged")
+    else:
+        rhat = (
+            "∞" if post.get("rhat_max_is_infinite") else _fmt_opt(post.get("rhat_max"))
+        )
+        bits.append(
+            f"the DREAM chains did not converge (split-R̂ max {rhat}, limit "
+            f"{_fmt_opt(post.get('rhat_limit'), 'g')}), so the uncertainties and "
+            f"the evidence are provisional"
+        )
+    if post.get("best_central") is False:
+        bits.append(
+            "the best point is not representative of the posterior (D²/k = "
+            f"{_fmt_opt(post.get('best_mahalanobis2_per_param'))})"
+        )
+    lz = post.get("log_evidence")
+    if lz is not None:
+        err = post.get("log_evidence_error")
+        bits.append(
+            f"ln Z = {lz:.2f}"
+            + (f" ± {err:.2f}" if err is not None else "")
+            + f" nats ({post.get('log_evidence_method')})"
+            + (
+                f", which BIC {'over' if post['bic_error'] > 0 else 'under'}states "
+                f"by {abs(post['bic_error']):.1f} nats"
+                if post.get("bic_error") is not None
+                else ""
+            )
+        )
+    text = "**Posterior check:** " + "; ".join(bits) + "."
+    placed = record.get("exploration_in_posterior")
+    if isinstance(placed, dict):
+        share = placed.get("share_of_draws_with_lower_chi2")
+        d2k = placed.get("mahalanobis2_per_param")
+        if placed.get("superseded"):
+            text += (
+                " The exploration optimum is **not** at the minimum of this "
+                f"structure: {_pct(share)} of the posterior draws fit better and it "
+                f"sits at D²/k = {_fmt_opt(d2k)} from the posterior mass, so the "
+                "refinement loop's χ²/BIC comparisons with this structure were made "
+                "at a local minimum."
+            )
+        else:
+            text += (
+                f" The exploration optimum is consistent with the posterior "
+                f"(D²/k = {_fmt_opt(d2k)}; {_pct(share)} of the draws fit better)."
+            )
+    return text
+
+
+def _fmt_opt(value: Any, spec: str = ".2f") -> str:
+    return format(value, spec) if _is_finite_number(value) else "n/a"
+
+
+def _pct(value: Any) -> str:
+    return f"{100 * value:.0f}%" if _is_finite_number(value) else "an unknown share"
+
+
 def _fmt_chi2(value: Any) -> str:
     """Format a χ² that may be None, inf or nan."""
     if _is_finite_number(value):
@@ -406,16 +501,19 @@ def _fmt_chi2(value: Any) -> str:
 def _format_final_fit(record: dict) -> str:
     """Human-readable summary of the final-fit outcome (chat/log panel)."""
     method = str(record.get("method", "")).upper()
+    check = _format_posterior_check(record)
+    tail = f"\n\n{check}" if check else ""
     if record.get("adopted"):
         return (
             f"**Final uncertainty fit ({method}):** adopted. "
             f"χ² {_fmt_chi2(record.get('chi2_before'))} → "
             f"{_fmt_chi2(record.get('chi2_after'))}, "
             f"{record.get('n_uncertainties', 0)} parameter uncertainties from the "
-            f"{method} chain now reported."
+            f"{method} chain now reported." + tail
         )
     return (
         f"**Final uncertainty fit ({method}):** not adopted — "
         f"χ² {_fmt_chi2(record.get('chi2_after'))} did not improve on the selected "
         f"χ² {_fmt_chi2(record.get('chi2_before'))}. Reporting the selected model."
+        + tail
     )

@@ -18,6 +18,15 @@ from pathlib import Path
 import numpy as np
 
 from ..state import ReflectivityState, FitResult, PerFileFitResult, Message
+from ..tools.posterior_tools import (
+    bridge_available,
+    compare_evidence,
+    evidence_baseline_current,
+    evidence_record,
+    evidence_settings,
+    evidence_usable,
+    summarize_dream_fit,
+)
 from .model_builder import (
     build_problem,
     build_multi_problem,
@@ -157,18 +166,45 @@ def fitting_node(state: ReflectivityState) -> Dict[str, Any]:
                 # Resumed across a change of BIC convention — the stored value is
                 # on a different scale, so this fit re-establishes the baseline.
                 best_bic = None
-            if _wins_baseline(
-                result["chi_squared"],
-                state.get("best_bic_chi2"),
-                state,
-                candidate_score=bic,
-                incumbent_score=best_bic,
-            ):
+            fit_index = len(state.get("fit_results") or [])
+            # When this fit and the evidence baseline are both trusted, the
+            # evidence decides the pair (docs/evidence.md §5.3) — and while the
+            # BIC baseline is that same fit, it follows the same verdict, so a
+            # later BIC-only comparison is never made against a model the
+            # evidence already beat.
+            comparison = _evidence_comparison(result, state, fit_index)
+            if comparison is not None and _baselines_aligned(state):
+                bic_wins = _wins_baseline(
+                    result["chi_squared"],
+                    state.get("best_bic_chi2"),
+                    state,
+                    prefer=comparison["becomes_baseline"],
+                )
+            else:
+                bic_wins = _wins_baseline(
+                    result["chi_squared"],
+                    state.get("best_bic_chi2"),
+                    state,
+                    candidate_score=bic,
+                    incumbent_score=best_bic,
+                )
+            if bic_wins:
                 updates["best_bic"] = bic
                 updates["best_bic_model"] = copy.deepcopy(model)
                 updates["best_bic_chi2"] = result["chi_squared"]
                 updates["bic_formula"] = BIC_FORMULA
+                # Kept alongside so the BIC guardrail can see when a revert to
+                # this baseline is contested by the posterior evidence.
+                updates["best_bic_evidence"] = (
+                    evidence_record(result, fit_index)
+                    if bridge_available(result.get("posterior"))
+                    else None
+                )
                 logger.info(f"[FITTING] New best BIC = {bic:.1f}")
+
+            _update_evidence_baseline(
+                result, state, model, fit_index, updates, comparison
+            )
 
         # Format message
         updates["messages"] = [
@@ -195,6 +231,7 @@ def _wins_baseline(
     *,
     candidate_score: Optional[float] = None,
     incumbent_score: Optional[float] = None,
+    prefer: Optional[bool] = None,
 ) -> bool:
     """Whether a fit should become the refinement loop's regression baseline.
 
@@ -213,16 +250,19 @@ def _wins_baseline(
 
     *candidate_score* / *incumbent_score* rank by something other than χ² (BIC);
     the floor test always reads χ², since that is what the floor is about.
+    *prefer* replaces the score comparison with a verdict reached elsewhere (the
+    evidence rule, which has a parsimony band a single score cannot express); the
+    floor precedence still applies to it.
     """
     floor = _get_chi2_min(state)
     cand_sub = floor > 0 and candidate_chi2 < floor
     inc_sub = floor > 0 and incumbent_chi2 is not None and incumbent_chi2 < floor
 
-    if candidate_score is None:
-        candidate_score, incumbent_score = candidate_chi2, incumbent_chi2
-
-    if incumbent_score is None:
-        return True
+    if prefer is None:
+        if candidate_score is None:
+            candidate_score, incumbent_score = candidate_chi2, incumbent_chi2
+        if incumbent_score is None:
+            return True
     # Trustworthy beats untrustworthy regardless of score; the reverse never holds.
     if inc_sub and not cand_sub:
         logger.info(
@@ -236,7 +276,99 @@ def _wins_baseline(
         return True
     if cand_sub and not inc_sub:
         return False
+    if prefer is not None:
+        return bool(prefer)
     return candidate_score < incumbent_score
+
+
+def _evidence_comparison(
+    result: FitResult, state: ReflectivityState, fit_index: int
+) -> Optional[dict]:
+    """Compare a trusted fit with the evidence baseline, or None (docs/evidence.md §5).
+
+    None unless the fit and a current evidence baseline both carry a *trusted*
+    evidence. Otherwise the comparison is recorded on the fit as
+    ``model_comparison``: it is exactly the pair the evaluation guardrail judges,
+    so that node acts on it instead of recomputing.
+    """
+    if not evidence_usable(result.get("posterior")):
+        return None
+    incumbent = state.get("best_evidence")
+    if not (evidence_baseline_current(incumbent) and state.get("best_evidence_model")):
+        return None
+    comparison = compare_evidence(
+        evidence_record(result, fit_index),
+        incumbent,
+        margin=evidence_settings()["margin"],
+    )
+    result["model_comparison"] = comparison  # type: ignore[typeddict-unknown-key]
+    logger.info(
+        "[FITTING] Evidence vs iteration %s: Δln Z = %+.2f ± %.2f nats → %s",
+        incumbent.get("iteration"),
+        comparison["delta_log_evidence"],
+        comparison["error"],
+        comparison["verdict"],
+    )
+    return comparison
+
+
+def _baselines_aligned(state: ReflectivityState) -> bool:
+    """Whether the BIC baseline and the evidence baseline are the same fit.
+
+    Always true when every fit so far carried a trusted evidence. In a run with
+    mixed trust they can differ, and then BIC keeps its own rule for its own
+    baseline.
+    """
+    if bic_baseline_is_stale(state) or state.get("best_bic") is None:
+        return False
+    ev = state.get("best_evidence") or {}
+    bic_ev = state.get("best_bic_evidence") or {}
+    return ev.get("fit_index") is not None and ev.get("fit_index") == bic_ev.get(
+        "fit_index"
+    )
+
+
+def _update_evidence_baseline(
+    result: FitResult,
+    state: ReflectivityState,
+    model: dict,
+    fit_index: int,
+    updates: Dict[str, Any],
+    comparison: Optional[dict] = None,
+) -> None:
+    """Maintain the evidence regression baseline (docs/evidence.md §5.2).
+
+    Only a fit with a *trusted* evidence takes part. With no incumbent it takes
+    the baseline; otherwise *comparison* (from :func:`_evidence_comparison`)
+    decides, through the same acceptance-floor precedence as every baseline.
+    ``becomes_baseline`` and the guardrail's ``revert`` are complements, so
+    ``fitting`` and ``evaluation`` cannot disagree about a pair.
+    """
+    if not evidence_usable(result.get("posterior")):
+        return
+    incumbent = state.get("best_evidence")
+    if not (evidence_baseline_current(incumbent) and state.get("best_evidence_model")):
+        incumbent = None
+    if incumbent is not None and comparison is None:
+        comparison = _evidence_comparison(result, state, fit_index)
+
+    if incumbent is None or comparison is None:
+        wins = True
+    else:
+        wins = _wins_baseline(
+            result["chi_squared"],
+            incumbent.get("chi_squared"),
+            state,
+            prefer=comparison["becomes_baseline"],
+        )
+    if wins:
+        updates["best_evidence"] = evidence_record(result, fit_index)
+        updates["best_evidence_model"] = copy.deepcopy(model)
+        logger.info(
+            "[FITTING] New evidence baseline: ln Z = %.2f ± %.2f",
+            updates["best_evidence"]["log_evidence"],
+            updates["best_evidence"]["log_evidence_error"],
+        )
 
 
 def run_fit_for_model(
@@ -444,13 +576,14 @@ def run_refl1d_fit(
     result = _run_bumps_fit(problem, fit_options, export_dir, model_name)
 
     # Extract results
-    return _extract_bumps_results(
+    fr = _extract_bumps_results(
         problem=problem,
         fit_result=result,
         method=method,
         iteration=iteration,
         export_dir=export_dir,
     )
+    return _attach_posterior(fr, problem, result, method)
 
 
 def run_multi_refl1d_fit(
@@ -495,7 +628,7 @@ def run_multi_refl1d_fit(
     fit_options = _build_fit_options(method, steps, burn)
     result = _run_bumps_fit(problem, fit_options, export_dir, model_name)
 
-    return _extract_multi_bumps_results(
+    fr = _extract_multi_bumps_results(
         problem=problem,
         experiments=experiments,
         data_files=sorted_data_files,
@@ -504,6 +637,7 @@ def run_multi_refl1d_fit(
         iteration=iteration,
         export_dir=export_dir,
     )
+    return _attach_posterior(fr, problem, result, method)
 
 
 def run_states_refl1d_fit(
@@ -540,7 +674,7 @@ def run_states_refl1d_fit(
     fit_options = _build_fit_options(method, steps, burn)
     result = _run_bumps_fit(problem, fit_options, export_dir, model_name)
 
-    return _extract_states_bumps_results(
+    fr = _extract_states_bumps_results(
         problem=problem,
         experiments_by_state=experiments_by_state,
         sorted_files_by_state=sorted_files_by_state,
@@ -549,6 +683,61 @@ def run_states_refl1d_fit(
         iteration=iteration,
         export_dir=export_dir,
     )
+    return _attach_posterior(fr, problem, result, method)
+
+
+def _attach_posterior(fr: FitResult, problem, fit_result, method: str) -> FitResult:
+    """Stamp a DREAM fit's posterior summary onto its FitResult.
+
+    One call site per fit path, after extraction, so every DREAM fit — the
+    exploration loop's and ``final_fit``'s polish alike — carries the same
+    ``posterior`` block (docs/evidence.md §7). Measurement only: a failure is
+    logged and the fit is returned without it, never failed.
+    """
+    if method != "dream":
+        return fr
+    settings = evidence_settings()
+    try:
+        post = summarize_dream_fit(
+            problem,
+            fit_result,
+            n_proposal=settings["n_proposal"],
+            rhat_max=settings["rhat_max"],
+            max_error=settings["max_error"],
+        )
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(f"[FITTING] Posterior summary failed: {e}")
+        return fr
+    if post:
+        fr["posterior"] = post  # type: ignore[typeddict-unknown-key]
+        _log_posterior(post)
+    return fr
+
+
+def _log_posterior(post: dict) -> None:
+    draw = post.get("draw") or {}
+    lz, err = post.get("log_evidence"), post.get("log_evidence_error")
+    lz_str = (
+        f"ln Z = {lz:.2f}" + (f" ± {err:.2f}" if err is not None else "")
+        if lz is not None
+        else "ln Z unavailable"
+    )
+    rhat = draw.get("rhat_max")
+    logger.info(
+        "[FITTING] Posterior: %s (%s), split-R̂ max %s, %s/%s distinct draws, "
+        "fit_trusted=%s, evidence_trusted=%s",
+        lz_str,
+        post.get("log_evidence_method"),
+        f"{rhat:.2f}"
+        if rhat is not None
+        else ("∞" if draw.get("rhat_max_is_infinite") else "n/a"),
+        draw.get("n_unique"),
+        draw.get("n_draws"),
+        post.get("fit_trusted"),
+        post.get("evidence_trusted"),
+    )
+    for concern in post.get("concerns") or []:
+        logger.info(f"[FITTING]   posterior: {concern}")
 
 
 def _sanitize_model_name(value) -> str:

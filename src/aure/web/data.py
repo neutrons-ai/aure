@@ -516,7 +516,31 @@ class RunData:
             "best_iteration": best_idx,
             "parameters": rows,
             "profile_veto": self._profile_veto(fit_results, idx, selection),
+            "posterior": self._posterior(state, fit_results, idx, selection),
         }
+
+    @staticmethod
+    def _posterior(
+        state: dict, fit_results: list, idx: int, selection: dict
+    ) -> Optional[dict]:
+        """The DREAM posterior check for the iteration being displayed.
+
+        A fit's own summary when it has one (a ``FIT_METHOD=dream`` iteration).
+        When the displayed fit is the run's selected answer and the final DREAM
+        polish ran, that polish characterizes it, so its summary is shown —
+        the same resolution the CLI report uses (``posterior_for_report``).
+        """
+        from ..tools.posterior_tools import posterior_digest, posterior_for_report
+
+        displayed = fit_results[idx] if 0 <= idx < len(fit_results) else {}
+        own = displayed.get("posterior")
+        if isinstance(own, dict):
+            return {"source": "displayed", **posterior_digest(own)}
+        if selection.get("selected") and selection.get("index") == idx:
+            post, source = posterior_for_report(state)
+            if source == "final_fit":
+                return {"source": source, **posterior_digest(post)}
+        return None
 
     @staticmethod
     def _profile_veto(fit_results: list, idx: int, selection: dict) -> dict:

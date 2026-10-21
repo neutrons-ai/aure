@@ -79,6 +79,12 @@ Finalize makes the choice explicit and auditable:
   of the lowest χ², prefer the fewest free parameters, then the earliest
   iteration. (BIC's idea without depending on the stored `bic`.)
 
+  When **every** candidate in the preferred tier carries a *trusted* posterior
+  evidence (a converged DREAM draw), the highest evidence wins instead. All
+  candidates are put on one common prior, and parsimony breaks ties within the
+  evidence margin. `final_selection` records `evidence_ranked`, the scores and
+  the margin ([evidence.md §7.4](evidence.md#74-finalize)).
+
   The veto exclusion exists because the excursion is often *what buys* the low
   χ², so the vetoed iteration is routinely the run's best-scoring one: ranking on
   χ² alone would report exactly the model `evaluation` refused to accept. A
@@ -188,6 +194,18 @@ the parsimony selection:
 **Never fatal.** A fit failure is caught and recorded (`ran=False`); the run
 still reports the finalize-selected model.
 
+**The posterior check of the answer.** Whether or not it is adopted, the polish
+is the run's longest DREAM chain on the reported structure, so its posterior
+summary is what the report shows. `final_fit.posterior` records whether the
+chains converged, whether the best point represents the posterior, the evidence,
+and BIC's error ([evidence.md §4](evidence.md#4-can-the-fit-the-bic-and-the-evidence-be-trusted)).
+
+`final_fit.exploration_in_posterior` places the exploration optimum in that
+posterior. `superseded` is True when more than half of the DREAM draws fit
+better or $D^2/k>1$. Then the exploration fit was not at the minimum of its own
+structure, and the loop's χ²/BIC comparisons with it were made at a local
+minimum. The final-fit message says so.
+
 **Uncertainties live in the `FitResult`** (`result['uncertainties']`) and the
 refl1d `-err.json` export, **not** in the ModelDefinition — which has no field
 for them, matching how a plain `FIT_METHOD=dream` run already reports them.
@@ -267,6 +285,7 @@ for them, matching how a plain `FIT_METHOD=dream` run already reports them.
 | `FIT_BURN_FINAL` | — | = steps | Final-polish burn-in |
 | `FINAL_FIT_CHI2_MAX` | — | = `CHI2_MAX` | Skip the polish when the selected χ² exceeds this |
 | `FINAL_SELECTION_TOL` | — | `0.02` | χ² band for the parsimony tie-break and the adopt-vs-keep decision |
+| `EVIDENCE_MARGIN` | — | `1.0` | Evidence band, in nats, for the parsimony tie-break when every candidate has a trusted evidence; the other `EVIDENCE_*` settings are in [evidence.md §7.7](evidence.md#77-configuration) |
 
 `chi2_max` / `chi2_min` and the four final-fit names are all setup-YAML keys,
 applied for one run as env overrides by `analyze`, `prepare` and `batch`.

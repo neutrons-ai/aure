@@ -382,9 +382,7 @@ def formats(data_files: tuple, output_json: bool):
                     "instruments": [
                         {
                             "name": i.name,
-                            "authoritative": list(
-                                instruments.authoritative_fields(i)
-                            ),
+                            "authoritative": list(instruments.authoritative_fields(i)),
                             "format_version": instruments.format_version(i),
                             "lifecycle": instruments.lifecycle(i),
                             "lifecycle_note": instruments.lifecycle_note(i),
@@ -410,8 +408,12 @@ def formats(data_files: tuple, output_json: bool):
         # A lifecycle is a claim about now, so it is shown rather than folded
         # into the name — the name is what lands in a checkpoint and has to
         # keep meaning the same thing.
-        tag = "" if life == instruments.CURRENT else click.style(
-            f"  [{life}]", fg="yellow" if life != instruments.LEGACY else None
+        tag = (
+            ""
+            if life == instruments.CURRENT
+            else click.style(
+                f"  [{life}]", fg="yellow" if life != instruments.LEGACY else None
+            )
         )
         click.echo(f"    {i}. {inst.name}{tag}")
         note = instruments.lifecycle_note(inst)
@@ -425,12 +427,10 @@ def formats(data_files: tuple, output_json: bool):
             click.echo(f"         also answers to: {', '.join(also)}")
     click.echo()
     click.echo(
-        "    Consulted in this order; the first to claim a file wins. A file "
-        "nothing"
+        "    Consulted in this order; the first to claim a file wins. A file nothing"
     )
     click.echo(
-        "    claims is read with default conventions (dQ as FWHM, no incident "
-        "angle)."
+        "    claims is read with default conventions (dQ as FWHM, no incident angle)."
     )
     click.echo(
         "    Add your own: docs/instruments.md. Force one: AURE_INSTRUMENT=<name>."
@@ -891,7 +891,133 @@ def _selection_payload(result: dict) -> dict:
         "demoted_for_profile_artifact": bool(
             selection.get("demoted_for_profile_artifact")
         ),
+        "evidence_ranked": bool(selection.get("evidence_ranked")),
+        "posterior": _posterior_payload(result),
     }
+
+
+def _posterior_payload(result: dict) -> Optional[dict]:
+    """The posterior check of the reported answer, for machine consumers.
+
+    None when no fit of the run carries a DREAM posterior. ``source`` says which
+    fit it describes: the final DREAM polish, or the selected fit itself.
+    """
+    from .tools.posterior_tools import posterior_digest, posterior_for_report
+
+    post, source = posterior_for_report(result)
+    digest = posterior_digest(post)
+    if digest is None:
+        return None
+    placed = (result.get("final_fit") or {}).get("exploration_in_posterior")
+    return {
+        "source": source,
+        **digest,
+        "exploration_in_posterior": placed if source == "final_fit" else None,
+    }
+
+
+def _echo_posterior_check(result: dict, *, indent: str, details: bool = True) -> None:
+    """Print the posterior check of the reported answer, or nothing without one.
+
+    ``details`` (the analyze report) prints the evidence and every concern;
+    ``aure batch`` gets the verdict line only. See docs/evidence.md.
+    """
+    payload = _posterior_payload(result)
+    if payload is None:
+        return
+    trusted = bool(payload.get("fit_trusted"))
+    where = "final DREAM fit" if payload["source"] == "final_fit" else "DREAM fit"
+    if payload.get("converged"):
+        chains = "converged"
+    else:
+        rhat = (
+            "∞"
+            if payload.get("rhat_max_is_infinite")
+            else _fmt_num(payload.get("rhat_max"))
+        )
+        chains = (
+            f"did not converge — split-R̂ max {rhat} "
+            f"(limit {_fmt_num(payload.get('rhat_limit'), 'g')})"
+        )
+    lz = payload.get("log_evidence")
+    if lz is not None:
+        err = payload.get("log_evidence_error")
+        status = "trusted" if payload.get("evidence_trusted") else "provisional"
+        evidence = (
+            f"ln Z = {lz:.2f}"
+            + (f" ± {err:.2f}" if err is not None else "")
+            + f" nats ({payload.get('log_evidence_method')}, {status})"
+        )
+    else:
+        evidence = "not available"
+
+    if not details:
+        verdict = "trusted" if trusted else "not trusted"
+        click.echo(
+            click.style(
+                f"{indent}Posterior ({where}): {verdict}; chains {chains}; {evidence}",
+                fg=None if trusted else "yellow",
+            )
+        )
+        return
+
+    click.echo(click.style(f"{indent}Posterior Check ({where})", fg="cyan", bold=True))
+    click.echo(
+        f"{indent}  Chains: {chains}; {payload.get('n_unique')} distinct of "
+        f"{payload.get('n_draws')} draws"
+    )
+    if payload.get("best_central") is not None:
+        d2k = _fmt_num(payload.get("best_mahalanobis2_per_param"))
+        click.echo(
+            f"{indent}  Best fit vs posterior: "
+            + (
+                f"central (D²/k = {d2k})"
+                if payload.get("best_central")
+                else f"NOT where the posterior mass is (D²/k = {d2k})"
+            )
+        )
+    if payload.get("p_d") is not None and payload.get("k"):
+        click.echo(
+            f"{indent}  Constrained parameters: p_D ≈ {payload['p_d']:.1f} of "
+            f"{payload['k']}"
+        )
+    line = f"{indent}  Evidence: {evidence}"
+    if (
+        payload.get("bic_error") is not None
+        and payload.get("log_evidence_bic") is not None
+    ):
+        line += (
+            f"; BIC implies {payload['log_evidence_bic']:.2f} "
+            f"({'over' if payload['bic_error'] > 0 else 'under'}states it by "
+            f"{abs(payload['bic_error']):.1f})"
+        )
+    click.echo(line)
+    placed = payload.get("exploration_in_posterior")
+    if isinstance(placed, dict):
+        share = placed.get("share_of_draws_with_lower_chi2")
+        share_str = f"{100 * share:.0f}%" if isinstance(share, (int, float)) else "?"
+        msg = (
+            f"{indent}  Exploration optimum: {share_str} of the draws fit better, "
+            f"D²/k = {_fmt_num(placed.get('mahalanobis2_per_param'))}"
+        )
+        if placed.get("superseded"):
+            click.echo(
+                click.style(
+                    msg + " — it was not at the minimum of this structure", fg="yellow"
+                )
+            )
+        else:
+            click.echo(msg)
+    if not trusted:
+        click.echo(
+            click.style(
+                f"{indent}  ⚠  Not trusted: the quoted ± and the evidence are "
+                f"provisional",
+                fg="yellow",
+            )
+        )
+    for concern in payload.get("concerns") or []:
+        click.echo(f"{indent}    - {concern}")
 
 
 def _pending_hypotheses_payload(hypotheses: Optional[list]) -> list:
@@ -1099,6 +1225,13 @@ def _print_analysis_results(result: dict, output_dir: Optional[str] = None):
                     fg="yellow",
                 )
             )
+        click.echo()
+
+    # What the DREAM posterior says about the reported answer — convergence,
+    # whether the best point represents its posterior, the evidence and BIC's
+    # error. Absent for a run with no DREAM fit.
+    if _posterior_payload(result) is not None:
+        _echo_posterior_check(result, indent="  ")
         click.echo()
 
     # Fit-quality notes. A workflow run records the evaluator's findings on
@@ -1795,6 +1928,7 @@ def batch(manifest: str, job: tuple, dry_run: bool, data_dir: Optional[str]):
                                 bold=True,
                             )
                         )
+                    _echo_posterior_check(result, indent="    ", details=False)
                     # Batch never calls `_print_analysis_results`, so without
                     # this the backlog a stopped-early run left behind is
                     # invisible outside final_state.json. Titles only.

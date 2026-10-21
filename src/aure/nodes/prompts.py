@@ -587,8 +587,15 @@ def _format_complexity_assessment(
     best_bic: float | None = None,
     n_params: int = 0,
     n_layers: int = 0,
+    posterior: Dict[str, Any] | None = None,
+    comparison: Dict[str, Any] | None = None,
 ) -> str:
-    """Format model complexity info (BIC) for LLM prompts."""
+    """Format model complexity info (BIC, and the posterior evidence) for LLM prompts.
+
+    *posterior* is the fit's DREAM summary (``FitResult["posterior"]``) and
+    *comparison* the guardrail's ``model_comparison`` record; see
+    ``docs/evidence.md``. Both are optional — a non-DREAM fit has neither.
+    """
     if bic is None:
         return "  (not computed)"
 
@@ -597,15 +604,17 @@ def _format_complexity_assessment(
         f"  - Free parameters: {n_params}",
         f"  - BIC (Bayesian Information Criterion): {bic:.1f}",
     ]
+    evidence_decides = (comparison or {}).get("criterion") == "evidence"
     if best_bic is not None:
         lines.append(f"  - Best BIC so far: {best_bic:.1f}")
-        if bic > best_bic:
+        if bic > best_bic and not evidence_decides:
             lines.append(
                 "  - **Current model is MORE complex than justified.** "
                 "The simpler model with fewer layers had a better "
                 "complexity-adjusted score. Prefer parameter adjustments "
                 "over adding layers."
             )
+    lines.extend(_format_posterior_lines(posterior, comparison))
     lines.append("")
     lines.append(
         "  BIC penalizes unnecessary model parameters. A lower BIC is better; "
@@ -617,9 +626,106 @@ def _format_complexity_assessment(
         "structure on the physical evidence (residual structure, features, the "
         "hypothesis list) rather than on a fixed χ² threshold — and if BIC does "
         "regress, the guardrail reverts the change and marks the hypothesis "
-        "rejected."
+        "rejected. BIC charges every parameter the same ½·ln n, which "
+        "over-charges parameters the data barely constrain (a sub-resolution "
+        "layer) and under-charges sharply constrained or strongly correlated "
+        "ones. When this fit and the baseline both carry a trusted posterior "
+        "evidence (a converged DREAM draw), the evidence decides instead; a BIC "
+        "revert that the posterior evidence contests is recorded as "
+        "inconclusive, not as a rejection."
     )
     return "\n".join(lines)
+
+
+def _format_posterior_lines(
+    posterior: Dict[str, Any] | None, comparison: Dict[str, Any] | None
+) -> list:
+    """The DREAM-posterior lines of the complexity assessment (may be empty)."""
+    out: list = []
+    if isinstance(posterior, dict):
+        draw = posterior.get("draw") or {}
+        rhat = draw.get("rhat_max")
+        rhat_str = "∞" if draw.get("rhat_max_is_infinite") else _fmt_opt(rhat, ".2f")
+        converged = (posterior.get("checks") or {}).get("converged")
+        mixing = (
+            "converged"
+            if converged
+            else f"NOT converged (split-R̂ max {rhat_str}, limit "
+            f"{_fmt_opt((posterior.get('thresholds') or {}).get('rhat_max'), 'g')})"
+        )
+        d2k = posterior.get("best_mahalanobis2_per_param")
+        centre = (
+            "the best point sits where the posterior mass is"
+            if (posterior.get("checks") or {}).get("best_central")
+            else f"the best point is NOT representative of the posterior (D²/k = "
+            f"{_fmt_opt(d2k, '.2f')})"
+        )
+        out.append(f"  - Posterior (DREAM draw): {mixing}; {centre}")
+        p_d, k = posterior.get("p_d"), posterior.get("k")
+        if p_d is not None and k:
+            out.append(
+                f"  - The data constrain about {p_d:.1f} of the {k} parameters (p_D)"
+            )
+        lz = posterior.get("log_evidence")
+        if lz is not None:
+            err = posterior.get("log_evidence_error")
+            status = "trusted" if posterior.get("evidence_trusted") else "provisional"
+            lz_str = f"{lz:.1f}" + (f" ± {err:.1f}" if err is not None else "")
+            line = (
+                f"  - Evidence: ln Z = {lz_str} nats "
+                f"({posterior.get('log_evidence_method')}, {status})"
+            )
+            bic_err = posterior.get("bic_error")
+            if bic_err is not None:
+                line += (
+                    f"; BIC implies {posterior.get('log_evidence_bic'):.1f}, so it "
+                    f"{'over' if bic_err > 0 else 'under'}states this model's "
+                    f"evidence by {abs(bic_err):.1f} nats"
+                )
+            out.append(line)
+        weak = [
+            n
+            for n, o in (posterior.get("occam") or {}).items()
+            if o is not None and o < 1.0
+        ]
+        if weak:
+            out.append(
+                "  - Barely constrained (Occam factor < 1 nat, BIC charges "
+                f"{_fmt_opt(posterior.get('occam_bic_per_param'), '.2f')}): "
+                + ", ".join(weak)
+            )
+    if isinstance(comparison, dict):
+        if comparison.get("criterion") == "evidence":
+            line = (
+                f"  - **The evidence decides this comparison** (both draws trusted): "
+                f"Δln Z vs iteration {comparison.get('baseline_iteration')} = "
+                f"{comparison['delta_log_evidence']:+.2f} ± {comparison['error']:.2f} "
+                f"nats → {comparison['verdict']}"
+            )
+            if comparison.get("bic_agrees") is False:
+                line += f" (BIC alone would have said {comparison.get('bic_verdict')})"
+            out.append(line)
+        else:
+            prov = comparison.get("provisional_evidence")
+            if isinstance(prov, dict):
+                line = (
+                    f"  - Provisional evidence against the BIC baseline: Δln Z = "
+                    f"{prov['delta_log_evidence']:+.2f} ± {prov['error']:.2f} nats "
+                    f"({prov['verdict']})"
+                )
+                if comparison.get("contested"):
+                    line += (
+                        " — it CONTESTS the BIC verdict, so the revert will be "
+                        "recorded as inconclusive"
+                    )
+                out.append(line)
+    return out
+
+
+def _fmt_opt(value: Any, spec: str) -> str:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return format(value, spec)
+    return "n/a"
 
 
 def _format_per_file_chi2(per_file_results: list | None) -> str:
@@ -801,6 +907,8 @@ def format_fit_evaluation_prompt(
     fit_history: list | None = None,
     structural_hypotheses: list | None = None,
     per_state_residual_analysis: Dict[str, Any] | None = None,
+    posterior: Dict[str, Any] | None = None,
+    model_comparison: Dict[str, Any] | None = None,
 ) -> str:
     """
     Format the fit evaluation prompt.
@@ -820,6 +928,8 @@ def format_fit_evaluation_prompt(
             multi-state co-refinement. When given it replaces
             *residual_analysis* in the rendered section, which is otherwise
             unset for those runs (see :func:`_format_residual_section`).
+        posterior: The fit's DREAM posterior summary, when it has one.
+        model_comparison: The complexity guardrail's comparison record.
 
     Returns:
         Formatted prompt string
@@ -874,6 +984,8 @@ def format_fit_evaluation_prompt(
             best_bic=best_bic,
             n_params=n_params,
             n_layers=n_layers,
+            posterior=posterior,
+            comparison=model_comparison,
         ),
         skill_context=skill_context or "(no additional domain knowledge)",
         per_file_chi2=_format_per_file_chi2(per_file_results),
