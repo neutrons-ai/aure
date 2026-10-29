@@ -21,7 +21,7 @@ from typing import Dict, Any, List
 from langchain_core.messages import HumanMessage
 
 from ..state import ReflectivityState, Message, LLMCallRecord
-from ..llm import llm_available, get_llm
+from ..llm import llm_available, get_llm, invoke_with_timeout
 from ..config import format_user_constraints
 from ..skills import SkillRegistry, load_skill_context
 from .hypotheses import merge_structural_hypotheses
@@ -272,7 +272,7 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
             updates["pending_user_feedback"] = None
 
         llm = get_llm()
-        response = llm.invoke([HumanMessage(content=prompt)])
+        response = invoke_with_timeout(llm, [HumanMessage(content=prompt)])
         raw = response.content.strip()
 
         # Strip markdown fences if present
@@ -401,6 +401,16 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
                         "[MODELING] Dropped tie spec(s) for removed layer(s): %s",
                         dropped,
                     )
+            elif new_model.get("states"):
+                # The files a run fits are set when it starts. States the refine
+                # LLM adds to a model that had none name data the run was never
+                # given, by paths the LLM wrote; their tie spec goes with them.
+                for key in ("states", "shared_parameters", "unshared_parameters"):
+                    new_model.pop(key, None)
+                logger.warning(
+                    "[MODELING] Refinement proposed states for a run set up with "
+                    "none; ignored: the files a run fits are set when it starts"
+                )
 
             updates["llm_calls"].append(
                 LLMCallRecord(
@@ -560,7 +570,7 @@ def _refine_model_legacy(state: ReflectivityState) -> Dict[str, Any]:
             updates["pending_user_feedback"] = None
 
         llm = get_llm()
-        response = llm.invoke([HumanMessage(content=prompt)])
+        response = invoke_with_timeout(llm, [HumanMessage(content=prompt)])
         new_model = response.content.strip()
         new_model = _strip_code_fences(new_model)
         new_model = _fix_sld_attr_access(new_model)
@@ -666,7 +676,7 @@ def _extract_cross_state_unshared(sample_description: str, model_def: dict):
         import json
 
         prompt = format_cross_state_ties_prompt(sample_description, tieable)
-        response = get_llm().invoke([HumanMessage(content=prompt)])
+        response = invoke_with_timeout(get_llm(), [HumanMessage(content=prompt)])
         data = json.loads(_strip_code_fences(response.content.strip()))
         proposed = data.get("unshared_parameters") or []
         tieable_set = set(tieable)
@@ -713,7 +723,7 @@ def _extract_per_state_structure(
         prompt = format_per_state_structure_prompt(
             sample_description, state_names, template_names
         )
-        response = get_llm().invoke([HumanMessage(content=prompt)])
+        response = invoke_with_timeout(get_llm(), [HumanMessage(content=prompt)])
         per_state = (
             json.loads(_strip_code_fences(response.content.strip())).get(
                 "per_state_absent"

@@ -417,6 +417,91 @@ def test_refine_single_state_unchanged(monkeypatch):
     assert "states" not in new_model or not new_model["states"]
 
 
+def _single_state_current_model() -> dict:
+    current = _multi_state_current_model()
+    for key in ("states", "shared_parameters", "unshared_parameters"):
+        current.pop(key, None)
+    return current
+
+
+def _added_states_reply(current: dict) -> dict:
+    """The refine LLM's model, with two states of runs it was never given."""
+    return {
+        **current,
+        "states": [
+            {"name": "234283_OCV", "data_files": ["/data/REFL_234283_1_234283.dat"]},
+            {"name": "234324_OCV", "data_files": ["/data/REFL_234324_1_234324.dat"]},
+        ],
+        "unshared_parameters": ["Cu.thickness"],
+    }
+
+
+def test_refine_drops_states_the_llm_adds_to_a_single_state_model(monkeypatch):
+    """A refinement cannot change which files a run fits."""
+    import json
+    from unittest.mock import MagicMock
+
+    from aure.nodes import modeling
+
+    monkeypatch.setattr(modeling, "llm_available", lambda: True)
+    current = _single_state_current_model()
+    fake_llm = MagicMock()
+    fake_llm.invoke.return_value = MagicMock(
+        content=json.dumps(_added_states_reply(current))
+    )
+    monkeypatch.setattr(modeling, "get_llm", lambda temperature=0: fake_llm)
+    state = _refine_state(current)
+    state.pop("states", None)
+
+    out = modeling._refine_model(state)
+
+    assert "error" not in out, out.get("error")
+    new_model = out["current_model"]
+    assert "states" not in new_model
+    assert "unshared_parameters" not in new_model
+    assert new_model["data_file"] == current["data_file"]
+
+
+def test_a_refinement_call_is_written_to_the_ledger(monkeypatch, tmp_path):
+    """The call that refines the model is recorded like every other."""
+    import json
+
+    from aure.llm import ledger
+    from aure.nodes import modeling
+
+    current = _single_state_current_model()
+
+    class _Reply:
+        content = json.dumps(current)
+        response_metadata: dict = {}
+        usage_metadata: dict = {}
+
+    class _LLM:
+        model_name = "fake-model"
+        temperature = 0
+
+        def invoke(self, payload):
+            return _Reply()
+
+    monkeypatch.setattr(modeling, "llm_available", lambda: True)
+    monkeypatch.setattr(modeling, "get_llm", lambda temperature=0: _LLM())
+    monkeypatch.delenv("AURE_LLM_LOG", raising=False)
+    monkeypatch.setattr(ledger, "_seq", 0)
+    monkeypatch.setattr(ledger, "_node", None)
+    ledger.set_sink(str(tmp_path / "llm_calls.jsonl"))
+    ledger.set_node("modeling")
+    state = _refine_state(current)
+    state.pop("states", None)
+    try:
+        modeling._refine_model(state)
+    finally:
+        ledger.set_sink(None)
+
+    lines = (tmp_path / "llm_calls.jsonl").read_text().splitlines()
+    rows = [json.loads(line) for line in lines]
+    assert [(row["node"], row["model"]) for row in rows] == [("modeling", "fake-model")]
+
+
 def test_refine_hypothesis_writeback_is_status_only(monkeypatch):
     """Modeling may only update statuses — it cannot rename or add entries."""
     import json

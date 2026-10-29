@@ -206,6 +206,26 @@ def test_a_broken_trace_does_not_cost_the_ledger_a_row(ledger_dir, monkeypatch):
     assert row["cost_usd"] == 0.02
 
 
+def test_no_call_site_reaches_a_model_around_the_ledger():
+    """Every LLM call goes through invoke_with_timeout, where it is recorded."""
+    import re
+    from pathlib import Path
+
+    import aure
+
+    root = Path(aure.__file__).parent
+    chokepoint = root / "llm" / "timeout.py"
+    offenders = [
+        f"{path.relative_to(root)}:{number}"
+        for path in sorted(root.rglob("*.py"))
+        if path != chokepoint
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+        if re.search(r"\.invoke\(", line)
+    ]
+
+    assert offenders == []
+
+
 def test_recording_without_a_sink_is_a_no_op(tmp_path, monkeypatch):
     monkeypatch.delenv("AURE_LLM_LOG", raising=False)
     ledger.set_sink(None)

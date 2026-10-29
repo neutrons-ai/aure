@@ -27,7 +27,7 @@ from ..tools.posterior_tools import (
     evidence_record,
     evidence_settings,
 )
-from ..llm import llm_available, get_llm
+from ..llm import llm_available, get_llm, invoke_with_timeout
 from ..config import format_user_criteria
 from ..skills import SkillRegistry, load_skill_context, select_skills
 from .hypotheses import (
@@ -1357,7 +1357,7 @@ def propose_hypothesis_revision_with_llm(
         + (analysis.get("issues") or []),
         state_names=_state_names(state),
     )
-    response = llm.invoke([HumanMessage(content=prompt)])
+    response = invoke_with_timeout(llm, [HumanMessage(content=prompt)])
     match = re.search(r"\{[\s\S]*\}", response.content)
     if not match:
         return {"new_hypotheses": [], "ranking": []}
@@ -1566,7 +1566,7 @@ def analyze_fit_quality_with_llm(
         model_comparison=fit_result.get("model_comparison"),
     )
 
-    response = llm.invoke([HumanMessage(content=prompt)])
+    response = invoke_with_timeout(llm, [HumanMessage(content=prompt)])
     content = response.content
 
     # Extract JSON from response
