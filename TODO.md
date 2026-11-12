@@ -890,6 +890,26 @@ cannot clean:
    the layer it sits in and that layer's two neighbours. A thin layer that
    falls short is a note on the fit, not an artifact.
 
+**Done: the second half of item 3.** `detect_profile_artifacts` now reports a
+thin layer whose profile turns short of its own SLD, between it and its nearer
+neighbour, as a note (`physical_concerns`), not an excursion. It is granted
+only to a turning point the profile does not reach, and only while the profile
+has no more extrema of that kind than the stack has turning points, so an
+extra turn such as the erf-tail dip below the substrate stays a veto. Replayed
+on every stored fit of luna's two 2c05e66 sweeps (`amoeba`, and `de` with ten
+passes): 214 of 409 vetoed fits are now clean, none of them out of range by
+aure-validation's own detector, and all 142 that are out of range stay vetoed.
+On 201236 all five four-layer fits (χ² 1.61) are now clean; on 207027 pass 10
+(χ² 1.47, the second kind) is still vetoed. Items 1, 2 and the first half of
+item 3 are open.
+
+**Why this matters more than the evaluator's wording.** The χ² clamp accepts a
+clean in-window fit whatever the LLM says: in those two sweeps and luna's
+v0.9.0 sweep, every fit with 0.5 ≤ χ² ≤ 1.5 and a clean profile ended its run
+(31 of 31, 18 of 18, 17 of 17), and every in-window fit after which the run
+went on had been vetoed (104 of 104, 7 of 7, 20 of 20). The LLM's refusals of
+passing fits only mattered where the veto had already withheld acceptance.
+
 ---
 
 ## The solvent's SLD window follows the last fit, so one bad pass can shut out the right value
@@ -1001,7 +1021,7 @@ $\hat N$ alongside the entropy.
 
 ---
 
-The next three entries come from one reading of the 51-curve copper series, made
+The next two entries come from one reading of the 51-curve copper series, made
 for the reflbench question set (its `docs/sweep-habits.md` has the full tables).
 Sweeps: gpt-5.4, gpt-6.1-sol and gpt-6-luna on v0.9.0; gpt-6-luna on 2c05e66
 with `amoeba` and with `de` at `-m 10`; gpt-5.4 on 1097fdb (30 curves scored).
@@ -1126,50 +1146,3 @@ against the `validation/` baseline.
 
 **Verifying a fix.** Sol on the cycled Cu_1 curves makes its first structural
 change at the first evaluation.
-
----
-
-## A passing fit is rarely accepted once the prompt carries warnings
-
-**Where:** [`src/aure/nodes/prompts.py`](src/aure/nodes/prompts.py) — the
-acceptance block of `FIT_EVALUATION_PROMPT`;
-[`src/aure/nodes/evaluation.py`](src/aure/nodes/evaluation.py) — the issues
-appended to a fit (`_check_boundary_hits`, the profile-excursion line);
-[`src/aure/skills/interface-swallowed-layers/SKILL.md`](src/aure/skills/interface-swallowed-layers/SKILL.md).
-
-**What is wrong.** The prompt says a fit within the threshold "should be marked
-acceptable: true", and in the same prompt lists warnings without saying which
-of them block acceptance. `interface-swallowed-layers` is a rule about quoting
-a layer's SLD; in the evaluation context it reads as a defect of the fit.
-
-**What it costs.** Fits evaluated at χ² ≤ 1.5, and how often they were accepted:
-
-| | accepted |
-|---|---|
-| gpt-5.4, v0.9.0 / 1097fdb | 38 of 39 / 20 of 22 |
-| gpt-6-luna, v0.9.0 | 22 of 42 |
-| gpt-6-luna, 2c05e66, `amoeba` | 7 of 26 |
-| gpt-6-luna, 2c05e66, `de`, ten passes | 11 of 143 |
-| gpt-oss-120b, v0.9.0 | 0 of 27 |
-
-In luna's 132 refusals with ten passes, the issues name a parameter at a bound
-(132), a profile artifact (114), the solvent (107), the swallowed-layer
-criterion (101) and the critical edge (87). It then made 40 structural changes
-on fits that already passed; 201236 under "The profile veto" is one result.
-
-The swallowed-layer criterion is cited in 125 of 210 luna evaluations on
-2c05e66 (1 of 214 on v0.9.0) and 67 of 132 for gpt-5.4 (0 of 220). Luna asks
-for "profile-based observables" in 42 evaluations, which the loop cannot act
-on. gpt-5.4 drew 36 hypotheses from the skill, such as "Remove the discrete
-CuOx slab and represent the Cu surface only by roughness". Luna on the same
-optimiser went from 36 good to 26; not all of that is this.
-
-**The change.** Mark each warning in the prompt as blocking or as a note.
-Blocking: a profile excursion outside the range of the layer and its
-neighbours (item 3 of the veto entry), and a violated user constraint. Notes: a
-bound that was hit and already auto-expanded, and the swallowed-layer
-criterion. The skill itself now says what the criterion does not decide; the
-prompt still lists both kinds of warning alike.
-
-**Verifying a fix.** Luna on the pristine curves accepts the first fit that
-passes without a blocking warning.
