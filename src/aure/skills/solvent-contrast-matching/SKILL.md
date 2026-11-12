@@ -12,7 +12,7 @@ description: >
   reflectivity and is the single most common omission in sample descriptions.
 metadata:
   author: aure
-  version: "1.1"
+  version: "1.2"
 ---
 
 ## Always Suspect Unspecified Deuteration
@@ -24,6 +24,17 @@ Users routinely describe an electrolyte/solvent without naming the isotope
 default with an SLD ≈ 0, but the experiment may well have used a D-form
 (SLD ≈ 6) for contrast. Whether the liquid is H or D dominates the low-Q
 reflectivity, so getting it wrong cannot be repaired by parameter tuning.
+
+**The same applies in reverse, and to a hedge.** A description that says the
+solvent is "likely deuterated" or "probably d-THF" has not confirmed it: keep
+the stated isotope in the baseline and list "the solvent is the protonated
+form" as a hypothesis to test (H-form SLD from the table below, with a narrow
+range around it). The tell-tale when a protonated solvent is modelled as
+deuterated is the mirror image of the one below: the fit only works with a
+thick, diffuse, low-SLD layer (SLD near the H-form's, hundreds of Å, a very
+wide outer interface) between the film and the "deuterated" ambient, on a
+sample whose history gives nothing for that layer to be made of. That layer is
+the solvent.
 
 ### The signature: a critical edge / low-Q upturn the H-form can't explain
 

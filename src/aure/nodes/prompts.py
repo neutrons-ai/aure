@@ -195,6 +195,15 @@ is a liquid whose isotope was not specified, propose reinterpreting it as a
 spanning both). List this even when the layer stack already looks complete — the
 missing piece is the ambient's isotope, not a layer.
 
+A hedged statement is not a confirmed one. When the description says what a
+material is with a hedge ("likely", "probably", "should be", "we think",
+"presumably"), list the alternative as a reinterpretation hypothesis, in either
+direction: an ambient described as "likely deuterated" gets a hypothesis that
+it is the protonated solvent (its H-form SLD with a narrow range around it),
+just as an unstated isotope gets the deuterated one. The baseline keeps what
+the description says; the alternative is something to test. Rank it below the
+user's own hypotheses.
+
 "What the Data Show" may report a critical edge. It is a hint that some medium
 the beam reaches has a higher SLD than the incident medium, by roughly the
 contrast given. Ask whether the baseline model above contains such a medium. If
@@ -203,7 +212,8 @@ that contrast as hypotheses to test, citing the edge in the `rationale`: a
 liquid ambient that is deuterated, or partly so, when its isotope was not
 stated; or a thick layer with a high SLD. The edge does not say which, and its
 position is approximate, so do not copy its contrast into an SLD value or
-range: take values from the materials.
+range: take values from the materials. Rank what you infer from the data below
+the user's own hypotheses.
 
 A hypothesis may also be scoped to a SUBSET OF THE STATES listed above, when
 more than one state is present. The states share a layer template, but they are

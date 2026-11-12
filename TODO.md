@@ -1021,37 +1021,36 @@ $\hat N$ alongside the entropy.
 
 ---
 
-## A solvent the description hedges on is never tested, and a fake SEI passes for it
+## A fake SEI passes χ² before the protonated solvent is ever tried
 
-**Where:** [`src/aure/nodes/prompts.py`](src/aure/nodes/prompts.py) — the
-reinterpretation paragraph of `STRUCTURAL_HYPOTHESIS_PROMPT`;
-[`src/aure/nodes/evaluation.py`](src/aure/nodes/evaluation.py) —
-`_clamp_acceptance_to_chi2`.
+**Where:** [`src/aure/nodes/evaluation.py`](src/aure/nodes/evaluation.py) —
+`_clamp_acceptance_to_chi2`; [`src/aure/nodes/finalize.py`](src/aure/nodes/finalize.py)
+— the pending-hypotheses message.
 
 **What is wrong.** Cu_G, the one cell of the copper series in protonated THF
-(reference 0.19), is described as "THF ... likely deuterated". Every sweep kept
-dTHF on all four curves. The critical-edge hint used to push that way ("very
-likely DEUTERATED. Constrain the ambient SLD near 7.6"); it no longer does, and
-two things remain:
+(reference 0.19), is described as "THF ... likely deuterated", and every sweep
+kept dTHF on all four curves. Two causes are fixed: the critical-edge hint no
+longer says "very likely DEUTERATED. Constrain the ambient SLD near 7.6", and
+intake now lists the alternative when a description hedges, so "the solvent is
+protonated THF" is in the hypothesis list (gpt-5.4, gpt-6-luna and gpt-6.1-sol:
+8 of 8, against 0 to 2 of 8 before), ranked after the user's own hypotheses.
 
-- The hypothesis list is only told to propose a *deuterated* solvent when the
-  isotope is unstated. With the solvent stated as likely deuterated, no model
-  lists the protonated alternative (0 of 10 for gpt-6-luna and gpt-6.1-sol on
-  the intake prompt), so the loop cannot test it.
-- The baseline then fails, the user's SEI is added, and it fits: on 207194, the
-  first curve, before any plating, χ² goes from 8.09 to 1.05 with a 283 Å "SEI"
-  at SLD 1.42 under a 245 Å outer interface. The χ² clamp accepts a clean
-  in-window fit, so the run ends there. The same four baseline layers with
-  protonated THF give χ² 1.07 with three fewer parameters.
+What remains is the order of events. The baseline fails, the user's SEI is
+tried first, as it should be, and it fits: on 207194, the first curve, before
+any plating, χ² goes from 8.09 to 1.05 with a 283 Å "SEI" at SLD 1.42 under a
+245 Å outer interface. The χ² clamp accepts a clean in-window fit, so the run
+ends with the protonated solvent still `pending`. The same four baseline layers
+with protonated THF give χ² 1.07 with three fewer parameters.
 
-**What it costs.** All four Cu_G curves in every sweep. In reflbench's
-`assess-10` (that fit, with protonated THF offered as a hypothesis), gpt-5.4
-accepts the SEI fit in 30 of 30 whatever the edge line says; gpt-6-luna tests
-the protonated solvent in 0 of 10 with the old edge line and 8 of 10 with the
-new one; gpt-6.1-sol in 10 of 10 either way.
+**What it costs.** Still all four Cu_G curves, until the loop tests that
+hypothesis. In reflbench's `assess-10` (the SEI fit, with protonated THF offered
+as a hypothesis), gpt-5.4 accepts the SEI fit in 30 of 30; gpt-6-luna tests the
+protonated solvent in 8 of 10 and gpt-6.1-sol in 10 of 10, which the clamp
+would overrule.
 
-**The change.** When the description hedges on what a material is ("likely",
-"probably", "should be"), have intake list the alternative as a hypothesis,
-in either isotope direction. To settle first: what the loop should do with a
-structural change that passes χ² only by adding a layer the sample's history
-does not allow (an SEI before any plating), since the clamp accepts it today.
+**To settle first.** Whether a passing fit should end the run while a
+*reinterpretation* hypothesis is still pending. Options: let the evaluator
+withhold acceptance when the passing fit rests on a layer the sample's history
+does not allow (an SEI before any plating); or, budget allowing, test pending
+reinterpretations after the accept and let BIC or the evidence choose. Today
+`finalize` only reports them as untested.
