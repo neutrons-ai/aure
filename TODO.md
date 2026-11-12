@@ -1001,7 +1001,7 @@ $\hat N$ alongside the entropy.
 
 ---
 
-The next four entries come from one reading of the 51-curve copper series, made
+The next three entries come from one reading of the 51-curve copper series, made
 for the reflbench question set (its `docs/sweep-habits.md` has the full tables).
 Sweeps: gpt-5.4, gpt-6.1-sol and gpt-6-luna on v0.9.0; gpt-6-luna on 2c05e66
 with `amoeba` and with `de` at `-m 10`; gpt-5.4 on 1097fdb (30 curves scored).
@@ -1168,72 +1168,8 @@ optimiser went from 36 good to 26; not all of that is this.
 Blocking: a profile excursion outside the range of the layer and its
 neighbours (item 3 of the veto entry), and a violated user constraint. Notes: a
 bound that was hit and already auto-expanded, and the swallowed-layer
-criterion. For the skill itself, see the next entry.
+criterion. The skill itself now says what the criterion does not decide; the
+prompt still lists both kinds of warning alike.
 
 **Verifying a fix.** Luna on the pristine curves accepts the first fit that
 passes without a blocking warning.
-
----
-
-## `interface-swallowed-layers` reads as an acceptance test, and most expert fits fail it
-
-**Where:** [`src/aure/skills/interface-swallowed-layers/SKILL.md`](src/aure/skills/interface-swallowed-layers/SKILL.md);
-[`src/aure/nodes/evaluation.py`](src/aure/nodes/evaluation.py) —
-`load_skill_context`, which puts every active skill in the evaluation prompt.
-
-**What is wrong.** The criterion's arithmetic is right: when
-σ_top + σ_bot > t/2, the profile never reaches the layer's nominal SLD. What
-the skill concludes from it is a reporting rule ("If the criterion fails, do
-not quote the layer's `rho`"). But it never says what failing means for the
-fit, and its framing reads as a verdict on the fit: "This failure is silent. It
-survives a good chi-squared", "That single unexamined number destroyed
-218386's oxide", "reparameterise". Its worked case is an interface width that
-was never a parameter and sat at a 20 Å default. The skill does not say that
-the urgency belongs to that case, not to widths the data have fitted.
-
-**What it costs.** A controlled test in reflbench (`questions/assess-06`): the
-pristine 201136 baseline fit (χ² 1.08, flat residuals; the expert accepts it)
-asked with and without this skill in the prompt, three repeats each.
-
-| | without the skill (assess-04) | with it (assess-06) |
-|---|---|---|
-| gpt-6.1-sol | accepts 1 of 1 | 0 of 3: refits with the oxide's interfaces capped to pass |
-| gpt-6-luna | accepts 1 of 1 | 0 of 3: the same |
-| gpt-oss-120b | accepts 1 of 1 | 0 of 3: replaces the oxide with a plated layer |
-| gpt-5.4 | accepts 1 of 1 | 3 of 3, though it calls the oxide "well resolved" while computing that it fails |
-
-Luna's reason, in its own words: "the fit is not acceptable for interpreting
-the oxide as a resolved slab, despite its good χ²".
-
-The skill's mirror case also goes wrong (`assess-07`): the merged 272 Å
-"copper oxide" at SLD 1.96 that every model rejects without the skill passes
-the criterion. With the skill, gpt-5.4 accepts it in 2 of 3 and gpt-oss-120b
-in 3 of 3, citing the pass.
-
-The criterion fails on most correct fits of this series. In the expert
-reference fits, the layer directly on the copper fails it in 40 of 50, the SEI
-in 18 of 36 and the native SiO₂ in 13 of 36. The reference for 201136 fails it
-like the fit above: a 55.7 Å oxide between 19.0 and 42.0 Å interfaces, with a
-profile minimum of 4.98 against a nominal 4.35.
-
-Doing what Sol and Luna ask costs the fit. Refitting 201136 with the oxide's
-interfaces capped at 10 and 20 Å, so that the criterion passes, gives χ² 1.56,
-outside the threshold, and moves the oxide from 63 Å at 4.57 to 77 Å at 5.12.
-With caps of 15 and 25 Å, χ² is 1.21 and the criterion still fails. The data
-want the 41 Å oxide/solvent interface.
-
-**The change.**
-
-1. Add a section to the skill, "What a failed criterion does not mean". It is
-   a caveat on the quoted SLD, not a defect of the fit. It is not a reason to
-   withhold acceptance, to cap or tie widths the data have fitted, or to change
-   the structure. Quote the profile's extremum or an integrated contrast
-   instead. Passing the criterion says the slab is resolved, not that it is the
-   material it is named.
-2. Put the urgency where the worked case puts it: an interfacial width that is
-   an unfitted default.
-3. Load the skill where SLDs are reported (finalize, the report) rather than
-   into the evaluation prompt, or load it there only with item 1 in place.
-
-**Verifying a fix.** In reflbench, `assess-06` scores like `assess-04` and
-`assess-07` like `assess-03` for every model.
