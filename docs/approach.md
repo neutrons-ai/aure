@@ -217,8 +217,9 @@ The result of intake is stored as `parsed_sample`, the initial
 The **analysis** node runs ordinary Python (no LLM) over the data to
 extract physics features:
 
-- the **critical edge** $Q_c$, from which the substrate SLD can be
-  cross-checked;
+- the **critical edge** $Q_c$: a hint that some medium the beam reaches has
+  a higher SLD than the incident one, passed to the hypothesis prompts and
+  never used to set a model value;
 - the **estimated total thickness**, from the Kiessig fringe spacing;
 - the **estimated surface roughness**, from the high-$Q$ decay rate;
 - an **estimated number of layers** based on how many distinct fringe

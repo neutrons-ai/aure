@@ -1021,128 +1021,37 @@ $\hat N$ alongside the entropy.
 
 ---
 
-The next two entries come from one reading of the 51-curve copper series, made
-for the reflbench question set (its `docs/sweep-habits.md` has the full tables).
-Sweeps: gpt-5.4, gpt-6.1-sol and gpt-6-luna on v0.9.0; gpt-6-luna on 2c05e66
-with `amoeba` and with `de` at `-m 10`; gpt-5.4 on 1097fdb (30 curves scored).
-Counts of what an evaluation "cites" are keyword matches on its issues and
-suggestions.
+## A solvent the description hedges on is never tested, and a fake SEI passes for it
 
-## The critical-edge hint tells the model to put the solvent near 7.4
+**Where:** [`src/aure/nodes/prompts.py`](src/aure/nodes/prompts.py) — the
+reinterpretation paragraph of `STRUCTURAL_HYPOTHESIS_PROMPT`;
+[`src/aure/nodes/evaluation.py`](src/aure/nodes/evaluation.py) —
+`_clamp_acceptance_to_chi2`.
 
-**Where:** [`src/aure/tools/feature_tools.py`](src/aure/tools/feature_tools.py)
-— `format_critical_edge_line` and `extract_critical_edges`;
-[`src/aure/nodes/analysis.py`](src/aure/nodes/analysis.py) —
-`implied_ambient_sld_from_edge` and the hint built from it.
+**What is wrong.** Cu_G, the one cell of the copper series in protonated THF
+(reference 0.19), is described as "THF ... likely deuterated". Every sweep kept
+dTHF on all four curves. The critical-edge hint used to push that way ("very
+likely DEUTERATED. Constrain the ambient SLD near 7.6"); it no longer does, and
+two things remain:
 
-**What is wrong.** The evaluation and modeling prompts carry this line whenever
-the edge-derived ambient SLD is more than 1.0 from the stated one:
+- The hypothesis list is only told to propose a *deuterated* solvent when the
+  isotope is unstated. With the solvent stated as likely deuterated, no model
+  lists the protonated alternative (0 of 10 for gpt-6-luna and gpt-6.1-sol on
+  the intake prompt), so the loop cannot test it.
+- The baseline then fails, the user's SEI is added, and it fits: on 207194, the
+  first curve, before any plating, χ² goes from 8.09 to 1.05 with a 283 Å "SEI"
+  at SLD 1.42 under a 245 Å outer interface. The χ² clamp accepts a clean
+  in-window fit, so the run ends there. The same four baseline layers with
+  protonated THF give χ² 1.07 with three fewer parameters.
 
-> … this implies an ambient SLD ≈ 7.4, far above the H-form (~0): the ambient is
-> very likely DEUTERATED. Constrain the ambient SLD near 7.4, not across the
-> full H–D range.
+**What it costs.** All four Cu_G curves in every sweep. In reflbench's
+`assess-10` (that fit, with protonated THF offered as a hypothesis), gpt-5.4
+accepts the SEI fit in 30 of 30 whatever the edge line says; gpt-6-luna tests
+the protonated solvent in 0 of 10 with the old edge line and 8 of 10 with the
+new one; gpt-6.1-sol in 10 of 10 either way.
 
-Three things fail on the copper series:
-
-- The premise. The docstring says a film "does not set the edge; the edge is
-  fixed by the substrate/ambient contrast". These samples have 500–565 Å of
-  copper at 6.55, above the solvent, and the edge is the copper's. Three of the
-  four protonated-THF curves (reference solvent 0.19) show it: the hint reads
-  7.1–7.6 and calls the ambient deuterated.
-- The number. Copper against silicon gives Qc = 0.0150; the estimator returns
-  0.0156–0.0166 on the five curves checked, so even as a copper value it is
-  high.
-- The trigger. The brief already says d-THF, about 6.0. The hint was written to
-  catch a solvent stated as protonated, but `matches_stated` compares the stated
-  6.0 with the biased estimate and fails by 1.0–1.5.
-
-**What it costs.**
-
-| | |
-|---|---|
-| curves carrying the hint | 35 of 51 |
-| value on the 32 deuterated ones | 7.11–7.66, against references of 6.0–6.3 (1.04–1.53 too high, median 1.21) |
-| evaluations citing the critical edge | 66–85 % in every gpt-5.4 and gpt-6-luna sweep (gpt-oss-120b: 25–31 %) |
-| runs where the model raised the solvent's upper bound to 6.9 or more | 35 of 51 (gpt-5.4, v0.9.0); 38 and 40 of 51 (luna, v0.9.0 and 2c05e66) |
-| luna on 2c05e66: passes spent on a solvent hypothesis | 15, of which 4 improved χ² |
-
-On 206922 (luna, 2c05e66) the first refinement set the solvent to 6.5–8.5 and
-χ² went from 4.53 to 9.28. This is the likely source of the windows listed
-under "The solvent's SLD window follows the last fit" (207027 at 6.5–8.0,
-201290 at 6.40–8.40), and it adds to the Cu_G failures, where the description
-already says "likely deuterated".
-
-**The change.**
-
-1. Do not emit the instruction when the stated ambient is already a deuterated
-   form (within 1.0 of the solvent's tabulated `d_sld`). The question the hint
-   answers is then settled.
-2. Never name a target above the named solvent's `d_sld`. Say "consistent with
-   the deuterated form" and leave the number out.
-3. Before attributing the edge to the ambient, check the parsed stack: a layer
-   a few hundred Å thick with an SLD above the stated ambient sets the edge
-   itself. Skip the hint, or attribute it to that layer.
-4. Check the estimator on a simulated curve with this resolution; 0.0156–0.0166
-   against 0.0150 suggests the half-height rule reads high here.
-
-**Verifying a fix.** Across the 51 curves no prompt line names an ambient SLD
-above 6.4, and the four Cu_G curves carry no deuteration hint.
-
----
-
-## "If parameter tweaks have stopped making meaningful progress" is read as a precondition
-
-**Where:** [`src/aure/nodes/prompts.py`](src/aure/nodes/prompts.py) — the task
-paragraph of `FIT_EVALUATION_PROMPT`;
-[`src/aure/skills/structural-hypothesis-ranking/SKILL.md`](src/aure/skills/structural-hypothesis-ranking/SKILL.md)
-— "walk that list in rank order when parameter-only refinement stops making
-progress".
-
-**What is wrong.** The sentence allows a structural change once tweaks have
-stalled. At the first evaluation no tweak has been tried, so a literal reader
-tweaks first, whatever the fit shows. The prompt also gives the trajectory but
-not the pass number or the budget, so the model cannot see what a tweak costs.
-
-**What it costs.** v0.9.0, five passes, same description:
-
-| | gpt-5.4 | gpt-6.1-sol | gpt-6-luna |
-|---|---|---|---|
-| first evaluation of a failing baseline | structural 47/47 | tweak 47/47 | structural 25, tweak 22 |
-| all evaluations, structural / tweak | 181 / 1 | 50 / 145 | 90 / 102 |
-| runs with no structural change | 4 | 17 | 7 |
-| good | 40 | 29 | 36 |
-
-Sol states the reason: tweaks have "not yet demonstrated stagnation". Of its 34
-runs that changed the structure, 33 did so at the third evaluation or later,
-which leaves one or two tries. Its structural changes improved χ² 37 times in
-46, its tweaks 89 in 141. gpt-5.4 ignores the sentence the other way and never
-consolidates a structure that is nearly right, so the sentence steers neither
-model as intended. It is unchanged on main.
-
-A controlled test in reflbench (`questions/aure-01`, `aure-04`): v0.9.0's own
-first-evaluation prompt for 206976, with a planted baseline fit at χ² 6.01, 30
-repeats per model. gpt-6.1-sol tweaks in 30 of 30, citing the precondition
-("Parameter-refinement stagnation has not been established, so a targeted
-parameter refit should precede adding another layer"); gpt-5.4 changes the
-structure in 30 of 30; gpt-6-luna tweaks in 11 of 30, all 11 with the same
-reason. Swapping only the BIC paragraph for 2c05e66's changes little (Luna 8 of
-30, Sol and gpt-5.4 unchanged), so the precondition, not the BIC wording, is
-what holds the change back.
-
-Partly addressed by the non-interactive note in the evaluation prompt: on AuRE
-main's own prompt for the same fit, gpt-6.1-sol went from 0 to 15 of 15
-structural changes with the note ("stagnation is not established.
-Nevertheless, the user's explicit instruction ... applies now"), and gpt-6-luna
-from 13 to 15. That covers a run whose user hypothesis says what to do when the
-fit fails; a run without one still meets the precondition as written.
-
-**The change.** Say what justifies a structural change without a stall:
-residual fringes at a thickness the model lacks, a layer on a thickness or SLD
-bound in the direction a pending hypothesis explains, or a user instruction
-conditional on the fit failing. Reserve a tweak for a named parameter at a
-bound the structure does not explain. Print "evaluation k of N". This changes
-results for every run, so it needs the same care as other prompt changes
-against the `validation/` baseline.
-
-**Verifying a fix.** Sol on the cycled Cu_1 curves makes its first structural
-change at the first evaluation.
+**The change.** When the description hedges on what a material is ("likely",
+"probably", "should be"), have intake list the alternative as a hypothesis,
+in either isotope direction. To settle first: what the loop should do with a
+structural change that passes χ² only by adding a layer the sample's history
+does not allow (an SEI before any plating), since the clamp accepts it today.

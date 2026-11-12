@@ -383,12 +383,17 @@ linearly interpolated between the bracketing samples. If no plateau was captured
 `d log₁₀R / dQ`. Search range: `0.005 ≤ Q_c ≤ 0.05` Å⁻¹, excluding any region
 where fringes have already begun. At most one candidate is returned.
 
-**Δρ is a *contrast*, not an absolute SLD** — it is `ρ_substrate − ρ_ambient`,
-and the formula above assumes the incident medium is vacuum/air (ρ ≈ 0). This
-matters for solvent-contrast work: a D₂O ambient shifts the whole thing by
-≈ 6.36. `format_critical_edge_line` therefore renders it as "SLD contrast" and
-attaches the deterministic *implied ambient SLD* hint when the contrast is
-inconsistent with an H-form ambient.
+**Δρ is a *contrast*, not an absolute SLD**, and it is a hint, not a
+measurement of any one medium. It says some medium the beam reaches has an SLD
+above the incident medium's by about Δρ: the far medium or a thick layer on the
+way. The incident medium follows the geometry (the substrate in back
+reflection, the ambient otherwise); `annotate_critical_edges` records it on the
+edge. `contrast_low` / `contrast_high` are the contrasts where R crosses 80% and
+20% of the plateau: the width of the drop, not a confidence interval.
+`format_critical_edge_line` renders all of this with no absolute SLD and tells
+the reader not to set a value or a bound from it; the two hypothesis prompts
+(intake and revision) receive it as "What the Data Show". Nothing in the
+workflow turns the edge into a model value.
 
 Confidence is keyed off edge sharpness `|d log₁₀R/dQ|` at Q_c: `> 50` high,
 `> 20` medium, else low.

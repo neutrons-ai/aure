@@ -45,8 +45,17 @@ def extract_critical_edges(
         min_qc: Minimum Qc to consider (Å⁻¹)
         max_qc: Maximum Qc to consider (Å⁻¹)
 
+    The estimate is rough. Its position depends on the edge's shape and on the
+    Q resolution, and the contrast it gives belongs to *some* medium the beam
+    reaches, not necessarily the far one. ``contrast_low``/``contrast_high`` are
+    the contrasts at 80% and 20% of the plateau: how wide the drop is, not a
+    confidence interval. Consumers should treat the edge as a hint about what
+    to test (see :func:`format_critical_edge_line`), never as an SLD to set.
+
     Returns:
-        List of dicts with {Qc, estimated_SLD, confidence, gradient}
+        List of dicts with {Qc, estimated_SLD, confidence, gradient,
+        contrast_low, contrast_high}; the last two are None when that side of
+        the drop is not in the data.
     """
     log_R = np.log10(np.maximum(R, 1e-12))
 
@@ -132,6 +141,23 @@ def extract_critical_edges(
     # SLD contrast from Qc:  Δρ = (Qc / 4)² / π  × 10⁶  (incident medium = 0)
     sld = (qc / 4) ** 2 / np.pi * 1e6
 
+    # How wide the drop is: the contrasts where R crosses 80% and 20% of the
+    # plateau. Only meaningful when the plateau itself was captured.
+    def _contrast_at(level: float):
+        if cross_idx is None or cross_idx == int(search_idx[0]):
+            return None
+        for k in search_idx:
+            if R_smooth[k] < level * plateau:
+                if k > 0 and R_smooth[k - 1] != R_smooth[k]:
+                    f = (R_smooth[k - 1] - level * plateau) / (
+                        R_smooth[k - 1] - R_smooth[k]
+                    )
+                    q = float(Q[k - 1] + f * (Q[k] - Q[k - 1]))
+                else:
+                    q = float(Q[k])
+                return float((q / 4) ** 2 / np.pi * 1e6)
+        return None
+
     edge_sharpness = abs(dlogR_dQ[qc_idx])
     if edge_sharpness > 50:
         confidence = "high"
@@ -146,6 +172,8 @@ def extract_critical_edges(
             "estimated_SLD": float(sld),
             "confidence": confidence,
             "gradient": float(dlogR_dQ[qc_idx]),
+            "contrast_low": _contrast_at(0.8),
+            "contrast_high": _contrast_at(0.2),
         }
     ]
 
@@ -843,28 +871,36 @@ def _deduplicate_thicknesses(thicknesses: List[Dict]) -> List[Dict]:
 
 
 def format_critical_edge_line(edge: Dict) -> str:
-    """One-line description of a critical edge, incl. any ambient-SLD hint.
+    """One-line description of a critical edge, as a hint about what to test.
 
-    Shared by the analysis display and the evaluation/modeling prompts so the
-    deterministic "critical edge implies a deuterated ambient" hint (annotated
-    onto the edge by the analysis node) travels wherever critical edges are
-    shown.
+    Shared by the analysis display and every prompt that shows features. It
+    states what the edge means and no more: some medium the beam reaches has an
+    SLD above the incident medium's by about the contrast. It does not say which
+    medium (the far one, or a thick layer on the way), gives no absolute SLD, and
+    tells the reader not to set a value or a bound from it. ``incident_medium``
+    (annotated by the analysis node from the geometry) names the reference.
     """
     line = (
-        f"Qc = {edge.get('Qc', 0):.4f} Å⁻¹ → SLD contrast ≈ "
-        f"{edge.get('estimated_SLD', 0):.2f} × 10⁻⁶ Å⁻² "
-        f"({edge.get('confidence', '?')} confidence)"
+        f"Qc ≈ {edge.get('Qc', 0):.4f} Å⁻¹: total reflection below it, so some "
+        f"medium the beam reaches has an SLD about {edge.get('estimated_SLD', 0):.1f} "
+        "× 10⁻⁶ Å⁻² above the incident medium's"
     )
-    implied = edge.get("implied_ambient_sld")
-    if edge.get("suggests_deuteration") and implied is not None:
-        sub = edge.get("substrate_sld")
-        sub_str = f"{sub:.2f}" if isinstance(sub, (int, float)) else "?"
+    inc = edge.get("incident_medium") or {}
+    if inc.get("name") and isinstance(inc.get("sld"), (int, float)):
         line += (
-            f" — with the substrate (SLD {sub_str}) this implies an ambient SLD "
-            f"≈ {implied:.1f}, far above the H-form (~0): the ambient is very "
-            f"likely DEUTERATED. Constrain the ambient SLD near {implied:.1f}, "
-            f"not across the full H–D range."
+            f" ({inc['name']}, SLD {inc['sld']:.2f}: the beam enters through "
+            f"the {inc.get('side', 'incident medium')})"
         )
+    lo, hi = edge.get("contrast_low"), edge.get("contrast_high")
+    if isinstance(lo, (int, float)) and isinstance(hi, (int, float)):
+        line += f". Approximate: the drop spans a contrast of {lo:.1f}–{hi:.1f}, and"
+    else:
+        line += ". Approximate:"
+    line += (
+        " the Q resolution and the edge's shape shift it. That medium may be the "
+        "far one or a thick layer on the way. A hint about what to test, not a "
+        "value to set an SLD or its bounds from."
+    )
     return line
 
 

@@ -1357,6 +1357,7 @@ def propose_hypothesis_revision_with_llm(
         concerns=(analysis.get("physical_concerns") or [])
         + (analysis.get("issues") or []),
         state_names=_state_names(state),
+        features=state.get("extracted_features"),
     )
     response = invoke_with_timeout(llm, [HumanMessage(content=prompt)])
     match = re.search(r"\{[\s\S]*\}", response.content)

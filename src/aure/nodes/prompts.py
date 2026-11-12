@@ -158,6 +158,9 @@ parameter-only refinement fails to reach the χ² acceptance threshold.
 ## Run Title from the Data File Header (weak evidence)
 {run_titles}
 
+## What the Data Show (hints, not measurements)
+{data_hints}
+
 ## Task
 
 Follow the `structural-hypothesis-ranking` skill. Enumerate plausible
@@ -190,8 +193,17 @@ rather than changing the layer stack. The most important one: when the ambient
 is a liquid whose isotope was not specified, propose reinterpreting it as a
 **deuterated solvent** (ambient SLD ≈ 0 → the D-form value, over a wide range
 spanning both). List this even when the layer stack already looks complete — the
-missing piece is the ambient's isotope, not a layer. Rank it high when the data
-could show a critical edge / strong low-Q feature.
+missing piece is the ambient's isotope, not a layer.
+
+"What the Data Show" may report a critical edge. It is a hint that some medium
+the beam reaches has a higher SLD than the incident medium, by roughly the
+contrast given. Ask whether the baseline model above contains such a medium. If
+it does, the edge needs no hypothesis. If it does not, propose what could carry
+that contrast as hypotheses to test, citing the edge in the `rationale`: a
+liquid ambient that is deuterated, or partly so, when its isotope was not
+stated; or a thick layer with a high SLD. The edge does not say which, and its
+position is approximate, so do not copy its contrast into an SLD value or
+range: take values from the materials.
 
 A hypothesis may also be scoped to a SUBSET OF THE STATES listed above, when
 more than one state is present. The states share a layer template, but they are
@@ -281,6 +293,17 @@ def _format_states_section(state_names: list | None) -> str:
     return "\n".join(lines)
 
 
+def _format_data_hints(features: dict | None) -> str:
+    """Render what the data show, for the hypothesis prompts.
+
+    Only the critical edge today. A hint about what to test: the wording is
+    :func:`format_critical_edge_line`'s, which gives no absolute SLD.
+    """
+    edges = (features or {}).get("critical_edges") or []
+    lines = [f"- Critical edge: {format_critical_edge_line(e)}" for e in edges[:2]]
+    return "\n".join(lines) or "  (no critical edge found in the measured Q range)"
+
+
 def _format_run_titles(run_titles: list | None) -> str:
     """Render per-state run titles for the hypothesis prompt.
 
@@ -307,6 +330,7 @@ def format_structural_hypothesis_prompt(
     hypothesis: str | None = None,
     run_titles: list | None = None,
     state_names: list | None = None,
+    features: dict | None = None,
 ) -> str:
     """Format the prompt that asks the LLM to produce ranked structural
     hypotheses from the parsed sample and active skill bodies.
@@ -325,6 +349,9 @@ def format_structural_hypothesis_prompt(
     ``state_names`` lists the run's measurement states. The parsed sample is a
     single flattened stack, so without them the prompt cannot express — let
     alone rank — a change that applies to one state and not another.
+
+    ``features`` carries what the data show before any fit — today the critical
+    edge — rendered as hints for choosing what to test, never as values.
     """
     sub = parsed_sample.get("substrate", {}) or {}
     amb = parsed_sample.get("ambient", {}) or {}
@@ -346,6 +373,7 @@ def format_structural_hypothesis_prompt(
         user_hypothesis=(hypothesis or "").strip() or "(none stated)",
         run_titles=_format_run_titles(run_titles),
         states_section=_format_states_section(state_names),
+        data_hints=_format_data_hints(features),
     )
 
 
@@ -1049,6 +1077,9 @@ evaluator's concerns. Reconsider the list in light of that evidence and the
 ## Evaluator's Concerns
 {concerns}
 
+## What the Data Show (hints, not measurements)
+{data_hints}
+
 ## Existing Ranked Hypotheses
 {structural_hypotheses}
 
@@ -1115,6 +1146,7 @@ def format_hypothesis_revision_prompt(
     concerns: list | None = None,
     per_state_residual_analysis: Dict[str, Any] | None = None,
     state_names: list | None = None,
+    features: dict | None = None,
 ) -> str:
     """Format the prompt that asks the LLM to propose new hypotheses and re-rank.
 
@@ -1147,6 +1179,7 @@ def format_hypothesis_revision_prompt(
         concerns=concerns_str,
         structural_hypotheses=_format_structural_hypotheses(structural_hypotheses),
         states_section=_format_states_section(state_names),
+        data_hints=_format_data_hints(features),
     )
 
 

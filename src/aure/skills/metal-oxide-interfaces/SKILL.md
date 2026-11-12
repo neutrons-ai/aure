@@ -242,9 +242,11 @@ cupric oxide from no oxide at all.
 
 ## Verification
 
-1. **The critical edge implies the topmost SLD.** For a metal in a solvent, that
-   is the ambient; for a film in air, the film. If it disagrees with the model,
-   the top of the stack is wrong.
+1. **The critical edge needs a medium to explain it.** It says some medium the
+   beam reaches has a higher SLD than the incident one, by roughly the reported
+   contrast: a thick film or the far medium. If nothing in the model reaches
+   that SLD, something is missing or mislabelled; the edge does not say which,
+   and it is too approximate to set a value from.
 2. **Total thickness from fringe spacing** against the sum of your layers. The
    estimate is often loose, but an order-of-magnitude disagreement is real.
 3. **Every oxide fit at least twice**, from different starting SLDs, per

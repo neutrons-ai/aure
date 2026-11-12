@@ -186,8 +186,10 @@ noisier ones:
   a state, the layer cannot jump discontinuously between the two steady states.
   Tying the endpoints across the series rules out mode pairs that would require
   an implausible excursion in between.
-- **The critical edge constrains the topmost layer** independently of any fringe
-  analysis: `Qc` and the SLD it implies are a direct measurement.
+- **The critical edge is independent of the fringe analysis**: it says the
+  stack holds a medium whose SLD is above the incident medium's by roughly the
+  reported contrast. A rough check on the model's highest-SLD thick medium, not
+  a value to fit to.
 - Report the series as a physically coherent story (what grew, what stayed
   fixed), not as independent fits that happen to disagree.
 
