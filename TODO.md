@@ -1001,7 +1001,7 @@ $\hat N$ alongside the entropy.
 
 ---
 
-The next five entries come from one reading of the 51-curve copper series, made
+The next four entries come from one reading of the 51-curve copper series, made
 for the reflbench question set (its `docs/sweep-habits.md` has the full tables).
 Sweeps: gpt-5.4, gpt-6.1-sol and gpt-6-luna on v0.9.0; gpt-6-luna on 2c05e66
 with `amoeba` and with `de` at `-m 10`; gpt-5.4 on 1097fdb (30 curves scored).
@@ -1108,6 +1108,13 @@ structure in 30 of 30; gpt-6-luna tweaks in 11 of 30, all 11 with the same
 reason. Swapping only the BIC paragraph for 2c05e66's changes little (Luna 8 of
 30, Sol and gpt-5.4 unchanged), so the precondition, not the BIC wording, is
 what holds the change back.
+
+Partly addressed by the non-interactive note in the evaluation prompt: on AuRE
+main's own prompt for the same fit, gpt-6.1-sol went from 0 to 15 of 15
+structural changes with the note ("stagnation is not established.
+Nevertheless, the user's explicit instruction ... applies now"), and gpt-6-luna
+from 13 to 15. That covers a run whose user hypothesis says what to do when the
+fit fails; a run without one still meets the precondition as written.
 
 **The change.** Say what justifies a structural change without a stall:
 residual fringes at a thickness the model lacks, a layer on a thickness or SLD
@@ -1230,29 +1237,3 @@ want the 41 Å oxide/solvent interface.
 
 **Verifying a fix.** In reflbench, `assess-06` scores like `assess-04` and
 `assess-07` like `assess-03` for every model.
-
----
-
-## The evaluator may ask a user who is not there
-
-**Where:** [`src/aure/nodes/prompts.py`](src/aure/nodes/prompts.py) —
-`needs_user_guidance` in `FIT_EVALUATION_PROMPT`;
-[`src/aure/nodes/intake.py`](src/aure/nodes/intake.py) — `USE_RUN_TITLE`.
-
-**What is wrong.** In a batch run nobody answers, and the prompt does not say
-so. The copper description gives one surface for OCV and another for cycling,
-and a hypothesis to try "if the fit is still not acceptable". Which state a
-file is in appears only in its run title (`…_OCV2-206915-1`), which is withheld
-by default. A careful model then waits for a fact it cannot get.
-
-**What it costs.** Evaluations that ask to confirm OCV or cycling before
-acting: luna 27 of 214 on v0.9.0, 60 of 210 on 2c05e66, 108 of 351 with ten
-passes; gpt-5.4 3 of 220 and 1 of 132. Typical text: "Do not add a plated layer
-or SEI unless the measurement is from a cycling state." Luna also lists
-"Restore the native Cu oxide if this is an OCV measurement" as a hypothesis.
-
-**The change.** When the run is not interactive, say so in the prompt: no one
-can answer, act on the user's stated hypothesis, and treat a failed fit of the
-stated baseline as evidence about the state. Leave `needs_user_guidance` out of
-the schema in that case. These counts are also a data point for the
-`USE_RUN_TITLE` default.

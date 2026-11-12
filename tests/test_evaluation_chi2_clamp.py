@@ -1227,3 +1227,43 @@ def test_guidance_at_a_clamped_accept_reopens_the_loop(monkeypatch, feedback, re
     else:
         assert len(evaluations) == 1
     assert final["workflow_complete"] is True
+
+
+def test_a_batch_evaluator_is_told_no_one_will_answer():
+    """A batch run has no one to ask: the prompt says so and drops the question
+    field; an interactive run keeps the field and gets no such note."""
+    from aure.nodes.prompts import format_fit_evaluation_prompt
+
+    def _prompt(**kw):
+        return format_fit_evaluation_prompt(
+            sample_description="Cu on Si",
+            hypothesis="If the fit is not acceptable, add an SEI.",
+            chi_squared=6.0,
+            method="de",
+            converged=True,
+            parameters={},
+            features={},
+            chi2_max=1.5,
+            **kw,
+        )
+
+    batch = _prompt()
+    assert "This run is not interactive" in batch
+    assert "needs_user_guidance" not in batch
+    live = _prompt(interactive=True)
+    assert "not interactive" not in live
+    assert '"needs_user_guidance": <true/false' in live
+
+
+def test_the_evaluator_hears_whether_the_run_is_interactive(monkeypatch, stub_json_llm):
+    monkeypatch.setenv("CHI2_MAX", "2.5")
+    stub_json_llm({"acceptable": False, "issues": []})
+    seen = {}
+    monkeypatch.setattr(
+        evaluation, "format_fit_evaluation_prompt", lambda **kw: seen.update(kw) or ""
+    )
+    evaluation.evaluation_node(_state(4.0))
+    assert seen["interactive"] is False
+    seen.clear()
+    evaluation.evaluation_node(_state(4.0, interactive=True))
+    assert seen["interactive"] is True

@@ -406,7 +406,7 @@ skill. If parameter tweaks have stopped making meaningful progress and
 there is a `pending` hypothesis, your suggestion should be to realize that
 hypothesis (cite it by title). If a hypothesis was just `rejected` by the
 BIC guardrail, do not re-propose it.
-
+{run_mode}
 Respond in JSON format:
 {{
     "acceptable": <true/false - is this fit good enough to report?>,
@@ -415,8 +415,7 @@ Respond in JSON format:
     "suggestions": ["<list of actionable suggestions for improvement>"],
     "physical_concerns": ["<any physically unreasonable parameter values>"],
     "hypothesis_addressed": "<how well does this fit address the user's hypothesis, if any>",
-    "needs_user_guidance": <true/false - should we ask the user before proceeding?>,
-    "next_action": "<one of: 'parameter_tweak', 'structural_change', 'accept'>",
+{user_guidance_field}    "next_action": "<one of: 'parameter_tweak', 'structural_change', 'accept'>",
     "proposed_hypothesis_id": <id of the hypothesis to try next, or null if next_action != 'structural_change'>
 }}
 
@@ -428,6 +427,19 @@ Consider the sample description when evaluating if parameters make physical sens
 
 {user_criteria}
 """
+
+
+_NOT_INTERACTIVE = """
+This run is not interactive: no one will read this evaluation or answer a
+question before the next step. Decide from the sample description, the
+hypothesis and the data. When the user's hypothesis says what to try if the fit
+is not acceptable, and it is not, do that now; do not wait to confirm a fact the
+description and data do not give (whether the sample was cycled, for example).
+A baseline the description calls expected that still fits badly is itself
+evidence about the sample's state.
+"""
+
+_USER_GUIDANCE_FIELD = '    "needs_user_guidance": <true/false - should we ask the user before proceeding?>,\n'
 
 
 def _format_chi2_floor(chi2_min: float) -> str:
@@ -909,6 +921,7 @@ def format_fit_evaluation_prompt(
     per_state_residual_analysis: Dict[str, Any] | None = None,
     posterior: Dict[str, Any] | None = None,
     model_comparison: Dict[str, Any] | None = None,
+    interactive: bool = False,
 ) -> str:
     """
     Format the fit evaluation prompt.
@@ -991,6 +1004,10 @@ def format_fit_evaluation_prompt(
         per_file_chi2=_format_per_file_chi2(per_file_results),
         trajectory=_format_trajectory(fit_history, chi_squared, bic),
         structural_hypotheses=_format_structural_hypotheses(structural_hypotheses),
+        # Only an interactive run has someone to ask; a batch run is told so, and
+        # is not offered a question nobody will answer.
+        run_mode="" if interactive else _NOT_INTERACTIVE,
+        user_guidance_field=_USER_GUIDANCE_FIELD if interactive else "",
     )
 
 
