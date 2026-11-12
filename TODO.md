@@ -998,3 +998,286 @@ explains why aure uses bridge sampling instead. It costs bumps users who call
 
 **The change.** Report upstream with the four fixes, and propose returning
 $\hat N$ alongside the entropy.
+
+---
+
+The next six entries come from one reading of the 51-curve copper series, made
+for the reflbench question set (its `docs/sweep-habits.md` has the full tables).
+Sweeps: gpt-5.4, gpt-6.1-sol and gpt-6-luna on v0.9.0; gpt-6-luna on 2c05e66
+with `amoeba` and with `de` at `-m 10`; gpt-5.4 on 1097fdb (30 curves scored).
+Counts of what an evaluation "cites" are keyword matches on its issues and
+suggestions.
+
+## The critical-edge hint tells the model to put the solvent near 7.4
+
+**Where:** [`src/aure/tools/feature_tools.py`](src/aure/tools/feature_tools.py)
+— `format_critical_edge_line` and `extract_critical_edges`;
+[`src/aure/nodes/analysis.py`](src/aure/nodes/analysis.py) —
+`implied_ambient_sld_from_edge` and the hint built from it.
+
+**What is wrong.** The evaluation and modeling prompts carry this line whenever
+the edge-derived ambient SLD is more than 1.0 from the stated one:
+
+> … this implies an ambient SLD ≈ 7.4, far above the H-form (~0): the ambient is
+> very likely DEUTERATED. Constrain the ambient SLD near 7.4, not across the
+> full H–D range.
+
+Three things fail on the copper series:
+
+- The premise. The docstring says a film "does not set the edge; the edge is
+  fixed by the substrate/ambient contrast". These samples have 500–565 Å of
+  copper at 6.55, above the solvent, and the edge is the copper's. Three of the
+  four protonated-THF curves (reference solvent 0.19) show it: the hint reads
+  7.1–7.6 and calls the ambient deuterated.
+- The number. Copper against silicon gives Qc = 0.0150; the estimator returns
+  0.0156–0.0166 on the five curves checked, so even as a copper value it is
+  high.
+- The trigger. The brief already says d-THF, about 6.0. The hint was written to
+  catch a solvent stated as protonated, but `matches_stated` compares the stated
+  6.0 with the biased estimate and fails by 1.0–1.5.
+
+**What it costs.**
+
+| | |
+|---|---|
+| curves carrying the hint | 35 of 51 |
+| value on the 32 deuterated ones | 7.11–7.66, against references of 6.0–6.3 (1.04–1.53 too high, median 1.21) |
+| evaluations citing the critical edge | 66–85 % in every gpt-5.4 and gpt-6-luna sweep (gpt-oss-120b: 25–31 %) |
+| runs where the model raised the solvent's upper bound to 6.9 or more | 35 of 51 (gpt-5.4, v0.9.0); 38 and 40 of 51 (luna, v0.9.0 and 2c05e66) |
+| luna on 2c05e66: passes spent on a solvent hypothesis | 15, of which 4 improved χ² |
+
+On 206922 (luna, 2c05e66) the first refinement set the solvent to 6.5–8.5 and
+χ² went from 4.53 to 9.28. This is the likely source of the windows listed
+under "The solvent's SLD window follows the last fit" (207027 at 6.5–8.0,
+201290 at 6.40–8.40), and it adds to the Cu_G failures, where the description
+already says "likely deuterated".
+
+**The change.**
+
+1. Do not emit the instruction when the stated ambient is already a deuterated
+   form (within 1.0 of the solvent's tabulated `d_sld`). The question the hint
+   answers is then settled.
+2. Never name a target above the named solvent's `d_sld`. Say "consistent with
+   the deuterated form" and leave the number out.
+3. Before attributing the edge to the ambient, check the parsed stack: a layer
+   a few hundred Å thick with an SLD above the stated ambient sets the edge
+   itself. Skip the hint, or attribute it to that layer.
+4. Check the estimator on a simulated curve with this resolution; 0.0156–0.0166
+   against 0.0150 suggests the half-height rule reads high here.
+
+**Verifying a fix.** Across the 51 curves no prompt line names an ambient SLD
+above 6.4, and the four Cu_G curves carry no deuteration hint.
+
+---
+
+## "If parameter tweaks have stopped making meaningful progress" is read as a precondition
+
+**Where:** [`src/aure/nodes/prompts.py`](src/aure/nodes/prompts.py) — the task
+paragraph of `FIT_EVALUATION_PROMPT`;
+[`src/aure/skills/structural-hypothesis-ranking/SKILL.md`](src/aure/skills/structural-hypothesis-ranking/SKILL.md)
+— "walk that list in rank order when parameter-only refinement stops making
+progress".
+
+**What is wrong.** The sentence allows a structural change once tweaks have
+stalled. At the first evaluation no tweak has been tried, so a literal reader
+tweaks first, whatever the fit shows. The prompt also gives the trajectory but
+not the pass number or the budget, so the model cannot see what a tweak costs.
+
+**What it costs.** v0.9.0, five passes, same description:
+
+| | gpt-5.4 | gpt-6.1-sol | gpt-6-luna |
+|---|---|---|---|
+| first evaluation of a failing baseline | structural 47/47 | tweak 47/47 | structural 25, tweak 22 |
+| all evaluations, structural / tweak | 181 / 1 | 50 / 145 | 90 / 102 |
+| runs with no structural change | 4 | 17 | 7 |
+| good | 40 | 29 | 36 |
+
+Sol states the reason: tweaks have "not yet demonstrated stagnation". Of its 34
+runs that changed the structure, 33 did so at the third evaluation or later,
+which leaves one or two tries. Its structural changes improved χ² 37 times in
+46, its tweaks 89 in 141. gpt-5.4 ignores the sentence the other way and never
+consolidates a structure that is nearly right, so the sentence steers neither
+model as intended. It is unchanged on main.
+
+A controlled test in reflbench (`questions/aure-01`, `aure-04`): v0.9.0's own
+first-evaluation prompt for 206976, with a planted baseline fit at χ² 6.01, 30
+repeats per model. gpt-6.1-sol tweaks in 30 of 30, citing the precondition
+("Parameter-refinement stagnation has not been established, so a targeted
+parameter refit should precede adding another layer"); gpt-5.4 changes the
+structure in 30 of 30; gpt-6-luna tweaks in 11 of 30, all 11 with the same
+reason. Swapping only the BIC paragraph for 2c05e66's changes little (Luna 8 of
+30, Sol and gpt-5.4 unchanged), so the precondition, not the BIC wording, is
+what holds the change back.
+
+**The change.** Say what justifies a structural change without a stall:
+residual fringes at a thickness the model lacks, a layer on a thickness or SLD
+bound in the direction a pending hypothesis explains, or a user instruction
+conditional on the fit failing. Reserve a tweak for a named parameter at a
+bound the structure does not explain. Print "evaluation k of N". This changes
+results for every run, so it needs the same care as other prompt changes
+against the `validation/` baseline.
+
+**Verifying a fix.** Sol on the cycled Cu_1 curves makes its first structural
+change at the first evaluation.
+
+---
+
+## A passing fit is rarely accepted once the prompt carries warnings
+
+**Where:** [`src/aure/nodes/prompts.py`](src/aure/nodes/prompts.py) — the
+acceptance block of `FIT_EVALUATION_PROMPT`;
+[`src/aure/nodes/evaluation.py`](src/aure/nodes/evaluation.py) — the issues
+appended to a fit (`_check_boundary_hits`, the profile-excursion line);
+[`src/aure/skills/interface-swallowed-layers/SKILL.md`](src/aure/skills/interface-swallowed-layers/SKILL.md).
+
+**What is wrong.** The prompt says a fit within the threshold "should be marked
+acceptable: true", and in the same prompt lists warnings without saying which
+of them block acceptance. `interface-swallowed-layers` is a rule about quoting
+a layer's SLD; in the evaluation context it reads as a defect of the fit.
+
+**What it costs.** Fits evaluated at χ² ≤ 1.5, and how often they were accepted:
+
+| | accepted |
+|---|---|
+| gpt-5.4, v0.9.0 / 1097fdb | 38 of 39 / 20 of 22 |
+| gpt-6-luna, v0.9.0 | 22 of 42 |
+| gpt-6-luna, 2c05e66, `amoeba` | 7 of 26 |
+| gpt-6-luna, 2c05e66, `de`, ten passes | 11 of 143 |
+| gpt-oss-120b, v0.9.0 | 0 of 27 |
+
+In luna's 132 refusals with ten passes, the issues name a parameter at a bound
+(132), a profile artifact (114), the solvent (107), the swallowed-layer
+criterion (101) and the critical edge (87). It then made 40 structural changes
+on fits that already passed; 201236 under "The profile veto" is one result.
+
+The swallowed-layer criterion is cited in 125 of 210 luna evaluations on
+2c05e66 (1 of 214 on v0.9.0) and 67 of 132 for gpt-5.4 (0 of 220). Luna asks
+for "profile-based observables" in 42 evaluations, which the loop cannot act
+on. gpt-5.4 drew 36 hypotheses from the skill, such as "Remove the discrete
+CuOx slab and represent the Cu surface only by roughness". Luna on the same
+optimiser went from 36 good to 26; not all of that is this.
+
+**The change.** Mark each warning in the prompt as blocking or as a note.
+Blocking: a profile excursion outside the range of the layer and its
+neighbours (item 3 of the veto entry), and a violated user constraint. Notes: a
+bound that was hit and already auto-expanded, and the swallowed-layer
+criterion. For the skill itself, see the next entry.
+
+**Verifying a fix.** Luna on the pristine curves accepts the first fit that
+passes without a blocking warning.
+
+---
+
+## `interface-swallowed-layers` reads as an acceptance test, and most expert fits fail it
+
+**Where:** [`src/aure/skills/interface-swallowed-layers/SKILL.md`](src/aure/skills/interface-swallowed-layers/SKILL.md);
+[`src/aure/nodes/evaluation.py`](src/aure/nodes/evaluation.py) —
+`load_skill_context`, which puts every active skill in the evaluation prompt.
+
+**What is wrong.** The criterion's arithmetic is right: when
+σ_top + σ_bot > t/2, the profile never reaches the layer's nominal SLD. What
+the skill concludes from it is a reporting rule ("If the criterion fails, do
+not quote the layer's `rho`"). But it never says what failing means for the
+fit, and its framing reads as a verdict on the fit: "This failure is silent. It
+survives a good chi-squared", "That single unexamined number destroyed
+218386's oxide", "reparameterise". Its worked case is an interface width that
+was never a parameter and sat at a 20 Å default. The skill does not say that
+the urgency belongs to that case, not to widths the data have fitted.
+
+**What it costs.** A controlled test in reflbench (`questions/assess-06`): the
+pristine 201136 baseline fit (χ² 1.08, flat residuals; the expert accepts it)
+asked with and without this skill in the prompt, three repeats each.
+
+| | without the skill (assess-04) | with it (assess-06) |
+|---|---|---|
+| gpt-6.1-sol | accepts 1 of 1 | 0 of 3: refits with the oxide's interfaces capped to pass |
+| gpt-6-luna | accepts 1 of 1 | 0 of 3: the same |
+| gpt-oss-120b | accepts 1 of 1 | 0 of 3: replaces the oxide with a plated layer |
+| gpt-5.4 | accepts 1 of 1 | 3 of 3, though it calls the oxide "well resolved" while computing that it fails |
+
+Luna's reason, in its own words: "the fit is not acceptable for interpreting
+the oxide as a resolved slab, despite its good χ²".
+
+The skill's mirror case also goes wrong (`assess-07`): the merged 272 Å
+"copper oxide" at SLD 1.96 that every model rejects without the skill passes
+the criterion. With the skill, gpt-5.4 accepts it in 2 of 3 and gpt-oss-120b
+in 3 of 3, citing the pass.
+
+The criterion fails on most correct fits of this series. In the expert
+reference fits, the layer directly on the copper fails it in 40 of 50, the SEI
+in 18 of 36 and the native SiO₂ in 13 of 36. The reference for 201136 fails it
+like the fit above: a 55.7 Å oxide between 19.0 and 42.0 Å interfaces, with a
+profile minimum of 4.98 against a nominal 4.35.
+
+Doing what Sol and Luna ask costs the fit. Refitting 201136 with the oxide's
+interfaces capped at 10 and 20 Å, so that the criterion passes, gives χ² 1.56,
+outside the threshold, and moves the oxide from 63 Å at 4.57 to 77 Å at 5.12.
+With caps of 15 and 25 Å, χ² is 1.21 and the criterion still fails. The data
+want the 41 Å oxide/solvent interface.
+
+**The change.**
+
+1. Add a section to the skill, "What a failed criterion does not mean". It is
+   a caveat on the quoted SLD, not a defect of the fit. It is not a reason to
+   withhold acceptance, to cap or tie widths the data have fitted, or to change
+   the structure. Quote the profile's extremum or an integrated contrast
+   instead. Passing the criterion says the slab is resolved, not that it is the
+   material it is named.
+2. Put the urgency where the worked case puts it: an interfacial width that is
+   an unfitted default.
+3. Load the skill where SLDs are reported (finalize, the report) rather than
+   into the evaluation prompt, or load it there only with item 1 in place.
+
+**Verifying a fix.** In reflbench, `assess-06` scores like `assess-04` and
+`assess-07` like `assess-03` for every model.
+
+---
+
+## The evaluator may ask a user who is not there
+
+**Where:** [`src/aure/nodes/prompts.py`](src/aure/nodes/prompts.py) —
+`needs_user_guidance` in `FIT_EVALUATION_PROMPT`;
+[`src/aure/nodes/intake.py`](src/aure/nodes/intake.py) — `USE_RUN_TITLE`.
+
+**What is wrong.** In a batch run nobody answers, and the prompt does not say
+so. The copper description gives one surface for OCV and another for cycling,
+and a hypothesis to try "if the fit is still not acceptable". Which state a
+file is in appears only in its run title (`…_OCV2-206915-1`), which is withheld
+by default. A careful model then waits for a fact it cannot get.
+
+**What it costs.** Evaluations that ask to confirm OCV or cycling before
+acting: luna 27 of 214 on v0.9.0, 60 of 210 on 2c05e66, 108 of 351 with ten
+passes; gpt-5.4 3 of 220 and 1 of 132. Typical text: "Do not add a plated layer
+or SEI unless the measurement is from a cycling state." Luna also lists
+"Restore the native Cu oxide if this is an OCV measurement" as a hypothesis.
+
+**The change.** When the run is not interactive, say so in the prompt: no one
+can answer, act on the user's stated hypothesis, and treat a failed fit of the
+stated baseline as evidence about the state. Leave `needs_user_guidance` out of
+the schema in that case. These counts are also a data point for the
+`USE_RUN_TITLE` default.
+
+---
+
+## The copper-oxide SLD bounds in `metal-oxide-interfaces` exclude oxides the references measure
+
+**Where:** [`src/aure/skills/metal-oxide-interfaces/SKILL.md`](src/aure/skills/metal-oxide-interfaces/SKILL.md)
+— "SLD bounds: for a copper oxide, 4.0–6.5", "4.2–5.5 is a physically ordinary
+cuprous oxide", and the hypothesis example with "SLD 4.2–5.5".
+
+**What is wrong.** The skill gives two ranges and models pick either as hard
+bounds: luna uses [4.0, 6.5] in 39 runs and [4.0, 5.5] in 12, gpt-5.4 uses
+[4.2, 5.5] in 19 of the 26 parses that kept an oxide. The v0.9.0 text ("±2.0
+around nominal") gave [2.5, 6.5] for gpt-5.4, gpt-6.1-sol and gpt-6-luna
+(gpt-oss-120b: [4.0, 5.5] in 49 of 51). On the 13 pristine curves in d-THF, the
+reference's top layer is below 4.0 on five: 2.3, 3.4, 3.7, 3.8 and 3.9.
+
+**What it costs.** Little in these sweeps: all 13 pristine curves were still
+good for luna, because a bound that is hit gets widened, at the price of a
+pass. On cycled electrodes the higher floor is partly useful, since it stops
+the "oxide" from standing in for a lithium-rich layer.
+
+**The change.** State one set of bounds and call the other typical, not a
+bound. Lower the floor for a pristine film, where the skill's own table has
+Cu(OH)₂ at 2.46 and says a porous, hydrated oxide reads low. To settle first:
+whether the floor should depend on the state of the electrode.
