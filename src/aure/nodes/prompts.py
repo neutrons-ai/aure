@@ -236,7 +236,7 @@ Respond with ONLY a JSON array of objects:
   {{
     "title": "Add native cuprous oxide on top of Cu",
     "rationale": "metal-oxide-interfaces: an outermost Cu layer exposed to D2O develops a 10-50 A native oxide unless otherwise stated; the resolvable one is cuprous, since CuO at 6.46 is nearly contrast-matched to Cu at 6.55",
-    "change": "insert a CuOx layer of 10-50 A (SLD 4.2-5.5, porous to dense Cu2O) between Cu and D2O, roughness 3-15 A",
+    "change": "insert a CuOx layer of 10-50 A (SLD bounds 4.0-6.5; typically 4.2-5.5, porous to dense Cu2O) between Cu and D2O, roughness 3-15 A",
     "skill_source": "metal-oxide-interfaces",
     "states": []
   }}

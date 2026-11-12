@@ -1001,7 +1001,7 @@ $\hat N$ alongside the entropy.
 
 ---
 
-The next six entries come from one reading of the 51-curve copper series, made
+The next five entries come from one reading of the 51-curve copper series, made
 for the reflbench question set (its `docs/sweep-habits.md` has the full tables).
 Sweeps: gpt-5.4, gpt-6.1-sol and gpt-6-luna on v0.9.0; gpt-6-luna on 2c05e66
 with `amoeba` and with `de` at `-m 10`; gpt-5.4 on 1097fdb (30 curves scored).
@@ -1256,28 +1256,3 @@ can answer, act on the user's stated hypothesis, and treat a failed fit of the
 stated baseline as evidence about the state. Leave `needs_user_guidance` out of
 the schema in that case. These counts are also a data point for the
 `USE_RUN_TITLE` default.
-
----
-
-## The copper-oxide SLD bounds in `metal-oxide-interfaces` exclude oxides the references measure
-
-**Where:** [`src/aure/skills/metal-oxide-interfaces/SKILL.md`](src/aure/skills/metal-oxide-interfaces/SKILL.md)
-— "SLD bounds: for a copper oxide, 4.0–6.5", "4.2–5.5 is a physically ordinary
-cuprous oxide", and the hypothesis example with "SLD 4.2–5.5".
-
-**What is wrong.** The skill gives two ranges and models pick either as hard
-bounds: luna uses [4.0, 6.5] in 39 runs and [4.0, 5.5] in 12, gpt-5.4 uses
-[4.2, 5.5] in 19 of the 26 parses that kept an oxide. The v0.9.0 text ("±2.0
-around nominal") gave [2.5, 6.5] for gpt-5.4, gpt-6.1-sol and gpt-6-luna
-(gpt-oss-120b: [4.0, 5.5] in 49 of 51). On the 13 pristine curves in d-THF, the
-reference's top layer is below 4.0 on five: 2.3, 3.4, 3.7, 3.8 and 3.9.
-
-**What it costs.** Little in these sweeps: all 13 pristine curves were still
-good for luna, because a bound that is hit gets widened, at the price of a
-pass. On cycled electrodes the higher floor is partly useful, since it stops
-the "oxide" from standing in for a lithium-rich layer.
-
-**The change.** State one set of bounds and call the other typical, not a
-bound. Lower the floor for a pristine film, where the skill's own table has
-Cu(OH)₂ at 2.46 and says a porous, hydrated oxide reads low. To settle first:
-whether the floor should depend on the state of the electrode.

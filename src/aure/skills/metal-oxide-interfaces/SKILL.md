@@ -81,7 +81,8 @@ technique speaks about Cu(I), not Cu(II).
 oxide is porous and hydrated rather than bulk-dense, which lowers it further —
 Cu₂O at 80% of bulk density is 4.29. So a fitted copper-oxide SLD anywhere in
 **4.2–5.5** is a physically ordinary cuprous oxide, and the width of that range
-is porosity, not measurement error.
+is porosity, not measurement error. That is where fits typically land, not the
+bounds to set: those are below.
 
 A corollary worth knowing in aqueous and deuterated-solvent work: Cu₂O sits
 *below* both D₂O (6.373) and d8-THF (5.919), and Cu sits above both. So no
@@ -94,9 +95,19 @@ Recompute for any material not in this table rather than trusting a reference.
 ## Oxide Layer Fitting Guidelines
 
 - **Thickness bounds**: 5–200 Å (for initial oxide layers)
-- **SLD bounds**: for a copper oxide, 4.0–6.5 — porous cuprous up to just under
-  bulk copper. A value at the top of that range means *either* dense cupric oxide
-  *or* no oxide at all, and reflectivity alone will not distinguish them.
+- **SLD bounds**: for a copper oxide, **4.0–6.5** — porous cuprous up to just
+  under bulk copper. Set these, not the typical 4.2–5.5. A value at the top of
+  that range means *either* dense cupric oxide *or* no oxide at all, and
+  reflectivity alone will not distinguish them.
+- **A thin copper oxide on its 4.0 floor is not a problem in itself.** Below
+  about 50 Å its thickness and SLD trade off: a thinner layer at a lower SLD
+  fits the same data equally well (on one pristine film, 22 Å at 2.7 and 33 Å at
+  4.0 give the same χ²), and native oxides in electrolyte are often hydrated
+  enough to read below 4. Report the oxide's thickness × SLD contrast rather than
+  either number, and do not widen the floor or add a layer for that reason alone.
+  An oxide on its SLD floor **and** its thickness ceiling, with χ² well above the
+  threshold, is different: the data want a thicker, lower-SLD layer than any
+  oxide, which on a cycled electrode is the lithium-rich plated layer.
 - For other oxides, use ±2.0 around the recomputed nominal
 - Oxide roughness is typically 3–15 Å
 - A fitted metal SLD well below bulk means porosity, roughness being absorbed, or
@@ -152,7 +163,8 @@ If an outermost metal layer is in contact with air, D₂O/H₂O, or another
 reactive ambient and there is no oxide in the model, a native oxide is the
 **single most likely structural gap** — add it as a high-ranked hypothesis
 in the `structural-hypothesis-ranking` list at intake. For Cu in aqueous
-ambient: a resolvable copper oxide is **cuprous**, 10–50 Å, SLD 4.2–5.5. For Ti
+ambient: a resolvable copper oxide is **cuprous**, 10–50 Å, SLD bounds 4.0–6.5
+(typically 4.2–5.5). For Ti
 in aqueous ambient: TiO₂, 10–50 Å, SLD 2.0–3.2. Roughness typically 3–15 Å.
 
 During refinement, if parameter-only tweaks have not reached the
