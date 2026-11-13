@@ -171,6 +171,9 @@ If the user stated a hypothesis or a tentative ("may be", "expected",
 hypotheses and rank it at the TOP of the list (highest expected value),
 reformatted into the standard fields below, with `skill_source` set to
 "user". Reword it to align with the workflow but preserve the user's intent.
+What the user's hypothesis puts in the first model is the baseline above, not a
+change to test later: produce no hypothesis for it. A pending entry for it reads
+as a model still to be fitted, and the loop goes back to it.
 
 The run title above, when present, is free-form text typed by the instrument
 operator at measurement time. It is WEAK evidence: it may be stale,
@@ -444,6 +447,11 @@ skill. If parameter tweaks have stopped making meaningful progress and
 there is a `pending` hypothesis, your suggestion should be to realize that
 hypothesis (cite it by title). If a hypothesis was just `rejected` by the
 BIC guardrail, do not re-propose it.
+
+{user_hypothesis_scope}Only the data rule out a change the user's hypothesis
+calls for: a fit that does not want it, with bounds that let it show. Do not
+dismiss it, or propose removing it, because you infer the sample could not
+contain it; the description may simply not say.
 {run_mode}
 Respond in JSON format:
 {{
@@ -475,6 +483,13 @@ is not acceptable, and it is not, do that now; do not wait to confirm a fact the
 description and data do not give (whether the sample was cycled, for example).
 A baseline the description calls expected that still fits badly is itself
 evidence about the sample's state.
+"""
+
+# A staged hypothesis ("for the first model, do not include X yet") is shown
+# verbatim at every evaluation; without this, evaluators read it as a standing ban.
+_USER_HYPOTHESIS_SCOPE = """The first model has already been fitted. What the user's hypothesis says about
+the first model (or what to start with) applied to that fit only and does not
+limit later models.
 """
 
 _USER_GUIDANCE_FIELD = '    "needs_user_guidance": <true/false - should we ask the user before proceeding?>,\n'
@@ -1042,6 +1057,7 @@ def format_fit_evaluation_prompt(
         per_file_chi2=_format_per_file_chi2(per_file_results),
         trajectory=_format_trajectory(fit_history, chi_squared, bic),
         structural_hypotheses=_format_structural_hypotheses(structural_hypotheses),
+        user_hypothesis_scope=_USER_HYPOTHESIS_SCOPE if hypothesis else "",
         # Only an interactive run has someone to ask; a batch run is told so, and
         # is not offered a question nobody will answer.
         run_mode="" if interactive else _NOT_INTERACTIVE,
@@ -1115,6 +1131,9 @@ Following the `structural-hypothesis-ranking` skill:
    belongs in the template, unscoped. A scoped and an unscoped version of the
    same edit are two distinct hypotheses; propose the one the evidence supports,
    not both.
+
+   Do not propose undoing a user hypothesis (source "user") because you infer
+   the sample could not contain what it adds; only the data rule it out.
 
 2. Re-rank ALL live hypotheses — the existing `pending`/`tried` ones plus your
    new ones — by current expected value, best first. Do NOT resurrect or list

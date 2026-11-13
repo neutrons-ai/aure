@@ -1283,6 +1283,44 @@ def test_a_batch_evaluator_is_told_no_one_will_answer():
     assert '"needs_user_guidance": <true/false' in live
 
 
+def test_a_staged_user_hypothesis_does_not_limit_later_models():
+    """"For the first model, do not include X yet" was read at iteration 4 as a
+    standing ban (201306): the prompt says the first model is done, and that only
+    the data rule out what the user's hypothesis calls for."""
+    from aure.nodes.prompts import format_fit_evaluation_prompt
+
+    def _prompt(hypothesis):
+        return format_fit_evaluation_prompt(
+            sample_description="Cu on Si",
+            hypothesis=hypothesis,
+            chi_squared=3.0,
+            method="amoeba",
+            converged=True,
+            parameters={},
+            features={},
+            chi2_max=1.5,
+        )
+
+    staged = _prompt("For the first model, do not include an SEI yet. If the fit is not acceptable, add one.")
+    assert "The first model has already been fitted" in staged
+    assert "Only the data rule out a change the user's hypothesis" in staged
+    assert "The first model has already been fitted" not in _prompt(None)
+
+
+def test_intake_makes_no_hypothesis_of_the_first_model():
+    """The first-model part of a staged hypothesis became a `pending` hypothesis
+    that the evaluator went back to as "untested" (201306): intake is told not to."""
+    from aure.nodes.prompts import format_structural_hypothesis_prompt
+
+    prompt = format_structural_hypothesis_prompt(
+        sample_description="Cu on Si",
+        parsed_sample={"substrate": {"name": "Si", "sld": 2.07}, "layers": [], "ambient": {"name": "dTHF", "sld": 6.0}},
+        skill_context="",
+        hypothesis="For the first model, include a copper oxide. If the fit is not acceptable, add an SEI.",
+    )
+    assert "puts in the first model is the baseline" in prompt
+
+
 def test_the_evaluator_hears_whether_the_run_is_interactive(monkeypatch, stub_json_llm):
     monkeypatch.setenv("CHI2_MAX", "2.5")
     stub_json_llm({"acceptable": False, "issues": []})
