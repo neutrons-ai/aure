@@ -88,3 +88,23 @@ def test_structural_prompt_no_hypothesis():
 def test_sample_parse_prompt_keeps_tentative_out_of_baseline():
     p = format_sample_parse_prompt("Si / Cu in D2O", hypothesis="maybe an oxide")
     assert "OUT of the baseline" in p
+
+
+def test_a_hedged_material_gets_its_alternative_as_a_hypothesis():
+    """A description that hedges ("likely deuterated") has not confirmed the
+    material: the prompt asks for the alternative as a hypothesis to test, in
+    either isotope direction, ranked below the user's own."""
+    p = format_structural_hypothesis_prompt(
+        sample_description="Cu on Si in THF. The THF is likely deuterated.",
+        parsed_sample={
+            "substrate": {"name": "Si", "sld": 2.07},
+            "layers": [{"name": "Cu", "thickness": 500, "sld": 6.5}],
+            "ambient": {"name": "dTHF", "sld": 6.0},
+            "back_reflection": True,
+        },
+        skill_context="",
+    )
+    assert "A hedged statement is not a confirmed one" in p
+    assert '"likely deuterated" gets a hypothesis that' in p
+    assert "the protonated solvent" in p
+    assert "Rank it below the\nuser's own hypotheses" in p

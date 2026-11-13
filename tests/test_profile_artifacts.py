@@ -187,3 +187,34 @@ def test_roughness_ratio_is_informational_only():
     assert len(notes) == 1
     assert notes[0]["layer"] == "SiOx"
     assert notes[0]["ratio"] > 0.5
+
+
+def test_thin_layer_short_of_its_sld_is_a_note_not_an_artifact():
+    # The profile-veto case from TODO: a 19 Å native oxide at 3.63 whose 11.8 Å
+    # Ti interface keeps the profile below 3.63, yet between its neighbours.
+    seq = [2.07, 3.63, -2.5, 6.55, 4.5, 6.2]  # substrate -> ambient
+    z, rho = _profile_from_slabs(
+        [
+            (None, 6.2, None),
+            (100, 4.5, 15),
+            (150, 6.55, 8),
+            (650, -2.5, 6),
+            (700, 3.63, 11.8),
+            (719, 2.07, 3),
+        ]
+    )
+    res = detect_profile_artifacts(z, rho, seq)
+    assert res["has_artifact"] is False
+    assert any("short of a thin layer's nominal 3.63" in n for n in res["notes"])
+
+
+def test_overshoot_beyond_the_neighbours_is_still_an_artifact():
+    # A wide solvent interface across a thin low-SLD layer lifts the top of the
+    # copper above copper's own SLD: outside every medium, so a veto.
+    seq = [2.07, 6.53, 1.0, 6.37]
+    z, rho = _profile_from_slabs(
+        [(None, 6.37, None), (100, 1.0, 40), (130, 6.53, 8), (630, 2.07, 6)]
+    )
+    res = detect_profile_artifacts(z, rho, seq)
+    assert res["has_artifact"] is True
+    assert any(e["kind"] == "max" and e["sld"] > 6.53 for e in res["excursions"])

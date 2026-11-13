@@ -12,7 +12,7 @@ description: >
   reflectivity and is the single most common omission in sample descriptions.
 metadata:
   author: aure
-  version: "1.1"
+  version: "1.2"
 ---
 
 ## Always Suspect Unspecified Deuteration
@@ -24,6 +24,17 @@ Users routinely describe an electrolyte/solvent without naming the isotope
 default with an SLD ≈ 0, but the experiment may well have used a D-form
 (SLD ≈ 6) for contrast. Whether the liquid is H or D dominates the low-Q
 reflectivity, so getting it wrong cannot be repaired by parameter tuning.
+
+**The same applies in reverse, and to a hedge.** A description that says the
+solvent is "likely deuterated" or "probably d-THF" has not confirmed it: keep
+the stated isotope in the baseline and list "the solvent is the protonated
+form" as a hypothesis to test (H-form SLD from the table below, with a narrow
+range around it). The tell-tale when a protonated solvent is modelled as
+deuterated is the mirror image of the one below: the fit only works with a
+thick, diffuse, low-SLD layer (SLD near the H-form's, hundreds of Å, a very
+wide outer interface) between the film and the "deuterated" ambient, on a
+sample whose history gives nothing for that layer to be made of. That layer is
+the solvent.
 
 ### The signature: a critical edge / low-Q upturn the H-form can't explain
 
@@ -71,15 +82,19 @@ re-propose the same reinterpretation after it has been reverted.
    contrast — and apply ONLY the deuteration (change the ambient SLD, let it
    vary). Do not stack a deuterated ambient on top of the thick layer; that is
    over-parameterized and double-counts the contrast.
-4. **Use the critical edge to pin the ambient SLD — don't leave it wandering.**
-   The critical edge, with the known substrate SLD, *deterministically* fixes
-   the ambient SLD: `ρ_ambient ≈ ρ_substrate + (Qc/4)²/π` (assuming a film of
-   typical thickness, which does not set the edge). The feature analysis reports
-   this as an "implied ambient SLD". When it is available, **constrain the
-   ambient SLD tightly around that value** (≈ ±1), e.g. `[5.5, 6.6]` — not the
-   full H–D range `[−0.6, 6.6]`. A range left wide lets the optimizer settle on
-   a physically-wrong compromise (e.g. an ambient SLD of ~3 that trades off
-   against inflated layers) instead of the true deuterated value.
+4. **Take the ambient's SLD from the solvent, not from the critical edge.**
+   The critical edge says some medium the beam reaches has a higher SLD than
+   the incident one, by roughly the contrast the feature analysis reports. It
+   does not say that medium is the ambient: a thick high-SLD layer (a 50 nm
+   copper film, say) sets the same edge whatever the solvent is, and the edge's
+   position shifts with the Q resolution and its own shape. So treat it as a
+   reason to *test* the deuterated-ambient hypothesis, never as the ambient's
+   value. When you realize that hypothesis, set the ambient to the D-form value
+   in the table below with a narrow range around it (e.g. `[5.9, 6.5]` for
+   d8-THF), not the full H–D range `[−0.6, 6.6]`: a range left wide lets the
+   optimizer settle on a physically wrong compromise (an ambient near 3 traded
+   against inflated layers). A partly deuterated mixture is its own hypothesis,
+   with the range that mixture allows.
 
 ## Common Solvent SLDs (×10⁻⁶ Å⁻²)
 

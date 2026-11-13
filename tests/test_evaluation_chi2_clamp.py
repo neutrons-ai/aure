@@ -100,21 +100,40 @@ def _fit_with_profile(z, rho):
     return {"sld_z": list(z), "sld_rho": list(rho), "parameters": {}}
 
 
-# The Cu_K 207282 failure in minimal form: a thin low-SLD layer whose oversized
-# neighbouring roughness lets its erf tail turn at an SLD no material provides.
+# A real excursion: the Ti well's tail reaches across a thin, rough SiOx and the
+# profile dips below the substrate's SLD just before it, a turn no material has.
 ARTIFACT_INTERFACES = [
+    (None, 0.0, None),
+    (100, 6.42, 8),
+    (600, -1.61, 10),
+    (660, 3.2, 30),
+    (680, 2.07, 6),
+]
+
+ARTIFACT_MODEL = {  # layers substrate-first, as a ModelDefinition lists them
+    "ambient": {"name": "air", "sld": 0.0},
+    "substrate": {"name": "Si", "sld": 2.07, "roughness": 6},
+    "layers": [
+        {"name": "SiOx", "sld": 3.2, "thickness": 20, "roughness": 30},
+        {"name": "Ti", "sld": -1.61, "thickness": 60, "roughness": 10},
+        {"name": "Cu", "sld": 6.42, "thickness": 500, "roughness": 8},
+    ],
+}
+
+# Not an excursion: a thin Ti whose wide interfaces keep the profile short of its
+# own SLD, between it and its neighbours. A note on the fit, not a veto.
+SHORT_INTERFACES = [
     (None, 0.0, None),
     (100, 6.42, 8),
     (600, -1.61, 10),
     (660, 2.07, 30),
 ]
-
-ARTIFACT_MODEL = {
+SHORT_MODEL = {
     "ambient": {"name": "air", "sld": 0.0},
     "substrate": {"name": "Si", "sld": 2.07, "roughness": 30},
     "layers": [
-        {"name": "Cu", "sld": 6.42, "thickness": 500, "roughness": 8},
         {"name": "Ti", "sld": -1.61, "thickness": 60, "roughness": 10},
+        {"name": "Cu", "sld": 6.42, "thickness": 500, "roughness": 8},
     ],
 }
 
@@ -257,6 +276,15 @@ def test_the_profile_detectors_two_verdicts_veto_and_permit_the_clamp():
     # "Checked and clean" is the positive statement the clamp requires.
     assert good["_profile_checked"] is True
     assert _clamp(good, 1.0) is True
+
+    short = _analysis(acceptable=False)
+    evaluation._detect_profile_artifacts_into(
+        short, _fit_with_profile(*_profile_from_slabs(SHORT_INTERFACES)), SHORT_MODEL
+    )
+    assert "_profile_artifact" not in short
+    assert short["_profile_checked"] is True
+    assert any("short of a thin layer" in c for c in short["physical_concerns"])
+    assert _clamp(short, 1.0) is True
 
 
 @pytest.mark.parametrize(
@@ -1227,3 +1255,43 @@ def test_guidance_at_a_clamped_accept_reopens_the_loop(monkeypatch, feedback, re
     else:
         assert len(evaluations) == 1
     assert final["workflow_complete"] is True
+
+
+def test_a_batch_evaluator_is_told_no_one_will_answer():
+    """A batch run has no one to ask: the prompt says so and drops the question
+    field; an interactive run keeps the field and gets no such note."""
+    from aure.nodes.prompts import format_fit_evaluation_prompt
+
+    def _prompt(**kw):
+        return format_fit_evaluation_prompt(
+            sample_description="Cu on Si",
+            hypothesis="If the fit is not acceptable, add an SEI.",
+            chi_squared=6.0,
+            method="de",
+            converged=True,
+            parameters={},
+            features={},
+            chi2_max=1.5,
+            **kw,
+        )
+
+    batch = _prompt()
+    assert "This run is not interactive" in batch
+    assert "needs_user_guidance" not in batch
+    live = _prompt(interactive=True)
+    assert "not interactive" not in live
+    assert '"needs_user_guidance": <true/false' in live
+
+
+def test_the_evaluator_hears_whether_the_run_is_interactive(monkeypatch, stub_json_llm):
+    monkeypatch.setenv("CHI2_MAX", "2.5")
+    stub_json_llm({"acceptable": False, "issues": []})
+    seen = {}
+    monkeypatch.setattr(
+        evaluation, "format_fit_evaluation_prompt", lambda **kw: seen.update(kw) or ""
+    )
+    evaluation.evaluation_node(_state(4.0))
+    assert seen["interactive"] is False
+    seen.clear()
+    evaluation.evaluation_node(_state(4.0, interactive=True))
+    assert seen["interactive"] is True

@@ -890,6 +890,26 @@ cannot clean:
    the layer it sits in and that layer's two neighbours. A thin layer that
    falls short is a note on the fit, not an artifact.
 
+**Done: the second half of item 3.** `detect_profile_artifacts` now reports a
+thin layer whose profile turns short of its own SLD, between it and its nearer
+neighbour, as a note (`physical_concerns`), not an excursion. It is granted
+only to a turning point the profile does not reach, and only while the profile
+has no more extrema of that kind than the stack has turning points, so an
+extra turn such as the erf-tail dip below the substrate stays a veto. Replayed
+on every stored fit of luna's two 2c05e66 sweeps (`amoeba`, and `de` with ten
+passes): 214 of 409 vetoed fits are now clean, none of them out of range by
+aure-validation's own detector, and all 142 that are out of range stay vetoed.
+On 201236 all five four-layer fits (χ² 1.61) are now clean; on 207027 pass 10
+(χ² 1.47, the second kind) is still vetoed. Items 1, 2 and the first half of
+item 3 are open.
+
+**Why this matters more than the evaluator's wording.** The χ² clamp accepts a
+clean in-window fit whatever the LLM says: in those two sweeps and luna's
+v0.9.0 sweep, every fit with 0.5 ≤ χ² ≤ 1.5 and a clean profile ended its run
+(31 of 31, 18 of 18, 17 of 17), and every in-window fit after which the run
+went on had been vetoed (104 of 104, 7 of 7, 20 of 20). The LLM's refusals of
+passing fits only mattered where the veto had already withheld acceptance.
+
 ---
 
 ## The solvent's SLD window follows the last fit, so one bad pass can shut out the right value
@@ -998,3 +1018,39 @@ explains why aure uses bridge sampling instead. It costs bumps users who call
 
 **The change.** Report upstream with the four fixes, and propose returning
 $\hat N$ alongside the entropy.
+
+---
+
+## A fake SEI passes χ² before the protonated solvent is ever tried
+
+**Where:** [`src/aure/nodes/evaluation.py`](src/aure/nodes/evaluation.py) —
+`_clamp_acceptance_to_chi2`; [`src/aure/nodes/finalize.py`](src/aure/nodes/finalize.py)
+— the pending-hypotheses message.
+
+**What is wrong.** Cu_G, the one cell of the copper series in protonated THF
+(reference 0.19), is described as "THF ... likely deuterated", and every sweep
+kept dTHF on all four curves. Two causes are fixed: the critical-edge hint no
+longer says "very likely DEUTERATED. Constrain the ambient SLD near 7.6", and
+intake now lists the alternative when a description hedges, so "the solvent is
+protonated THF" is in the hypothesis list (gpt-5.4, gpt-6-luna and gpt-6.1-sol:
+8 of 8, against 0 to 2 of 8 before), ranked after the user's own hypotheses.
+
+What remains is the order of events. The baseline fails, the user's SEI is
+tried first, as it should be, and it fits: on 207194, the first curve, before
+any plating, χ² goes from 8.09 to 1.05 with a 283 Å "SEI" at SLD 1.42 under a
+245 Å outer interface. The χ² clamp accepts a clean in-window fit, so the run
+ends with the protonated solvent still `pending`. The same four baseline layers
+with protonated THF give χ² 1.07 with three fewer parameters.
+
+**What it costs.** Still all four Cu_G curves, until the loop tests that
+hypothesis. In reflbench's `assess-10` (the SEI fit, with protonated THF offered
+as a hypothesis), gpt-5.4 accepts the SEI fit in 30 of 30; gpt-6-luna tests the
+protonated solvent in 8 of 10 and gpt-6.1-sol in 10 of 10, which the clamp
+would overrule.
+
+**To settle first.** Whether a passing fit should end the run while a
+*reinterpretation* hypothesis is still pending. Options: let the evaluator
+withhold acceptance when the passing fit rests on a layer the sample's history
+does not allow (an SEI before any plating); or, budget allowing, test pending
+reinterpretations after the accept and let BIC or the evidence choose. Today
+`finalize` only reports them as untested.

@@ -45,8 +45,17 @@ def extract_critical_edges(
         min_qc: Minimum Qc to consider (Å⁻¹)
         max_qc: Maximum Qc to consider (Å⁻¹)
 
+    The estimate is rough. Its position depends on the edge's shape and on the
+    Q resolution, and the contrast it gives belongs to *some* medium the beam
+    reaches, not necessarily the far one. ``contrast_low``/``contrast_high`` are
+    the contrasts at 80% and 20% of the plateau: how wide the drop is, not a
+    confidence interval. Consumers should treat the edge as a hint about what
+    to test (see :func:`format_critical_edge_line`), never as an SLD to set.
+
     Returns:
-        List of dicts with {Qc, estimated_SLD, confidence, gradient}
+        List of dicts with {Qc, estimated_SLD, confidence, gradient,
+        contrast_low, contrast_high}; the last two are None when that side of
+        the drop is not in the data.
     """
     log_R = np.log10(np.maximum(R, 1e-12))
 
@@ -132,6 +141,23 @@ def extract_critical_edges(
     # SLD contrast from Qc:  Δρ = (Qc / 4)² / π  × 10⁶  (incident medium = 0)
     sld = (qc / 4) ** 2 / np.pi * 1e6
 
+    # How wide the drop is: the contrasts where R crosses 80% and 20% of the
+    # plateau. Only meaningful when the plateau itself was captured.
+    def _contrast_at(level: float):
+        if cross_idx is None or cross_idx == int(search_idx[0]):
+            return None
+        for k in search_idx:
+            if R_smooth[k] < level * plateau:
+                if k > 0 and R_smooth[k - 1] != R_smooth[k]:
+                    f = (R_smooth[k - 1] - level * plateau) / (
+                        R_smooth[k - 1] - R_smooth[k]
+                    )
+                    q = float(Q[k - 1] + f * (Q[k] - Q[k - 1]))
+                else:
+                    q = float(Q[k])
+                return float((q / 4) ** 2 / np.pi * 1e6)
+        return None
+
     edge_sharpness = abs(dlogR_dQ[qc_idx])
     if edge_sharpness > 50:
         confidence = "high"
@@ -146,6 +172,8 @@ def extract_critical_edges(
             "estimated_SLD": float(sld),
             "confidence": confidence,
             "gradient": float(dlogR_dQ[qc_idx]),
+            "contrast_low": _contrast_at(0.8),
+            "contrast_high": _contrast_at(0.2),
         }
     ]
 
@@ -843,28 +871,36 @@ def _deduplicate_thicknesses(thicknesses: List[Dict]) -> List[Dict]:
 
 
 def format_critical_edge_line(edge: Dict) -> str:
-    """One-line description of a critical edge, incl. any ambient-SLD hint.
+    """One-line description of a critical edge, as a hint about what to test.
 
-    Shared by the analysis display and the evaluation/modeling prompts so the
-    deterministic "critical edge implies a deuterated ambient" hint (annotated
-    onto the edge by the analysis node) travels wherever critical edges are
-    shown.
+    Shared by the analysis display and every prompt that shows features. It
+    states what the edge means and no more: some medium the beam reaches has an
+    SLD above the incident medium's by about the contrast. It does not say which
+    medium (the far one, or a thick layer on the way), gives no absolute SLD, and
+    tells the reader not to set a value or a bound from it. ``incident_medium``
+    (annotated by the analysis node from the geometry) names the reference.
     """
     line = (
-        f"Qc = {edge.get('Qc', 0):.4f} Å⁻¹ → SLD contrast ≈ "
-        f"{edge.get('estimated_SLD', 0):.2f} × 10⁻⁶ Å⁻² "
-        f"({edge.get('confidence', '?')} confidence)"
+        f"Qc ≈ {edge.get('Qc', 0):.4f} Å⁻¹: total reflection below it, so some "
+        f"medium the beam reaches has an SLD about {edge.get('estimated_SLD', 0):.1f} "
+        "× 10⁻⁶ Å⁻² above the incident medium's"
     )
-    implied = edge.get("implied_ambient_sld")
-    if edge.get("suggests_deuteration") and implied is not None:
-        sub = edge.get("substrate_sld")
-        sub_str = f"{sub:.2f}" if isinstance(sub, (int, float)) else "?"
+    inc = edge.get("incident_medium") or {}
+    if inc.get("name") and isinstance(inc.get("sld"), (int, float)):
         line += (
-            f" — with the substrate (SLD {sub_str}) this implies an ambient SLD "
-            f"≈ {implied:.1f}, far above the H-form (~0): the ambient is very "
-            f"likely DEUTERATED. Constrain the ambient SLD near {implied:.1f}, "
-            f"not across the full H–D range."
+            f" ({inc['name']}, SLD {inc['sld']:.2f}: the beam enters through "
+            f"the {inc.get('side', 'incident medium')})"
         )
+    lo, hi = edge.get("contrast_low"), edge.get("contrast_high")
+    if isinstance(lo, (int, float)) and isinstance(hi, (int, float)):
+        line += f". Approximate: the drop spans a contrast of {lo:.1f}–{hi:.1f}, and"
+    else:
+        line += ". Approximate:"
+    line += (
+        " the Q resolution and the edge's shape shift it. That medium may be the "
+        "far one or a thick layer on the way. A hint about what to test, not a "
+        "value to set an SLD or its bounds from."
+    )
     return line
 
 
@@ -973,6 +1009,30 @@ def _turning_point_slds(layer_rhos):
     return turns
 
 
+def _turning_points(layer_rhos):
+    """Interior turning points of an ordered slab sequence, with the span a
+    swallowed version of each may reach.
+
+    Returns ``(sld, kind, lo, hi)`` per turning point, ``kind`` being ``"max"`` or
+    ``"min"``. ``lo``..``hi`` runs from the layer's own SLD to the nearer of its two
+    neighbours: where the profile turns when the layer is too thin for its
+    interfaces and falls short of its nominal SLD without leaving the range of the
+    layer and its neighbours. Direction-agnostic, like :func:`_turning_point_slds`.
+    """
+    s = [float(v) for v in layer_rhos]
+    out = []
+    for i in range(1, len(s) - 1):
+        d_prev = s[i] - s[i - 1]
+        d_next = s[i + 1] - s[i]
+        if d_prev == 0.0 or d_next == 0.0 or (d_prev > 0) == (d_next > 0):
+            continue
+        if d_prev > 0:  # local max
+            out.append((s[i], "max", max(s[i - 1], s[i + 1]), s[i]))
+        else:
+            out.append((s[i], "min", s[i], min(s[i - 1], s[i + 1])))
+    return out
+
+
 def detect_profile_artifacts(
     z,
     rho,
@@ -1000,6 +1060,15 @@ def detect_profile_artifacts(
     (found vs. expected from ``layer_rhos``) is reported as a supporting
     signal; the σ/thickness ratio is deliberately NOT used here, because a
     large roughness is legitimate when the model parametrizes a graded profile.
+
+    One case is a note, not an artifact: a thin layer whose interfaces are wide
+    for its thickness turns the profile *short* of its own SLD, between that SLD
+    and its nearer neighbour's. Nothing leaves the range of the layer and its two
+    neighbours, so the profile is physical; only the layer's fitted SLD is not a
+    material value. Such an extremum is reported in ``notes``. It is only granted
+    when the profile has no more extrema of that kind than the slab sequence has
+    turning points of that kind, so an *extra* turn (the erf-tail dip just below
+    the substrate) is still an artifact.
 
     Args:
         z: profile depth array.
@@ -1065,10 +1134,39 @@ def detect_profile_artifacts(
     extrema = _profile_extrema(z, rho, prom)
     lo_bound, hi_bound = min(media) - tol, max(media) + tol
 
+    points = _turning_points(media)
+    room = {
+        k: sum(1 for p in points if p[1] == k) - sum(1 for e in extrema if e[2] == k)
+        for k in ("max", "min")
+    }
+    # A turning point the profile reaches is taken; only the others can have
+    # been swallowed, so only they may explain an extremum that falls short.
+    free = [
+        p
+        for p in points
+        if not any(e[2] == p[1] and abs(e[1] - p[0]) <= tol for e in extrema)
+    ]
+
     excursions = []
+    notes = []
     for idx, val, kind in extrema:
         near_turning = any(abs(val - lvl) <= tol for lvl in turning)
         out_of_range = val < lo_bound or val > hi_bound
+        short_of = [
+            p
+            for p in free
+            if p[1] == kind and p[2] - tol <= val <= p[3] + tol and room[kind] >= 0
+        ]
+        if not near_turning and not out_of_range and short_of:
+            nominal = min(short_of, key=lambda p: abs(p[0] - val))
+            free.remove(nominal)
+            nominal = nominal[0]
+            notes.append(
+                f"profile turns at SLD {val:.2f} (z={float(z[idx]):.0f} Å), short of a "
+                f"thin layer's nominal {nominal:.2f}: its interfaces are wide for its "
+                "thickness, so that fitted SLD is not a material value"
+            )
+            continue
         if not near_turning:
             note = (
                 "profile SLD leaves the range reachable by the bounding media"
@@ -1085,7 +1183,6 @@ def detect_profile_artifacts(
                 }
             )
 
-    notes = []
     n_expected = len(turning)
     n_found = len(extrema)
     if n_found > n_expected:

@@ -361,6 +361,29 @@ def _fix_llm_json(text: str) -> str:
 _HYPOTHESIS_TEXT_FIELDS = ("title", "rationale", "change", "skill_source")
 
 
+def _data_hints(Q, R, parsed: Dict[str, Any] | None) -> Dict[str, Any] | None:
+    """What the data show before any fit, for the hypothesis prompt.
+
+    The ``analysis`` node computes the full feature set after intake; the
+    hypothesis list is drawn up here, so the one feature it can use — the
+    critical edge — is extracted early, by the same code. Never fatal.
+    """
+    if not Q or not R:
+        return None
+    try:
+        import numpy as np
+
+        from ..tools.feature_tools import extract_critical_edges
+        from .analysis import annotate_critical_edges
+
+        features = {"critical_edges": extract_critical_edges(np.array(Q), np.array(R))}
+        annotate_critical_edges(parsed, features)
+        return features
+    except Exception as e:  # a hint, not a requirement
+        logger.debug("[INTAKE] Critical-edge hint unavailable: %s", e)
+        return None
+
+
 def generate_structural_hypotheses_with_llm(
     sample_description: str,
     parsed_sample: Dict[str, Any],
@@ -368,6 +391,7 @@ def generate_structural_hypotheses_with_llm(
     hypothesis: str | None = None,
     run_titles: list[Dict[str, str]] | None = None,
     state_names: list[str] | None = None,
+    features: Dict[str, Any] | None = None,
 ) -> list[Dict[str, Any]]:
     """Ask the LLM for a ranked list of candidate structural changes.
 
@@ -407,6 +431,7 @@ def generate_structural_hypotheses_with_llm(
         hypothesis=hypothesis,
         run_titles=run_titles,
         state_names=state_names,
+        features=features,
     )
     llm = get_llm()
     try:
@@ -513,6 +538,7 @@ def _format_hypotheses_summary(hypotheses: list[Dict[str, Any]]) -> str:
 # ----------------------------------------------------------------------
 # Multi-state helpers (Ticket 05)
 # ----------------------------------------------------------------------
+
 
 def _enrich_dataset(ds: dict) -> dict:
     """Load Q/R/dR + parse header metadata for a single ``DatasetInfo``.
@@ -892,6 +918,11 @@ def intake_node(state: ReflectivityState) -> Dict[str, Any]:
                         for st in (state.get("states") or [])
                         if st.get("name")
                     ],
+                    features=_data_hints(
+                        updates.get("Q") or state.get("Q"),
+                        updates.get("R") or state.get("R"),
+                        parsed,
+                    ),
                 )
                 updates["structural_hypotheses"] = hypotheses
                 updates["llm_calls"].append(

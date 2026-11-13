@@ -188,7 +188,9 @@ class ExtractedFeatures(TypedDict):
     """Physics features extracted from reflectivity data."""
 
     # Critical edge information
-    critical_edges: List[dict]  # [{Qc, estimated_SLD, confidence}]
+    critical_edges: List[
+        dict
+    ]  # [{Qc, estimated_SLD, confidence, contrast_low, contrast_high, incident_medium}]
 
     # Oscillation/fringe information
     oscillation_periods: List[dict]  # [{delta_Q, thickness, amplitude}]

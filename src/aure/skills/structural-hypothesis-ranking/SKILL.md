@@ -61,8 +61,8 @@ For each hypothesis, provide:
   10–50 Å native oxide unless otherwise stated"*).
 - **change** — the concrete structural edit in neutral terms: insertion
   point, typical thickness, typical SLD, typical roughness. E.g. *"insert a
-  10–50 Å CuOx layer (SLD 4.2–5.5, porous to dense Cu₂O) between Cu and D₂O,
-  σ 3–15 Å"*.
+  10–50 Å CuOx layer (SLD bounds 4.0–6.5; typically 4.2–5.5, porous to dense
+  Cu₂O) between Cu and D₂O, σ 3–15 Å"*.
 - **skill_source** — the name of the skill motivating this hypothesis.
 
 ### Ranking criteria

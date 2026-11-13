@@ -774,6 +774,7 @@ def evaluation_node(state: ReflectivityState) -> Dict[str, Any]:
             # is no meaningful aggregate residual across separate probes), so
             # without this the evaluator is told no fringes were found.
             per_state_residual_analysis=latest_fit.get("per_state_residual_analysis"),
+            interactive=bool(state.get("interactive")),
         )
         used_fallback = analysis.pop("_used_fallback", False)
         updates["llm_calls"].append(
@@ -1356,6 +1357,7 @@ def propose_hypothesis_revision_with_llm(
         concerns=(analysis.get("physical_concerns") or [])
         + (analysis.get("issues") or []),
         state_names=_state_names(state),
+        features=state.get("extracted_features"),
     )
     response = invoke_with_timeout(llm, [HumanMessage(content=prompt)])
     match = re.search(r"\{[\s\S]*\}", response.content)
@@ -1523,6 +1525,7 @@ def analyze_fit_quality_with_llm(
     fit_history: Optional[list] = None,
     structural_hypotheses: Optional[list] = None,
     per_state_residual_analysis: Optional[Dict] = None,
+    interactive: bool = False,
 ) -> Dict[str, Any]:
     """
     Use LLM to analyze fit quality in context.
@@ -1531,6 +1534,9 @@ def analyze_fit_quality_with_llm(
     from the environment", for callers outside the workflow — ``aure evaluate``
     has no run state to pin it from, and the evaluator still has to be told what
     a χ² below the floor implies about the error model.
+
+    *interactive* says whether a person will see this verdict before the next
+    step; a batch run's prompt says no one will, and drops the question field.
 
     Returns:
         Dictionary with acceptable, issues, suggestions, etc.
@@ -1564,6 +1570,7 @@ def analyze_fit_quality_with_llm(
         per_state_residual_analysis=per_state_residual_analysis,
         posterior=fit_result.get("posterior"),
         model_comparison=fit_result.get("model_comparison"),
+        interactive=interactive,
     )
 
     response = invoke_with_timeout(llm, [HumanMessage(content=prompt)])
