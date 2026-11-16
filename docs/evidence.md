@@ -564,7 +564,7 @@ estimators against posteriors whose evidence is known exactly.
 
 ### 6.2 Synthetic reflectivity against nested sampling
 
-[`validation/evidence_study.py`](../validation/evidence_study.py) reproduces
+[`scripts/evidence_study.py`](../scripts/evidence_study.py) reproduces
 everything in this section.
 
 **Data.** 160 points on $Q=0.008$–$0.25$ Å⁻¹, $dQ/Q=2.5$ %, Gaussian noise.
@@ -696,9 +696,9 @@ sampling added 2 000. The nested references used 0.9–2.8 million calls each, i
 ### 6.4 Reproducing
 
 ```bash
-python -m validation.evidence_study run --out evidence_study/      # ≈ 25 min
-python -m validation.evidence_study nested --out evidence_study/   # needs dynesty; ≈ 40 min
-python -m validation.evidence_study report --out evidence_study/
+python scripts/evidence_study.py run --out evidence_study/      # ≈ 25 min
+python scripts/evidence_study.py nested --out evidence_study/   # needs dynesty; ≈ 40 min
+python scripts/evidence_study.py report --out evidence_study/
 ```
 
 Add `--budgets explore,final,long,verylong` for the 800 000-draw rows.

@@ -77,10 +77,11 @@ def _use_run_title_enabled() -> bool:
     by seeding ``origin="header"`` structural hypotheses.
 
     Off by default for two reasons: turning it on changes results for every
-    existing run (breaking comparability with the reference fits in
-    ``validation/``), and a wrong title in a multi-state co-refinement can
-    mislabel which state is which contrast, which corrupts the cross-state
-    parameter ties rather than merely adding a bad layer.
+    existing run (breaking comparability with the reference fits the
+    ``aure-validation`` repository scores against), and a wrong title in a
+    multi-state co-refinement can mislabel which state is which contrast,
+    which corrupts the cross-state parameter ties rather than merely adding a
+    bad layer.
     """
     return os.environ.get("USE_RUN_TITLE", "").strip().lower() in (
         "1",

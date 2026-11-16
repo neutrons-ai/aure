@@ -23,7 +23,7 @@ The longest-form design rationale lives in [docs/approach.md](docs/approach.md) 
 - Tests: `pytest tests/` (config in `pyproject.toml` adds `--cov=aure` and an html coverage report). Single test: `pytest tests/test_workflow.py::test_name -v`.
 - Lint/format: ruff is wired via pre-commit (`ruff-check --fix --ignore=E741,E402` then `ruff-format`). Install hooks with `pre-commit install`; run on demand with `pre-commit run --all-files`. Other hooks: yamllint, taplo (TOML), gitleaks.
 - CLI entry point: `aure …` (defined in `[project.scripts]` → `aure.cli:main`). Top-level commands: `analyze`, `prepare`, `batch`, `resume`, `checkpoints`, `inspect-checkpoint`, `import-refl1d`, `serve` / `interactive`, `check-llm`. Full reference is in [README.md](README.md).
-- Validation harness (separate package): `python -m validation.cli compare|chi2|diagnose` — compares fitted runs against reference models. See [validation/](validation/).
+- Validation against expert reference fits lives in a separate repository, `aure-validation`, not here. It runs `aure analyze` as a subprocess and reads `final_state.json` and the `--json` output itself, so a change to either's shape is a change it sees. The one study kept in this repo is [scripts/evidence_study.py](scripts/evidence_study.py), which reproduces the validation tables of [docs/evidence.md](docs/evidence.md) (`python scripts/evidence_study.py run|nested|report --out DIR`).
 
 ## Architecture
 

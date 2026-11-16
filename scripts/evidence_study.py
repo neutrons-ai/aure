@@ -4,9 +4,9 @@ Two synthetic reflectivity scenarios, fitted with DREAM exactly as aure
 configures it and summarized by ``aure.tools.posterior_tools``, scored against
 nested sampling (``dynesty``) on the same data and the same box priors::
 
-    python -m validation.evidence_study run   --out evidence_study/      # DREAM fits
-    python -m validation.evidence_study nested --out evidence_study/     # needs dynesty
-    python -m validation.evidence_study report --out evidence_study/     # the tables
+    python scripts/evidence_study.py run   --out evidence_study/      # DREAM fits
+    python scripts/evidence_study.py nested --out evidence_study/     # needs dynesty
+    python scripts/evidence_study.py report --out evidence_study/     # the tables
 
 ``run`` and ``nested`` take ``--models`` and ``--budgets`` / ``--seeds`` to do
 a subset; each job writes its own JSON, so jobs can run in parallel processes.

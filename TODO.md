@@ -568,11 +568,13 @@ since one iteration goes from seconds to a minute or more.
    `lm` or `amoeba` for speed. Whether AuRE's *exploration* default should
    move to `de` — with `dream` reserved for `FIT_METHOD_FINAL`, which is what
    `.env.example` already advises — is a separate and larger decision, with
-   its own implications for the `validation/` corpus.
+   its own implications for the validation corpus (the `aure-validation`
+   repository).
 2. **Default off**, behind `OPTIMIZER_ESCALATION` / a setup key, for the
    reason `USE_RUN_TITLE` and `MODE_ENUMERATION` are: turning it on changes
-   results for every run that would trigger it, and the reference fits in
-   `validation/` are the baseline that comparability depends on.
+   results for every run that would trigger it, and the reference fits the
+   `aure-validation` repository scores against are the baseline that
+   comparability depends on.
 3. **The regression guardrail needs reading first.** `evaluation` restores the
    previous model when χ² gets worse after a refinement. An escalation that
    lands worse must not be mistaken for a failed refinement — the model did
@@ -728,31 +730,6 @@ pure solvent's SLD moves by a few per cent at most (density, isotopic purity),
 so its window should be about that wide. The same two lines carry the
 inverted bounds for a negative ambient SLD noted in the code's `TODO(bug)`, so
 one change can fix both.
-
----
-
-## The validation harness scores the exploration fit under an adopted polish
-
-**Where:** [`validation/batch_runner.py`](validation/batch_runner.py) —
-`_selected_fit`, used for the job summary's χ² and for the `selected_fit` block
-of `state_summary.json`.
-
-**What is wrong.** It is one more private copy of "which fit is the answer":
-`fit_results[final_selection["index"]]`. AuRE's own surfaces now resolve the
-reported fit through `aure.state.reported_fit`, which returns the adopted
-final polish when there is one. The harness still scores the exploration fit —
-its χ², its values and its uncertainties — while the run's model and exported
-`problem.json` hold the polish's. Its own comment says it means "the reported
-answer, which is what a comparison should score".
-
-**What it costs.** Only sweeps run with `FIT_METHOD_FINAL` set. There, scored
-parameters and ± are the exploration fit's (with an `lm` exploration, `lm`'s
-covariance estimates), not the DREAM ones the run reports.
-
-**The change.** Use `aure.state.reported_fit`, keeping `selected_fit` for the
-`profile_artifact` flag (the polish is never evaluated and carries none). It
-changes what a polished sweep scores, so past and future sweep numbers are not
-comparable across the change — decide that before making it.
 
 ---
 

@@ -140,8 +140,9 @@ class REFLv1Instrument:
 
     #: Superseded by v2, but very far from gone: it is what the archive is
     #: full of, what most beamtimes still produce, and the format every
-    #: reference fit in ``validation/`` was made against. Legacy here means
-    #: "an older version of a live format", not "on the way out".
+    #: reference fit in the ``aure-validation`` repository was made against.
+    #: Legacy here means "an older version of a live format", not "on the way
+    #: out".
     format_version = 1
     lifecycle = LEGACY
     lifecycle_note = (
