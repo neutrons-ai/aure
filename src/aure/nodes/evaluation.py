@@ -347,16 +347,25 @@ def _clamp_acceptance_to_chi2(
 
 def _count_free_params(model: dict) -> int:
     """Count the number of free parameters in a ModelDefinition dict."""
+    from .model_builder import PINNABLE, is_pinned
+
     n = 0
-    # Each layer: thickness + SLD + roughness = 3
-    n += 3 * len(model.get("layers", []))
-    # Substrate roughness (if roughness_max is set, it's free)
+    # Each layer: thickness + SLD + roughness = 3, less whatever it holds.
+    for layer in model.get("layers", []):
+        n += 3 - sum(is_pinned(layer, key) for key in PINNABLE)
+    # Substrate roughness (if roughness_max is set, it's free — unless held)
     substrate = model.get("substrate", {})
-    if substrate.get("roughness_max") is not None:
+    if substrate.get("roughness_max") is not None and not is_pinned(
+        substrate, "roughness"
+    ):
         n += 1
     # Ambient SLD (free if not air and non-zero SLD)
     ambient = model.get("ambient", {})
-    if ambient.get("name", "").lower() != "air" and ambient.get("sld", 0) != 0:
+    if (
+        ambient.get("name", "").lower() != "air"
+        and ambient.get("sld", 0) != 0
+        and not is_pinned(ambient, "sld")
+    ):
         n += 1
     # Intensity (free unless fixed)
     intensity = model.get("intensity", {})
@@ -2197,10 +2206,23 @@ def _expand_model_bounds(model: dict, boundary_hits: list) -> dict:
     """Expand bounds in a ModelDefinition dict for parameters that hit a boundary.
 
     For each hit, the constrained side of the range is expanded by 50%.
+
+    A held parameter is never widened. It is not in the fit, so it cannot be
+    reported as a hit by a fit AuRE ran — but a hit list can come from a fit
+    stored before held parameters left the problem, when a zero-width window
+    sat on both of its bounds by construction.
     """
     import copy
 
+    from .model_builder import is_pinned
+
     model = copy.deepcopy(model)
+    _PIN_KEY = {
+        "thickness": "thickness",
+        "rho": "sld",
+        "irho": "sld",
+        "interface": "roughness",
+    }
 
     # Build a lookup: param_name -> (layer_dict, key_lo, key_hi)
     _RANGE_KEYS = {
@@ -2221,6 +2243,9 @@ def _expand_model_bounds(model: dict, boundary_hits: list) -> dict:
             layer_name = layer.get("name", "").lower()
             for field, (lo_key, hi_key) in _RANGE_KEYS.items():
                 if layer_name in name.lower() and field in name.lower():
+                    if field in _PIN_KEY and is_pinned(layer, _PIN_KEY[field]):
+                        matched = True
+                        break
                     if side == "lower" and lo_key and lo_key in layer:
                         lo_val = layer[lo_key]
                         hi_val = layer.get(hi_key, lo_val)
@@ -2240,7 +2265,7 @@ def _expand_model_bounds(model: dict, boundary_hits: list) -> dict:
         if not matched and "interface" in name.lower():
             substrate = model.get("substrate", {})
             sub_name = substrate.get("name", "").lower()
-            if sub_name in name.lower():
+            if sub_name in name.lower() and not is_pinned(substrate, "roughness"):
                 if side == "upper" and "roughness_max" in substrate:
                     r_max = substrate["roughness_max"]
                     substrate["roughness_max"] = r_max * 1.5

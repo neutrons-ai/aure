@@ -25,6 +25,7 @@ from ..llm import llm_available, get_llm, invoke_with_timeout
 from ..config import format_user_constraints
 from ..skills import SkillRegistry, load_skill_context
 from .hypotheses import merge_structural_hypotheses
+from .model_builder import PINNABLE, is_pinned
 from .prompts import format_model_refinement_prompt
 
 logger = logging.getLogger(__name__)
@@ -143,6 +144,87 @@ def _fold_single_state(model: dict) -> None:
         }
 
 
+def _restore_baseline_pins(baseline: dict | None, model: dict) -> list[str]:
+    """Put back every parameter the baseline model holds constant, in place.
+
+    The refine LLM re-emits the whole model, and it is told to widen what
+    sits on its bounds. A pin survives that only if the LLM copies it, and a
+    constant the user stated ("the copper is bulk copper, fix it") must not
+    depend on a copy. So what the *baseline* holds — the model built from the
+    description or the setup, before any refinement — is re-applied after each
+    one: value, window and flag, wherever a layer of the same name still
+    exists (and for the ambient, while it is the same material). A layer the
+    refinement renamed or removed is a different layer, and is left alone.
+
+    Only the baseline's pins are sticky. One the LLM adds later is its own
+    judgement and it may take it back.
+
+    Returns a label for each pin that had to be restored.
+    """
+    if not isinstance(baseline, dict):
+        return []
+    restored: list[str] = []
+
+    def _restore(src: dict, dst: dict, key: str, label: str) -> None:
+        if not is_pinned(src, key):
+            return
+        keys = (key, *PINNABLE[key])
+        # A held roughness and a roughness_tie contradict each other, and the
+        # builder lets the held value win — so a tie the refinement added to
+        # it is dropped here rather than warned about on every build.
+        tied = key == "roughness" and "roughness_tie" in dst
+        if all(dst.get(k) == src.get(k) for k in keys) and not tied:
+            return
+        for k in keys:
+            if k in src:
+                dst[k] = src[k]
+            else:
+                dst.pop(k, None)
+        if tied:
+            del dst["roughness_tie"]
+        restored.append(label)
+
+    def _restore_layers(src_layers, dst_layers, where: str = "") -> None:
+        by_name = {
+            ly.get("name"): ly for ly in src_layers or [] if isinstance(ly, dict)
+        }
+        for layer in dst_layers or []:
+            src = by_name.get(layer.get("name")) if isinstance(layer, dict) else None
+            if src is None:
+                continue
+            for key in PINNABLE:
+                _restore(src, layer, key, f"{where}{layer['name']} {key}")
+
+    _restore_layers(baseline.get("layers"), model.get("layers"))
+
+    base_ambient = baseline.get("ambient") or {}
+    ambient = model.get("ambient") or {}
+    if base_ambient.get("name") and base_ambient.get("name") == ambient.get("name"):
+        _restore(base_ambient, ambient, "sld", f"{ambient['name']} sld")
+
+    base_substrate = baseline.get("substrate") or {}
+    substrate = model.get("substrate") or {}
+    if base_substrate.get("name") and base_substrate.get("name") == substrate.get(
+        "name"
+    ):
+        _restore(
+            base_substrate, substrate, "roughness", f"{substrate['name']} roughness"
+        )
+
+    # A state's own stack (several states only; one state's lives on the model).
+    base_states = {
+        st.get("name"): st
+        for st in baseline.get("states") or []
+        if isinstance(st, dict)
+    }
+    for st in model.get("states") or []:
+        src = base_states.get(st.get("name")) if isinstance(st, dict) else None
+        if src and src.get("layers") and st.get("layers"):
+            _restore_layers(src["layers"], st["layers"], where=f"[{st['name']}] ")
+
+    return restored
+
+
 def _attach_state_metadata(
     model_def: dict,
     state: "ReflectivityState",
@@ -222,9 +304,11 @@ def _attach_state_metadata(
     # layer absent from every state is a genuine mistake (typo) and must raise;
     # stale ties from a structural edit are pruned on refine (see _refine_model),
     # not here.
-    from .model_builder import _resolve_tied_set
+    from .model_builder import _resolve_tied_set, check_state_ties
 
     _resolve_tied_set(model_def)
+    # ...and so is one tied parameter held at two different values.
+    check_state_ties(model_def)
 
 
 def modeling_node(state: ReflectivityState) -> Dict[str, Any]:
@@ -498,6 +582,15 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
                 )
             )
 
+        # What the baseline holds constant stays held, whatever came back.
+        restored_pins = _restore_baseline_pins(state.get("baseline_model"), new_model)
+        if restored_pins:
+            logger.info(
+                "[MODELING] Kept fixed as declared (the refinement changed or "
+                "released them): %s",
+                ", ".join(restored_pins),
+            )
+
         updates["current_model"] = new_model
         updates["model_history"] = [
             {
@@ -550,6 +643,12 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
 
         # Format explanation message
         changes = _summarize_definition_changes(current_model, new_model)
+        if restored_pins:
+            changes.append(
+                "Kept fixed as declared in the sample description or setup: "
+                + ", ".join(restored_pins)
+                + ". To release one, change the declaration and re-analyse."
+            )
         if pruned_specs:
             changes.append(
                 "Dropped tie spec(s) for removed layer(s): "
@@ -1038,8 +1137,12 @@ def _build_layers(parsed: dict, features: dict) -> List[dict]:
             provided_sld_max = layer.get("sld_max")
 
             if provided_sld_min is not None and provided_sld_max is not None:
-                # Check if the provided range is too narrow (less than 1.0 spread)
-                if (provided_sld_max - provided_sld_min) < 2.0:
+                if provided_sld_min == provided_sld_max:
+                    # A window of one point is a pin ("the copper is 6.48, fix
+                    # it"), not a narrow range. Widening it is how a stated
+                    # constant used to reach the fit as 6.48 ± 2.5.
+                    sld_min = sld_max = provided_sld_min
+                elif (provided_sld_max - provided_sld_min) < 2.0:
                     # Expand to ensure reasonable fitting flexibility
                     sld_min = max(sld - 2.5, -6.0)
                     sld_max = min(sld + 2.5, 10.0)
@@ -1091,6 +1194,12 @@ def _build_layers(parsed: dict, features: dict) -> List[dict]:
                     "roughness_max": roughness_max,
                 }
             )
+            if layer.get("roughness_min") is not None:
+                layers[-1]["roughness_min"] = layer["roughness_min"]
+            # Carry what the description said to hold constant.
+            for _lo, _hi, flag in PINNABLE.values():
+                if layer.get(flag):
+                    layers[-1][flag] = True
 
     # If no layers described, use feature estimates
     elif features.get("estimated_n_layers", 0) > 0:
@@ -1117,16 +1226,19 @@ def _build_layers(parsed: dict, features: dict) -> List[dict]:
 
     # Apply feature-based refinements
     if layers and features:
-        # Use estimated roughness
+        # Use estimated roughness — never on a roughness that is held.
         if features.get("estimated_roughness"):
             for layer in layers:
+                if is_pinned(layer, "roughness"):
+                    continue
                 layer["roughness"] = min(
                     layer["roughness"], features["estimated_roughness"]
                 )
 
-        # Widen thickness range to include feature-based estimate
+        # Widen thickness range to include feature-based estimate — unless the
+        # thickness is held, in which case the fringes do not get a say.
         est_thick = features.get("estimated_total_thickness")
-        if est_thick and len(layers) == 1:
+        if est_thick and len(layers) == 1 and not is_pinned(layers[0], "thickness"):
             user_thick = layers[0]["thickness"]
             # Keep user-described value as starting point; widen range
             # to include both the user value and the feature estimate.
@@ -1349,11 +1461,28 @@ def _explain_model(layers: list, substrate: dict, ambient: dict, features: dict)
         # the builder will apply (`_build_sample`).
         s_min = layer.get("sld_min", layer["sld"] - 2.5)
         s_max = layer.get("sld_max", layer["sld"] + 2.5)
-        lines.append(
-            f"- Layer {i}: d ∈ [{t_min:.0f}, {t_max:.0f}] Å, "
-            f"SLD ∈ [{s_min:.1f}, {s_max:.1f}], "
-            f"σ ∈ [0, {layer.get('roughness_max', 30):.0f}] Å"
+        # A held parameter is stated as such: whether a "fix this" took effect
+        # must be readable here, not only in the exported problem.
+        d_text = (
+            f"d fixed at {layer['thickness']:.0f} Å"
+            if is_pinned(layer, "thickness")
+            else f"d ∈ [{t_min:.0f}, {t_max:.0f}] Å"
         )
+        sld_text = (
+            f"SLD fixed at {layer['sld']:.2f}"
+            if is_pinned(layer, "sld")
+            else f"SLD ∈ [{s_min:.1f}, {s_max:.1f}]"
+        )
+        rough_text = (
+            f"σ fixed at {layer['roughness']:.1f} Å"
+            if is_pinned(layer, "roughness")
+            else f"σ ∈ [0, {layer.get('roughness_max', 30):.0f}] Å"
+        )
+        lines.append(f"- Layer {i}: {d_text}, {sld_text}, {rough_text}")
+    if is_pinned(ambient, "sld"):
+        lines.append(f"- Ambient: SLD fixed at {ambient['sld']:.2f}")
+    if is_pinned(substrate, "roughness"):
+        lines.append(f"- Substrate: σ fixed at {substrate.get('roughness', 3):.1f} Å")
 
     return "\n".join(lines)
 
@@ -1604,7 +1733,13 @@ def _validate_model_json(obj: dict) -> bool:
 
 
 def _widen_all_bounds_json(model: dict) -> dict:
-    """Fallback: widen all layer bounds by 50% in a ModelDefinition."""
+    """Fallback: widen all layer bounds by 50% in a ModelDefinition.
+
+    A held parameter (:func:`~aure.nodes.model_builder.is_pinned`) is left
+    exactly as it is. A zero-width window used to survive here only because
+    half of nothing is nothing; that is now a stated exemption, and it covers
+    the ``<key>_fixed`` flag, whose window is not zero-width.
+    """
 
     widened = copy.deepcopy(model)
     for layer in widened.get("layers", []):
@@ -1613,6 +1748,8 @@ def _widen_all_bounds_json(model: dict) -> dict:
             ("thickness_min", "thickness_max", "thickness"),
         ]:
             lo_key, hi_key, val_key = key_pair
+            if is_pinned(layer, val_key):
+                continue
             lo = layer.get(lo_key)
             hi = layer.get(hi_key)
             if lo is not None and hi is not None:
@@ -1621,7 +1758,7 @@ def _widen_all_bounds_json(model: dict) -> dict:
                 layer[hi_key] = hi + spread * 0.25
         # Widen roughness_max
         r_max = layer.get("roughness_max")
-        if r_max is not None:
+        if r_max is not None and not is_pinned(layer, "roughness"):
             layer["roughness_max"] = r_max * 1.5
     return widened
 

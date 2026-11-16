@@ -43,15 +43,19 @@ Extract the following information in JSON format:
             "sld": <SLD value>,
             "sld_min": <minimum possible SLD>,
             "sld_max": <maximum possible SLD>,
+            "sld_fixed": <true ONLY if the user says this SLD is known and must not be fitted, otherwise omit>,
             "thickness": <thickness in Å>,
-            "roughness": <roughness in Å, default 5>
+            "thickness_fixed": <true ONLY if the user says this thickness is known and must not be fitted, otherwise omit>,
+            "roughness": <roughness in Å, default 5>,
+            "roughness_fixed": <true ONLY if the user says this roughness is known and must not be fitted, otherwise omit>
         }}
     ],
     "ambient": {{
         "name": "material name (air, D2O, H2O, THF, dTHF, etc.)",
         "sld": <SLD value>,
         "sld_min": <minimum SLD if user specifies a range, otherwise omit>,
-        "sld_max": <maximum SLD if user specifies a range, otherwise omit>
+        "sld_max": <maximum SLD if user specifies a range, otherwise omit>,
+        "sld_fixed": <true ONLY if the user says the ambient SLD is known and must not be fitted, otherwise omit>
     }},
     "constraints": ["list of any constraints mentioned"],
     "hypothesis": "the hypothesis to test, if any",
@@ -73,6 +77,18 @@ Intensity normalization:
 - By default, allow intensity to vary between 0.7 and 1.1 to account for normalization uncertainty
 - If user says "data is perfectly normalized" or similar, set fixed=true
 - If user says "data needs large normalization correction" or similar, expand the range (e.g., 0.5 to 1.3)
+
+Known constants ("fix this"):
+- When the user states that a value is KNOWN and must be held — "the copper is bulk copper,
+  6.48, fix it", "hold the solvent SLD at 6.2", "do not fit the oxide thickness" — set the
+  value AND its flag: "sld_fixed": true on that layer (or on the ambient), "thickness_fixed"
+  or "roughness_fixed": true on that layer ("roughness_fixed" on the substrate for its own
+  roughness). Every parameter is fixed the same way: its value, plus "<name>_fixed": true.
+  A fixed parameter is held at its value and is not fitted at all.
+- Set a flag ONLY for a value the user asks to fix or says is known exactly. A value that is
+  merely given ("copper, SLD about 6.5", "roughly 50 nm thick") is a starting point: leave
+  the flag out so it is fitted. Never fix a value to make the fit easier.
+- "Fix both" after naming two values fixes both of them.
 
 Flat background:
 - A constant incoherent background added to the reflectivity (R_total = intensity*R + background).
@@ -1256,7 +1272,7 @@ You must output a COMPLETE, valid refl1d Python script (not a partial edit).
 Rules:
 1. Keep the same data file path and probe loading.
 2. You may add layers, remove layers, change materials, adjust SLD values, change parameter bounds, or add constraints.
-3. If parameters are hitting their bounds, widen those bounds.
+3. If parameters are hitting their bounds, widen those bounds — never for a value the user asked to hold fixed.
 4. If there are systematic residuals, consider adding an interface layer or adjusting the model structure.
 5. Use the best-fit parameter values as starting points for the refined model where they are physically reasonable.
 6. Always include `probe.intensity.range(...)` for normalization.
@@ -1423,7 +1439,8 @@ You must output a COMPLETE, valid JSON object matching this schema:
     "name": "material name",
     "sld": <SLD value>,
     "roughness": <roughness Å>,
-    "roughness_max": <max roughness Å>
+    "roughness_max": <max roughness Å>,
+    "roughness_fixed": <true if the substrate roughness is held constant — see rule 3a; otherwise omit>
   }},
   "layers": [
     {{
@@ -1431,12 +1448,15 @@ You must output a COMPLETE, valid JSON object matching this schema:
       "sld": <SLD value>,
       "sld_min": <minimum SLD>,
       "sld_max": <maximum SLD>,
+      "sld_fixed": <true if this SLD is held constant and not fitted — see rule 3a; otherwise omit>,
       "thickness": <thickness Å>,
       "thickness_min": <min thickness Å>,
       "thickness_max": <max thickness Å>,
+      "thickness_fixed": <true if this thickness is held constant — see rule 3a; otherwise omit>,
       "roughness": <roughness Å>,
       "roughness_min": <min roughness Å — omit unless the interface needs one>,
       "roughness_max": <max roughness Å>,
+      "roughness_fixed": <true if this roughness is held constant — see rule 3a; otherwise omit>,
       "roughness_tie": {{"fraction_max": <≤ 0.5>}}
     }}
   ],
@@ -1444,7 +1464,8 @@ You must output a COMPLETE, valid JSON object matching this schema:
     "name": "material name",
     "sld": <SLD value>,
     "sld_min": <minimum SLD if constrained, otherwise omit>,
-    "sld_max": <maximum SLD if constrained, otherwise omit>
+    "sld_max": <maximum SLD if constrained, otherwise omit>,
+    "sld_fixed": <true if the ambient SLD is held constant — see rule 3a; otherwise omit>
   }},
   "constraints": ["list of constraints"],
   "back_reflection": <true/false>,
@@ -1479,7 +1500,20 @@ Layers are listed from substrate to ambient (closest to substrate first).
 Rules:
 1. NEVER change data_file or back_reflection — these are set by the experiment.
 2. You may add layers, remove layers, change materials, adjust SLD values, or change parameter bounds.
-3. If parameters are hitting their bounds, widen those bounds (sld_min/sld_max, thickness_min/thickness_max).
+3. If parameters are hitting their bounds, widen those bounds (sld_min/sld_max, thickness_min/thickness_max)
+    — but NEVER for a parameter that is held constant (rule 3a).
+3a. HELD CONSTANTS. A parameter is held when its flag is true (`sld_fixed`,
+    `thickness_fixed`, `roughness_fixed` — every parameter the same way) or its
+    window has min equal to max. It is set to its
+    value and is NOT a fit parameter: it does not appear among the fitted
+    parameters and cannot be "hitting a bound". These are values the user
+    declared known ("the copper is bulk copper, fix it"). Copy every one from
+    the current model UNCHANGED — value, window and flag — and do not widen,
+    release or re-centre it. One declared in the starting model is re-applied
+    after your edit regardless, so changing it only wastes the iteration; if the
+    fit is poor, the cause is elsewhere in the structure. Do not add a flag of
+    your own to stabilise a fit: set one only when the user's description or
+    feedback says that value is known.
 4. If there are systematic residuals, consider adding a layer.
 4a. `roughness_min` is OPTIONAL and should be OMITTED unless you mean it. Omitted,
     a 5 Å floor applies — and that floor YIELDS to a smaller `roughness` you
@@ -1497,7 +1531,8 @@ Rules:
     on that layer so its interface is fit as σ = fraction × thickness and can
     never outgrow the layer. If instead the diffuse transition is physically
     intended, leave roughness free and treat those slabs as a profile
-    parametrization (do not add roughness_tie).
+    parametrization (do not add roughness_tie). Never add it to a layer whose
+    roughness is held (rule 3a): the held value wins and the tie is discarded.
 5. Use best-fit parameter values as starting points where physically reasonable.
 6. Unless the data is stated as perfectly normalized, keep intensity varying (fixed: false).
 7. Apply all domain-specific rules from the Domain Knowledge section above.

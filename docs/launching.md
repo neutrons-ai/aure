@@ -293,10 +293,9 @@ hypothesis. See
 for one state to differ from, so a `states:` block of length one that declares
 `layers:` (and/or `substrate:`) has the model built from that declaration,
 verbatim — values, windows and pins alike — in place of the stack parsed from
-`sample_description`. This is how a single-curve analysis states a known
-constant: `sld_min` equal to `sld_max` holds that SLD. The run says so in its
-transcript, and the declaration is the *starting* model: the refinement loop
-may still change it.
+`sample_description`. The run says so in its transcript. The declaration is
+the *starting* model: the refinement loop may still change its structure and
+its free parameters, but not what it [holds constant](#holding-a-value-constant).
 
 ```yaml
 states:
@@ -312,6 +311,73 @@ states in one run is refused, because refl1d puts the substrate roughness on
 `sample[0]` in a normal stack and on `sample[n+1]` in a back-reflected one, so
 aliasing `substrate.interface` across the two would silently drop the range on
 one side.
+
+### Holding a value constant
+
+A value you know — bulk copper's SLD, a solvent's, a thickness measured by
+ellipsometry — can be held: set, and not fitted. There are two ways to say it.
+
+*In the description.* Say that the value is known and must be fixed: "the
+copper is bulk copper, 6.48e-6 Å⁻², and the dTHF is 6.2e-6. Fix both." Giving
+a value without saying to fix it ("copper, about 6.5") makes it a starting
+point that is fitted.
+
+*In a setup file*, on a layer or on the ambient:
+
+```yaml
+states:
+  - name: OCV
+    data_files: [REFL_206931_combined_data_auto.txt]
+    ambient: {name: dTHF, sld: 6.2, sld_fixed: true}
+    layers:
+      - {name: copper, sld: 6.48, sld_fixed: true,
+         thickness: 480, thickness_min: 400, thickness_max: 600, roughness: 5}
+```
+
+Every parameter is held the same way — its value, plus `<name>_fixed: true`:
+
+| | key | also read as held |
+|---|---|---|
+| a layer's SLD | `sld_fixed: true` | `sld_min` equal to `sld_max` |
+| a layer's thickness | `thickness_fixed: true` | `thickness_min` equal to `thickness_max` |
+| a layer's roughness | `roughness_fixed: true` | `roughness_min` equal to `roughness_max` |
+| the ambient's SLD | `sld_fixed: true` | `sld_min` equal to `sld_max` |
+| the substrate's roughness | `roughness_fixed: true` | — |
+
+(Intensity, background, `theta_offset` and `sample_broadening` are blocks of
+their own and take `fixed: true` inside the block — see
+[Nuisance parameters](#nuisance-parameters).)
+
+A held parameter is not in the fit at all: it does not appear among the fitted
+parameters, it is not counted against the model in BIC, and nothing can widen
+it for "sitting on its bounds". The first model's summary in the transcript
+names it — `SLD fixed at 6.48` — which is how to check that a "fix it" in the
+description took effect.
+
+Two things follow from how back reflection assembles the stack. The outer
+surface borrows the outermost layer's declared roughness, so holding that
+layer's roughness holds the outer surface too. And a held *substrate*
+roughness is applied to the substrate / first-layer boundary whichever slab
+carries it — in back reflection that is the bottom layer's slab, so it
+replaces that layer's own declared roughness for that boundary.
+
+**It stays held for the whole run.** The refinement loop rewrites the model on
+every iteration; whatever the starting model holds constant is put back
+afterwards, as long as a layer of that name still exists (a layer the loop
+renames or removes is a different layer). When that had to happen the
+transcript says `Kept fixed as declared …`. To release a value, change the
+description or the setup and run again.
+
+**Held wins over tied.** A tie says a parameter is the same quantity in every
+state; holding it says that quantity is known. So:
+
+- a parameter that is tied across states and held in *any* of them is held in
+  all of them, at that value — it does not matter which state declares it;
+- one tied parameter held at two *different* values is refused, with an error
+  naming the states and the values. Untie it (`unshared_parameters`) if the
+  states really differ, or make the values agree;
+- a `roughness_tie` on a layer whose roughness is held is ignored, with a
+  warning.
 
 ### Nuisance parameters
 

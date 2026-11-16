@@ -349,8 +349,51 @@ def outer_ceiling_displacement(definition: dict) -> tuple | None:
 _ROUGHNESS_MIN_DEFAULT = 5.0
 
 
-def _ranged(param, value, lo, hi, *, label: str, declared_lo: bool = True) -> None:
+#: The parameters a model block can hold constant, the same way for each:
+#: ``key -> (min key, max key, flag key)``. A layer has all three; the ambient
+#: has ``sld``; the substrate has ``roughness`` (flag only — it declares no
+#: ``roughness_min``, so it has no window to collapse).
+PINNABLE = {
+    "sld": ("sld_min", "sld_max", "sld_fixed"),
+    "thickness": ("thickness_min", "thickness_max", "thickness_fixed"),
+    "roughness": ("roughness_min", "roughness_max", "roughness_fixed"),
+}
+
+
+def is_pinned(block: dict, key: str) -> bool:
+    """Whether *block* (a layer, the ambient or the substrate) holds *key*.
+
+    Two spellings mean the same thing. ``<key>_fixed: true`` is the stated
+    one. A zero-width window, ``<key>_min == <key>_max``, is the one models
+    already wrote before the flag existed, and it stays honoured. Either way
+    the parameter is set and not fitted: it never enters the problem's free
+    parameters, so it is neither counted against the model in BIC nor
+    reported as sitting on its bounds for something to widen.
+    """
+    lo_key, hi_key, flag = PINNABLE[key]
+    if block.get(flag):
+        return True
+    lo, hi = block.get(lo_key), block.get(hi_key)
+    return lo is not None and hi is not None and lo == hi
+
+
+def _ranged(
+    param,
+    value,
+    lo,
+    hi,
+    *,
+    label: str,
+    declared_lo: bool = True,
+    fixed: bool = False,
+) -> None:
     """Set a parameter's value and range, keeping the value inside the range.
+
+    A parameter that is *held* gets its value and no range, which is what
+    keeps it out of the fit: ``fixed=True`` (the ``<key>_fixed`` flag — the
+    declared value stands, whatever window sits next to it), or a window that
+    collapses to a point. A zero-width range handed to the optimizer is still
+    a free parameter — one more in BIC's count, pinned against both bounds.
 
     A parameter built outside its own bounds makes the whole problem
     infeasible: bumps short-circuits, the model is never evaluated, and the fit
@@ -368,6 +411,10 @@ def _ranged(param, value, lo, hi, *, label: str, declared_lo: bool = True) -> No
       contradicting itself, so the value is clamped into the range and the
       contradiction is logged rather than passed to the optimizer.
     """
+    if fixed:
+        param.value = value
+        param.fixed = True  # even if an earlier pass gave it a range
+        return
     if lo > hi:
         logger.warning("[BUILDER] %s: min %g > max %g — swapping", label, lo, hi)
         lo, hi = hi, lo
@@ -392,6 +439,9 @@ def _ranged(param, value, lo, hi, *, label: str, declared_lo: bool = True) -> No
         )
         value = hi
     param.value = value
+    if lo == hi:
+        param.fixed = True  # a window of one point is a pin, not a range
+        return
     param.range(lo, hi)
 
 
@@ -560,6 +610,7 @@ def _apply_interface_declarations(definition: dict, sample) -> None:
             float(entry.get("roughness_max", 30.0)),
             label=f"{below}/{above} interface",
             declared_lo=declared_lo,
+            fixed=bool(entry.get("roughness_fixed")),
         )
         logger.info(
             "[BUILDER] interface %s/%s set explicitly: roughness=%g (slab %d)",
@@ -657,6 +708,7 @@ def _build_sample(definition: dict):
             amb_min,
             amb_max,
             label=f"{ambient_info.get('name', 'ambient')} rho",
+            fixed=bool(ambient_info.get("sld_fixed")),
         )
 
     for i, layer in enumerate(layers_info):
@@ -673,6 +725,7 @@ def _build_sample(definition: dict):
             t_min,
             t_max,
             label=f"{layer['name']} thickness",
+            fixed=bool(layer.get("thickness_fixed")),
         )
 
         sld_min = layer.get("sld_min", layer["sld"] - 2.5)
@@ -683,9 +736,21 @@ def _build_sample(definition: dict):
             sld_min,
             sld_max,
             label=f"{layer['name']} rho",
+            fixed=bool(layer.get("sld_fixed")),
         )
 
         tie = layer.get("roughness_tie")
+        if tie and is_pinned(layer, "roughness"):
+            # Held and tied contradict each other: one says the roughness is a
+            # known number, the other that it follows the thickness. The
+            # declared constant wins, as it does over a cross-state tie.
+            logger.warning(
+                "[BUILDER] %s: roughness is held at %g, so its roughness_tie "
+                "is ignored",
+                layer["name"],
+                layer["roughness"],
+            )
+            tie = None
         if tie:
             # Tie this layer's interface roughness to its own thickness:
             # sigma = fraction * thickness, with `fraction` the fitted free
@@ -710,13 +775,53 @@ def _build_sample(definition: dict):
                 r_max,
                 label=f"{layer['name']} interface",
                 declared_lo=declared_r_min,
+                fixed=bool(layer.get("roughness_fixed")),
             )
 
+    # The bottom slab's interface. In a normal stack that is the substrate's
+    # own roughness. In back reflection it is the outer surface, on the
+    # ambient slab, which borrows the outermost layer's declared roughness —
+    # one declared value behind two parameters, so holding that value holds
+    # both.
     if back_reflection:
-        sample[0].interface.range(0, _outer_roughness_max(layers_info))
+        bottom_held = bool(layers_info) and is_pinned(layers_info[-1], "roughness")
+        bottom_max = _outer_roughness_max(layers_info)
     else:
-        sub_rough_max = substrate_info.get("roughness_max", 15.0)
-        sample[0].interface.range(0, sub_rough_max)
+        bottom_held = False  # the substrate's own roughness: held just below
+        bottom_max = substrate_info.get("roughness_max", 15.0)
+    if bottom_held:
+        sample[0].interface.fixed = True
+    else:
+        sample[0].interface.range(0, bottom_max)
+
+    # A held substrate roughness names a physical boundary — substrate / first
+    # layer — and is applied to the slab that carries it. In a normal stack
+    # that is the substrate slab. In back reflection it is the bottom layer's
+    # slab: left on the substrate slab the declaration would hold nothing,
+    # because that slab's interface is unused there.
+    if is_pinned(substrate_info, "roughness"):
+        owner = _interface_owner_index(
+            -1, len(layers_info), back_reflection=back_reflection
+        )
+        value = float(substrate_info.get("roughness", 3.0))
+        if hasattr(sample[owner].interface, "range"):
+            sample[owner].interface.value = value
+            sample[owner].interface.fixed = True
+        else:
+            # That layer's roughness_tie made the interface an expression.
+            # Held wins over tied.
+            from bumps.parameter import Parameter
+
+            sample[owner].interface = Parameter(
+                value, name=f"{sample[owner].material.name} interface"
+            )
+        if owner != 0:
+            logger.info(
+                "[BUILDER] substrate roughness held at %g: applied to the %s "
+                "slab, which carries the substrate boundary in back reflection",
+                value,
+                sample[owner].material.name,
+            )
 
     _apply_interface_declarations(definition, sample)
     _log_interface_map(layers_info, substrate_info, ambient_info, back_reflection)
@@ -1168,6 +1273,105 @@ def _set_layer_param(layer_obj, attr_path: str, value) -> None:
     setattr(target, parts[-1], value)
 
 
+def _is_held(param) -> bool:
+    """A built parameter that is set and not fitted (not an expression)."""
+    return bool(getattr(param, "fixed", False)) and hasattr(param, "range")
+
+
+def _tie_across_states(
+    states: list, effective_defs: list, samples: list, tied_set: list
+) -> None:
+    """Make every tied parameter one object across the states that have it.
+
+    A tie says a parameter is the same quantity in every state; a held
+    parameter says that quantity is known. Both are declarations, and they
+    combine instead of one silently replacing the other:
+
+    * if **any** tied state holds the parameter, it is held in all of them, at
+      that value — not only when the holding state happens to be the first;
+    * if two tied states hold it at **different** values, they are not one
+      quantity and the declaration contradicts itself: refused, naming both.
+
+    Otherwise the first state's parameter is shared, as before. A layer absent
+    from the first state is not tied (and one absent from a later state is
+    simply skipped there) — per-state structure, not an error.
+    """
+    import math
+
+    ref_def, ref_sample = effective_defs[0], samples[0]
+    ref_back = ref_def.get("back_reflection", False)
+
+    for layer_name, attr_path in tied_set:
+        ref_idx = _layer_index(ref_def, layer_name, back_reflection=ref_back)
+        if ref_idx is None:
+            logger.debug(
+                "[STATES] tie %s.%s not applied — layer absent from state %r",
+                layer_name,
+                attr_path,
+                states[0].get("name"),
+            )
+            continue
+
+        members = [(0, ref_sample[ref_idx])]
+        for i in range(1, len(states)):
+            eff = effective_defs[i]
+            idx = _layer_index(
+                eff, layer_name, back_reflection=eff.get("back_reflection", False)
+            )
+            if idx is None:
+                logger.debug(
+                    "[STATES] tie %s.%s not applied to state %r — layer absent",
+                    layer_name,
+                    attr_path,
+                    states[i].get("name"),
+                )
+                continue
+            members.append((i, samples[i][idx]))
+
+        params = [(i, _get_layer_param(slab, attr_path)) for i, slab in members]
+        held = [(i, par) for i, par in params if _is_held(par)]
+        shared = held[0][1] if held else params[0][1]
+
+        for i, par in held[1:]:
+            if not math.isclose(par.value, shared.value, rel_tol=1e-9, abs_tol=1e-12):
+                where = ", ".join(
+                    f"{states[j].get('name', f'state{j}')}={p.value:g}" for j, p in held
+                )
+                raise ValueError(
+                    f"{layer_name}.{attr_path} is tied across states but held at "
+                    f"different values ({where}). A tie says it is one quantity: "
+                    f"untie it (unshared_parameters) or make the held values agree."
+                )
+        if held and len(held) < len(params):
+            logger.info(
+                "[STATES] %s.%s is held at %g in state %r and tied, so it is "
+                "held in every tied state",
+                layer_name,
+                attr_path,
+                shared.value,
+                states[held[0][0]].get("name"),
+            )
+
+        for _i, slab in members:
+            _set_layer_param(slab, attr_path, shared)
+
+
+def check_state_ties(definition: dict) -> None:
+    """Raise ``ValueError`` if *definition*'s ties and held values contradict.
+
+    Builds each state's sample (no data file is read) and runs the same tie
+    pass :func:`build_states_problem` does, so a setup that holds one tied
+    parameter at two values is refused when the model is made rather than when
+    the first fit is built. No-op for fewer than two states.
+    """
+    states = definition.get("states") or []
+    if len(states) < 2:
+        return
+    effective_defs = [_state_overrides(definition, st) for st in states]
+    samples = [_build_sample(eff) for eff in effective_defs]
+    _tie_across_states(states, effective_defs, samples, _resolve_tied_set(definition))
+
+
 def _state_overrides(definition: dict, state: dict) -> dict:
     """Return a per-state copy of *definition* with state-local overrides applied.
 
@@ -1264,34 +1468,17 @@ def build_states_problem(definition: dict):
     all_experiments: list = []
     default_fwhm = definition.get("dq_is_fwhm", True)
 
-    for state_idx, state in enumerate(states):
+    for state in states:
         eff = _state_overrides(definition, state)
         effective_defs.append(eff)
-        sample = _build_sample(eff)
-        samples.append(sample)
+        samples.append(_build_sample(eff))
 
-        # Cross-state parameter aliasing.
-        if state_idx > 0:
-            ref_def = effective_defs[0]
-            ref_sample = samples[0]
-            ref_back = ref_def.get("back_reflection", False)
-            cur_back = eff.get("back_reflection", False)
-            for layer_name, attr_path in tied_set:
-                ref_idx = _layer_index(ref_def, layer_name, back_reflection=ref_back)
-                cur_idx = _layer_index(eff, layer_name, back_reflection=cur_back)
-                if ref_idx is None or cur_idx is None:
-                    # The layer is absent from this state's stack (per-state
-                    # structure, or a pruned spec) — the tie does not apply here.
-                    # This is expected, not an error.
-                    logger.debug(
-                        "[STATES] tie %s.%s not applied to state %r — layer absent",
-                        layer_name,
-                        attr_path,
-                        state.get("name"),
-                    )
-                    continue
-                ref_param = _get_layer_param(ref_sample[ref_idx], attr_path)
-                _set_layer_param(sample[cur_idx], attr_path, ref_param)
+    # Cross-state parameter aliasing, before any experiment sees a sample.
+    _tie_across_states(states, effective_defs, samples, tied_set)
+
+    for state_idx, state in enumerate(states):
+        eff = effective_defs[state_idx]
+        sample = samples[state_idx]
 
         # Build probes for this state.
         data_files = state.get("data_files") or []

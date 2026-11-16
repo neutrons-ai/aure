@@ -32,6 +32,7 @@ from .model_builder import (
     build_states_problem,
     data_chisq,
     bic_inputs,
+    is_pinned,
     with_states,
 )
 from .evaluation import (
@@ -455,11 +456,13 @@ def _enumerate_thin_layer_modes(model: dict, state: ReflectivityState) -> dict:
     n_seeds = int(os.environ.get("THIN_LAYER_MODE_SEEDS", "3"))
     thin_cutoff = k * d_res
 
+    # A held SLD is not a mode to choose among: reseeding it would change a
+    # value the user declared known.
     layers = model.get("layers") or []
     thin_idx = [
         i
         for i, ly in enumerate(layers)
-        if float(ly.get("thickness", 0.0)) < thin_cutoff
+        if float(ly.get("thickness", 0.0)) < thin_cutoff and not is_pinned(ly, "sld")
     ]
     if not thin_idx:
         logger.info(

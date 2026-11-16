@@ -18,9 +18,16 @@ class LayerInfo(TypedDict):
     sld: float
     sld_min: Optional[float]
     sld_max: Optional[float]
+    # Held constant, not fitted — the same way for sld, thickness and
+    # roughness. `<key>_fixed: true` is the stated spelling; a window with
+    # min == max means the same and is still honoured (see
+    # `model_builder.is_pinned`). A pin in the baseline model survives every
+    # refinement, and wins over a tie (cross-state, or `roughness_tie`).
+    sld_fixed: Optional[bool]
     thickness: float
     thickness_min: Optional[float]
     thickness_max: Optional[float]
+    thickness_fixed: Optional[bool]
     # This layer's boundary with whatever sits above it in the refl1d STACK.
     # Back reflection assembles the stack ambient-first, so the physical
     # interface this describes depends on the geometry: with layers listed
@@ -41,6 +48,7 @@ class LayerInfo(TypedDict):
     # works) for an interface known to be chemically sharp.
     roughness_min: Optional[float]
     roughness_max: Optional[float]
+    roughness_fixed: Optional[bool]
     # Optional: tie this layer's interface roughness to its own thickness as
     # sigma = fraction * thickness, fitting `fraction` instead of `roughness`.
     # Keeps a thin layer's interface from outgrowing it (prevents erf-tail
@@ -56,6 +64,7 @@ class SubstrateInfo(TypedDict):
     sld: float
     roughness: float
     roughness_max: Optional[float]
+    roughness_fixed: Optional[bool]
 
 
 class AmbientInfo(TypedDict):
@@ -78,6 +87,8 @@ class AmbientInfo(TypedDict):
     # inverts for a negative SLD, see the TODO in `_build_sample`.
     sld_min: Optional[float]
     sld_max: Optional[float]
+    # Held constant, not fitted — as on a layer (`LayerInfo.sld_fixed`).
+    sld_fixed: Optional[bool]
 
 
 class InterfaceInfo(TypedDict, total=False):
@@ -107,6 +118,7 @@ class InterfaceInfo(TypedDict, total=False):
     roughness: float
     roughness_min: Optional[float]
     roughness_max: Optional[float]
+    roughness_fixed: Optional[bool]
 
 
 class IntensityInfo(TypedDict, total=False):

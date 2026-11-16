@@ -317,7 +317,9 @@ def test_single_state_declared_layers_reach_the_fit_problem(tmp_path):
     problem = build_problem(_build_initial_model(state)["current_model"])
 
     bounds = {p.name: (p.value, tuple(p.bounds)) for p in problem._parameters}
-    assert bounds["copper rho"] == (6.48, (6.48, 6.48))
+    # The declared pin is held: set to 6.48 and not a fit parameter at all.
+    assert "copper rho" not in bounds
+    assert next(iter(problem.models)).sample[1].material.rho.value == 6.48
     assert bounds["copper thickness"] == (480.0, (400.0, 600.0))
 
 

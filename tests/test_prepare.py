@@ -229,8 +229,11 @@ def test_prepare_from_a_single_state_setup_honours_its_declared_layers(tmp_path)
 
     out = tmp_path / "problem.json"
     save_problem_json(result["current_model"], out)
-    bounds = {p.name: tuple(p.bounds) for p in load_file(str(out))._parameters}
-    assert bounds["copper rho"] == (6.48, 6.48)
+    problem = load_file(str(out))
+    bounds = {p.name: tuple(p.bounds) for p in problem._parameters}
+    # The exported problem has no free parameter for the pinned SLD.
+    assert "copper rho" not in bounds
+    assert next(iter(problem.models)).sample[1].material.rho.value == 6.48
     assert bounds["copper thickness"] == (400.0, 600.0)
 
 
