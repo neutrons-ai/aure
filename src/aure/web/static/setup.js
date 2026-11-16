@@ -211,19 +211,7 @@ function _restoreFormValues() {
       }
       var prefOverrides = {};
       prevStates.forEach(function (st) {
-        var ov = {};
-        if (st.ambient && typeof st.ambient.rho === "number") ov.ambient = st.ambient.rho;
-        ["intensity", "theta_offset", "sample_broadening"].forEach(function (k) {
-          if (st[k] && typeof st[k] === "object") {
-            ov[k] = {};
-            ["init", "min", "max"].forEach(function (sub) {
-              if (typeof st[k][sub] === "number") ov[k][sub] = st[k][sub];
-            });
-            if (!Object.keys(ov[k]).length) delete ov[k];
-          }
-        });
-        if (st.back_reflection === true) ov.back_reflection = true;
-        if (st.extra_description) ov.extra_description = st.extra_description;
+        var ov = _overridesFromPrefill(st);
         if (Object.keys(ov).length) prefOverrides[st.name] = ov;
       });
       vals = {
@@ -963,11 +951,39 @@ function _renderPreviewChecklist(layers, params) {
 
 /* ---- per-state overrides accordion --------------------------- */
 
-let stateOverrides = {};  // { [stateName]: { ambient, intensity:{init,min,max},
+let stateOverrides = {};  // { [stateName]: { ambient,
+                          //                  intensity:{init,min,max,fixed?},
+                          //                  background:{init,min,max,fixed?},
                           //                  theta_offset:{...},
                           //                  sample_broadening:{...},
                           //                  back_reflection: bool,
                           //                  extra_description: str } }
+
+// Nuisance keys whose `fixed: true` the builder honours (held at `init`
+// rather than fitted). Mirrors `_FIXABLE_NUISANCE` in routes.py.
+const FIXABLE_TRIPLETS = ["intensity", "background"];
+
+function _overridesFromPrefill(st) {
+  // Turn one state of a server prefill payload (`_minimal_state_prefill`)
+  // into a stateOverrides entry. The single reader for both the previous-run
+  // prefill and a loaded setup file, so neither can drop a key the other keeps.
+  var ov = {};
+  if (st.ambient && typeof st.ambient.rho === "number") ov.ambient = st.ambient.rho;
+  ["intensity", "background", "theta_offset", "sample_broadening"].forEach(
+    function (k) {
+      if (!st[k] || typeof st[k] !== "object") return;
+      var t = {};
+      ["init", "min", "max"].forEach(function (sub) {
+        if (typeof st[k][sub] === "number") t[sub] = st[k][sub];
+      });
+      if (FIXABLE_TRIPLETS.indexOf(k) >= 0 && st[k].fixed === true) t.fixed = true;
+      if (Object.keys(t).length) ov[k] = t;
+    },
+  );
+  if (st.back_reflection === true) ov.back_reflection = true;
+  if (st.extra_description) ov.extra_description = st.extra_description;
+  return ov;
+}
 
 function _ensureOverride(name) {
   if (!stateOverrides[name]) stateOverrides[name] = {};
@@ -1047,9 +1063,12 @@ function _fitFilesForState(name) {
 }
 
 function _triplet(name, key, ov) {
-  // Render an {init, min, max} triplet of numeric inputs.
+  // Render an {init, min, max} triplet of numeric inputs, plus a "fixed"
+  // switch for the keys the builder can hold constant (FIXABLE_TRIPLETS).
+  // Fixed holds the parameter at `init`; min/max are kept but unused.
   const wrap = document.createElement("div");
-  wrap.className = "row g-2 mb-2";
+  wrap.className = "row g-2 mb-2 align-items-end";
+  const rangeInputs = [];
   ["init", "min", "max"].forEach(function (sub) {
     const col = document.createElement("div");
     col.className = "col-auto";
@@ -1077,12 +1096,41 @@ function _triplet(name, key, ov) {
     col.appendChild(lbl);
     col.appendChild(inp);
     wrap.appendChild(col);
+    if (sub !== "init") rangeInputs.push(inp);
   });
+  if (FIXABLE_TRIPLETS.indexOf(key) >= 0) {
+    const safeId = (name + "-" + key).replace(/[^\w-]/g, "_");
+    const col = document.createElement("div");
+    col.className = "col-auto form-check form-switch ms-2 mb-1";
+    col.innerHTML =
+      '<input class="form-check-input" type="checkbox" id="ov-fixed-' + safeId + '">' +
+      '<label class="form-check-label small" for="ov-fixed-' + safeId + '">' +
+      "fixed</label>";
+    const box = col.querySelector("input");
+    box.checked = !!(ov[key] && ov[key].fixed === true);
+    const syncDisabled = function () {
+      rangeInputs.forEach(function (inp) { inp.disabled = box.checked; });
+    };
+    syncDisabled();
+    box.addEventListener("change", function () {
+      const o = _ensureOverride(name);
+      const cur = o[key] || {};
+      if (box.checked) cur.fixed = true;
+      else delete cur.fixed;
+      if (Object.keys(cur).length) { o[key] = cur; }
+      else { delete o[key]; }
+      syncDisabled();
+      _saveFormValues();
+    });
+    wrap.appendChild(col);
+  }
   return wrap;
 }
 
 function _validateTriplet(t) {
   if (!t) return true;
+  // A held parameter ignores its range, so a stale min/max cannot block it.
+  if (t.fixed === true) return true;
   if (t.init != null && t.min != null && t.init < t.min) return false;
   if (t.init != null && t.max != null && t.init > t.max) return false;
   if (t.min != null && t.max != null && t.min > t.max) return false;
@@ -1506,21 +1554,7 @@ function _applySetupPrefill(payload) {
   // Per-state overrides.
   stateOverrides = {};
   states.forEach(function (st) {
-    var ov = {};
-    if (st.ambient && typeof st.ambient.rho === "number") ov.ambient = st.ambient.rho;
-    ["intensity", "background", "theta_offset", "sample_broadening"].forEach(
-      function (k) {
-        if (st[k] && typeof st[k] === "object") {
-          ov[k] = {};
-          ["init", "min", "max"].forEach(function (sub) {
-            if (typeof st[k][sub] === "number") ov[k][sub] = st[k][sub];
-          });
-          if (!Object.keys(ov[k]).length) delete ov[k];
-        }
-      },
-    );
-    if (st.back_reflection === true) ov.back_reflection = true;
-    if (st.extra_description) ov.extra_description = st.extra_description;
+    var ov = _overridesFromPrefill(st);
     if (Object.keys(ov).length) stateOverrides[st.name] = ov;
   });
 

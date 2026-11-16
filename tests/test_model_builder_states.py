@@ -388,3 +388,43 @@ def test_per_state_structure_oxide_absent_in_one_state(two_files):
     # substrate.interface still tied; ambient (different solvents) not tied
     assert s1[0].interface is s0[0].interface
     assert s1[-1].material.rho is not s0[-1].material.rho
+
+
+@pytest.mark.parametrize(
+    "spec, value, fixed",
+    [
+        ({"value": 0.95, "fixed": True}, 0.95, True),
+        ({"init": 0.9, "fixed": True}, 0.9, True),
+        ({"fixed": True}, 1.0, True),
+        ({"init": 0.9, "min": 0.8, "max": 1.0}, 0.9, False),
+    ],
+)
+def test_state_intensity_value_applies_whether_or_not_fixed(
+    two_files, spec, value, fixed
+):
+    from aure.nodes.model_builder import build_states_problem
+
+    defn = _two_state_definition(two_files)
+    defn["states"][0]["intensity"] = spec
+    _, by_state, _ = build_states_problem(defn)
+    intensity = by_state["D2O"][0].probe.intensity
+    assert intensity.value == pytest.approx(value)
+    assert intensity.fixed is fixed
+
+
+def test_model_level_fixed_intensity_value_applies_on_every_builder(two_files):
+    from aure.nodes.model_builder import build_experiment, build_multi_problem
+
+    defn = _two_state_definition(two_files)
+    defn.pop("states")
+    defn["intensity"] = {"value": 0.95, "fixed": True}
+
+    exp = build_experiment({**defn, "data_file": two_files[0]})
+    assert exp.probe.intensity.value == pytest.approx(0.95)
+    assert exp.probe.intensity.fixed
+
+    _, experiments, _ = build_multi_problem(
+        defn, [{"file": f, "label": f"f{i}"} for i, f in enumerate(two_files)]
+    )
+    assert [e.probe.intensity.value for e in experiments] == pytest.approx([0.95] * 2)
+    assert all(e.probe.intensity.fixed for e in experiments)

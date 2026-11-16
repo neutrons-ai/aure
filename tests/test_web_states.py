@@ -963,3 +963,74 @@ def test_a_seeded_window_beats_the_ambient_environment(monkeypatch) -> None:
 
     assert seen == {"chi2_max": 3.75, "chi2_min": 0.25}
     assert final["chi2_max"] == 3.75  # and it is what the checkpoints record
+
+
+def test_the_setup_form_keeps_a_held_nuisance_parameter_held(tmp_path: Path) -> None:
+    """The prefill kept only init/min/max, so a setup that held `intensity` or
+    `background` constant loaded into the form as a fitted one — and the run
+    started from the form fitted it."""
+    from aure.web import create_app
+
+    data = tmp_path / "REFL_1_combined_data.txt"
+    data.write_text("# Q R dR\n0.01 1.0 0.05\n0.02 0.25 0.01\n")
+
+    app = create_app(None)
+    app.config["TESTING"] = True
+    client = app.test_client()
+
+    yaml_text = (
+        "sample_description: Cu on Si\n"
+        "states:\n"
+        "  - name: state0\n"
+        "    intensity: false\n"
+        "    background: {init: 2.0e-6, fixed: true}\n"
+        "    data_files:\n"
+        f"      - file: {data}\n"
+    )
+    loaded = client.post("/api/setup/load", json={"yaml": yaml_text}).get_json()
+    (st,) = loaded["states"]
+    assert st["intensity"] == {"init": 1.0, "fixed": True}
+    assert st["background"] == {"init": 2e-6, "fixed": True}
+
+    # What setup.js sends back is the prefill triplet as-is; saving it must
+    # still say fixed.
+    exported = client.post(
+        "/api/setup/export",
+        json={
+            "sample_description": "Cu on Si",
+            "states": [
+                {
+                    "name": "state0",
+                    "data_files": [{"file": str(data)}],
+                    "intensity": st["intensity"],
+                    "background": st["background"],
+                }
+            ],
+        },
+    ).get_data(as_text=True)
+    reloaded = client.post("/api/setup/load", json={"yaml": exported}).get_json()
+    assert reloaded["states"][0]["intensity"] == st["intensity"]
+    assert reloaded["states"][0]["background"] == st["background"]
+
+
+def test_prefill_shows_a_held_parameter_at_its_value() -> None:
+    """An imported or finalized state records a held intensity as `value`; the
+    builder reads `value` before `init`, so that is the constant to show. A
+    fitted one keeps its `init` (the starting point), not the fitted `value`,
+    and `fixed` is not carried on keys the builder cannot hold."""
+    from aure.web.routes import _minimal_state_prefill
+
+    (slim,) = _minimal_state_prefill(
+        [
+            {
+                "name": "A",
+                "data_files": [{"file": "/x.txt", "label": "x"}],
+                "intensity": {"value": 0.9, "min": 0.7, "max": 1.1, "fixed": True},
+                "background": {"init": 1e-6, "min": 0, "max": 1e-5, "value": 3e-6},
+                "theta_offset": {"init": 0.0, "min": -0.01, "max": 0.01, "fixed": True},
+            }
+        ]
+    )
+    assert slim["intensity"] == {"init": 0.9, "min": 0.7, "max": 1.1, "fixed": True}
+    assert slim["background"] == {"init": 1e-6, "min": 0, "max": 1e-5}
+    assert slim["theta_offset"] == {"init": 0.0, "min": -0.01, "max": 0.01}

@@ -1099,3 +1099,38 @@ def test_round_trip_chi2_comparison_is_not_vacuous(tmp_path, two_files):
     problem, _by_state, _ = build_states_problem(_two_state_definition(two_files))
     assert not problem._nllf_components()[3], "problem is infeasible at its start"
     assert np.isfinite(problem.chisq())
+
+
+def test_a_fixed_intensity_is_rebuilt_at_its_imported_value(tmp_path, one_file):
+    """A refl1d fit that held its intensity at 0.9 must rebuild at 0.9.
+
+    Regression: the builder applied an intensity's value only when fitting
+    it, so every fixed intensity came back at the probe's 1.0 — a different
+    model from the one imported, and nothing said so (a fixed parameter is not
+    in the fitted parameters, so nothing downstream restores it either).
+    """
+    from bumps.serialize import save_file
+
+    from aure.nodes.model_builder import build_states_problem
+    from aure.refl1d_import import import_refl1d
+
+    defn = _single_state_definition(one_file)
+    defn["intensity"] = {"value": 1.0, "fixed": True}
+    defn["states"] = [{"name": "state0", "data_files": [{"file": one_file}]}]
+    problem, by_state, _ = build_states_problem(defn)
+    by_state["state0"][0].probe.intensity.value = 0.9
+    expected_chi2 = float(problem.chisq())
+
+    fit_dir = tmp_path / "refl1d_output" / "fit_iter0_lm"
+    fit_dir.mkdir(parents=True)
+    save_file(str(fit_dir / "problem.json"), problem)
+
+    out = tmp_path / "imported"
+    import_refl1d(str(fit_dir), str(out))
+    model = json.loads((out / "final_state.json").read_text())["state"]["current_model"]
+
+    rebuilt, rebuilt_by_state, _ = build_states_problem(model)
+    intensity = rebuilt_by_state["state0"][0].probe.intensity
+    assert intensity.fixed
+    assert intensity.value == pytest.approx(0.9)
+    assert float(rebuilt.chisq()) == pytest.approx(expected_chi2, rel=1e-6)

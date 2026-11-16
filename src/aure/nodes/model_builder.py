@@ -13,7 +13,7 @@ Key functions:
 
 import logging
 import os
-from typing import Any, Dict
+from typing import Dict
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +161,24 @@ def _configure_background(probe, spec) -> bool:
     return True
 
 
+def _configure_intensity(probe, spec) -> None:
+    """Set ``probe.intensity`` from an intensity block.
+
+    The declared value (``value``, else ``init``) is applied whether or not the
+    intensity is fitted; ``fixed: true`` only withholds the range. Applying it
+    in the fitted branch alone left every fixed intensity at the probe's 1.0,
+    so an imported fit held at 0.95 was rebuilt at 1.0.
+    """
+    spec = spec or {}
+    value = spec.get("value", spec.get("init"))
+    if spec.get("fixed", False):
+        if value is not None:
+            probe.intensity.value = value
+        return
+    probe.intensity.value = 1.0 if value is None else value
+    probe.intensity.range(spec.get("min", 0.7), spec.get("max", 1.1))
+
+
 def build_experiment(definition: dict):
     """Construct a refl1d ``Experiment`` from a ``ModelDefinition`` dict.
 
@@ -186,13 +204,7 @@ def build_experiment(definition: dict):
 
     sample = _build_sample(definition)
 
-    # Probe intensity
-    if not intensity.get("fixed", False):
-        int_val = intensity.get("value", 1.0)
-        int_min = intensity.get("min", 0.7)
-        int_max = intensity.get("max", 1.1)
-        probe.intensity.value = int_val
-        probe.intensity.range(int_min, int_max)
+    _configure_intensity(probe, intensity)
 
     # Optional fittable flat background.
     _configure_background(probe, definition.get("background", {}))
@@ -889,12 +901,7 @@ def build_multi_problem(definition: dict, data_files: list[dict]):
     experiments = []
     for probe, ds in zip(sorted_probes, sorted_data_files):
         # Each probe gets its own independent intensity parameter
-        if not intensity.get("fixed", False):
-            int_val = intensity.get("value", 1.0)
-            int_min = intensity.get("min", 0.7)
-            int_max = intensity.get("max", 1.1)
-            probe.intensity.value = int_val
-            probe.intensity.range(int_min, int_max)
+        _configure_intensity(probe, intensity)
 
         # Give each probe's intensity a unique, stable name keyed by the
         # file label so it round-trips with the fit-result parameter names
@@ -1357,15 +1364,7 @@ def build_states_problem(definition: dict):
             # values for each segment in a single-state co-refinement,
             # where each probe carries its own intensity Parameter.
             ds_intensity = ds.get("intensity") or {}
-            effective_intensity = {**intensity, **ds_intensity}
-            if not effective_intensity.get("fixed", False):
-                int_val = effective_intensity.get(
-                    "value", effective_intensity.get("init", 1.0)
-                )
-                int_min = effective_intensity.get("min", 0.7)
-                int_max = effective_intensity.get("max", 1.1)
-                probe.intensity.value = int_val
-                probe.intensity.range(int_min, int_max)
+            _configure_intensity(probe, {**intensity, **ds_intensity})
 
             if _nuisance_enabled(broadening) and hasattr(probe, "sample_broadening"):
                 if shared_broadening is None:
