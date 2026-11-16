@@ -225,6 +225,49 @@ def _restore_baseline_pins(baseline: dict | None, model: dict) -> list[str]:
     return restored
 
 
+def _ties_without_declared_structure(
+    states_in: list, user_config: dict, model_def: dict, *, declared: bool
+) -> str:
+    """Warning text when hand-written cross-state ties rest on a parsed stack.
+
+    A tie names a layer, and with no state declaring its own ``layers`` the
+    only layers there are come from the intake parse of the description: names
+    that vary run to run, and one stack every state starts from, so states
+    that differ in structure are not told apart. Ties are meant for a known
+    structure. Returns ``""`` when there is nothing to say: fewer than two
+    states, no tie spec in the user config, or a state that declares its
+    ``layers`` (*declared*, read before the per-state extraction adds any).
+    """
+    from .model_builder import _valid_layer_names
+
+    specs = list(user_config.get("shared_parameters") or []) + list(
+        user_config.get("unshared_parameters") or []
+    )
+    if len(states_in) < 2 or not specs or declared:
+        return ""
+    parsed = [
+        layer["name"]
+        for layer in model_def.get("layers") or []
+        if isinstance(layer, dict) and layer.get("name")
+    ]
+    known = _valid_layer_names(model_def)
+    unmatched = [spec for spec in specs if str(spec).split(".", 1)[0] not in known]
+    text = (
+        f"Cross-state ties are set ({', '.join(map(str, specs))}) but no state "
+        f"declares its own `layers`, so they are applied to the stack parsed from "
+        f"the sample description: {', '.join(parsed) or '(no layers)'}. Those "
+        f"names can change from run to run, and every state starts from that one "
+        f"stack, so states that differ in structure are not told apart. Ties are "
+        f"reliable on a known structure: declare each state's `layers` in the setup."
+    )
+    if unmatched:
+        text += (
+            f" Not applied — no layer of that name in the parsed stack: "
+            f"{', '.join(map(str, unmatched))}."
+        )
+    return text
+
+
 def _attach_state_metadata(
     model_def: dict,
     state: "ReflectivityState",
@@ -1032,6 +1075,9 @@ def _build_initial_model(state: ReflectivityState) -> Dict[str, Any]:
         ]
 
         # Multi-state co-refinement: attach states + tie spec (config wins).
+        # Read what the user declared before the per-state extraction below
+        # writes `layers` onto the states.
+        declared_structure = any(st.get("layers") for st in states_in)
         try:
             # When the user described per-state (unshared) structural parameters
             # in natural language but supplied no structured tie config, derive
@@ -1065,7 +1111,27 @@ def _build_initial_model(state: ReflectivityState) -> Dict[str, Any]:
 
         except ValueError as exc:
             updates["error"] = f"Multi-state model setup failed: {exc}"
+            hint = _ties_without_declared_structure(
+                states_in,
+                state.get("user_config") or {},
+                model_def,
+                declared=declared_structure,
+            )
+            if hint:
+                updates["error"] += f" — {hint}"
             return updates
+
+        tie_warning = _ties_without_declared_structure(
+            states_in,
+            state.get("user_config") or {},
+            model_def,
+            declared=declared_structure,
+        )
+        if tie_warning:
+            logger.warning("[MODELING] %s", tie_warning)
+            updates["messages"].append(
+                Message(role="system", content=tie_warning, timestamp=None)
+            )
 
         # Snapshot the clean intake model as the rewind point. When a later
         # refinement realizes a *reinterpretation* hypothesis (e.g. "the

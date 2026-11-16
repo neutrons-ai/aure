@@ -151,6 +151,12 @@ states:
 # # Cross-state ties — whitelist OR blacklist (not both). Default tied set
 # # (when omitted): every layer's thickness / material.rho / interface and
 # # the substrate's interface.
+# # Hand-written ties need a KNOWN structure: they name layers, so declare each
+# # state's `layers` and use the same names across states. Without that they
+# # match the names parsed from `sample_description` (which vary run to run),
+# # every state starts from one parsed stack, and the run warns. Co-refinement
+# # with ties is for contrast variation on a known stack, not for discovering
+# # the structure.
 # shared_parameters:
 #   - Cu.thickness
 #   - Cu.material.rho

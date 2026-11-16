@@ -316,6 +316,13 @@ Multi-state: declare multiple states. The default tied set
 (when neither `shared_parameters` nor `unshared_parameters` is supplied) ties
 thickness, SLD, and interface for every layer plus the substrate interface.
 
+Hand-written ties assume you know the structure. A tie names a layer, so
+declare each state's `layers:` with the same names across states. Without that,
+ties match the layer names parsed from the description, which vary between
+runs, and every state starts from the same parsed stack, so states that differ
+in structure are not told apart. The run says so in its transcript. Use ties for
+contrast variation on a known stack, not to discover the structure.
+
 #### When the states differ in structure
 
 Untying a parameter lets a layer take a different *value* per state. It cannot

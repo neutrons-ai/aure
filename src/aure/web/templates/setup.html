@@ -97,6 +97,11 @@
                     <code>substrate.interface</code>. Use <em>Shared</em> to
                     list explicit tied params, or <em>Unshared</em> to subtract
                     from the auto set. Shared and Unshared are mutually exclusive.
+                    Explicit ties name layers, so they need a known structure:
+                    each state's layers declared in a loaded setup, with the
+                    same names across states. Otherwise they match the names
+                    parsed from the description, which vary between runs, and
+                    every state starts from one parsed stack.
                   </div>
                   <div class="d-flex gap-3 mb-2 flex-wrap">
                     <div class="form-check">

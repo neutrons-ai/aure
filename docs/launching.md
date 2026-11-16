@@ -468,10 +468,13 @@ one a setup file:
   intake parse and vary between runs (one real pair of states yielded
   `silicon native oxide (SiO2)` and `SiO2 (native oxide)` for the same layer).
   A hand-written `Cu.thickness` against a parse that said `copper` stops the run
-  with the known names listed. The remedy is to declare each state's stack in
-  the `states:` block — which trades away the prose interface and supplies the
-  shape of the answer. Treat explicit ties and a purely prose-driven run as
-  alternatives, not a combination.
+  with the known names listed. Even when the names match, every state without
+  its own `layers:` starts from the one parsed stack, so states that differ in
+  structure are not told apart; the run warns in its transcript whenever ties
+  are set and no state declares `layers:`. The remedy is to declare each
+  state's stack in the `states:` block — which trades away the prose interface
+  and supplies the shape of the answer. Treat explicit ties and a purely
+  prose-driven run as alternatives, not a combination.
 - **A tie that was valid at the start can go inert later.** Names are matched
   exactly, and nothing stops a refinement iteration from renaming a layer the
   spec references (`copper` → `Cu metal`). When that happens the spec no longer

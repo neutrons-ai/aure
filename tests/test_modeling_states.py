@@ -140,6 +140,76 @@ def test_initial_build_invalid_layer_in_shared_parameters_errors():
     assert "Bogus" in out["error"] or "shared_parameters" in out["error"]
 
 
+def _messages(out) -> str:
+    return "\n".join(m["content"] for m in out.get("messages") or [])
+
+
+def test_ties_without_declared_layers_warn_in_the_transcript():
+    """Hand-written ties on a description-driven multi-state run rest on the
+    parsed stack: names that vary per run, and one structure for every state.
+    The run proceeds, and says so where it will be read."""
+    from aure.nodes.modeling import _build_initial_model
+
+    out = _build_initial_model(
+        _make_state(_two_states(), user_config={"shared_parameters": ["Cu.thickness"]})
+    )
+
+    assert "error" not in out, out.get("error")
+    text = _messages(out)
+    assert "Cross-state ties are set (Cu.thickness)" in text
+    assert "no state declares its own `layers`" in text
+    assert "parsed from the sample description: Cu" in text
+    assert "Not applied" not in text
+
+
+def test_ties_that_match_no_parsed_layer_are_named_in_the_refusal():
+    """A tie naming a layer the parse did not produce already stops the run;
+    the refusal now names every such tie and says why the names did not match."""
+    from aure.nodes.modeling import _build_initial_model
+
+    out = _build_initial_model(
+        _make_state(
+            _two_states(),
+            user_config={
+                "unshared_parameters": [
+                    "copper.thickness",
+                    "Ti.interface",
+                    "Cu.interface",
+                ]
+            },
+        )
+    )
+
+    assert "unknown layer" in out["error"]
+    assert "no state declares its own `layers`" in out["error"]
+    assert "Not applied — no layer of that name in the parsed stack: " in out["error"]
+    assert "copper.thickness, Ti.interface." in out["error"]
+
+
+def test_no_tie_warning_when_a_state_declares_its_layers():
+    from aure.nodes.modeling import _build_initial_model
+
+    states = _two_states()
+    states[1]["layers"] = [dict(_parsed_sample()["layers"][0])]
+    out = _build_initial_model(
+        _make_state(states, user_config={"shared_parameters": ["Cu.thickness"]})
+    )
+
+    assert "error" not in out, out.get("error")
+    assert "Cross-state ties are set" not in _messages(out)
+
+
+def test_no_tie_warning_without_hand_written_ties():
+    """The default tied set (no spec) and the prose-derived untie are AuRE's
+    own choices, made against the stack it parsed — nothing to warn about."""
+    from aure.nodes.modeling import _build_initial_model
+
+    out = _build_initial_model(_make_state(_two_states()))
+
+    assert "error" not in out, out.get("error")
+    assert "Cross-state ties are set" not in _messages(out)
+
+
 def test_initial_build_mutually_exclusive_errors():
     from aure.nodes.modeling import _build_initial_model
 
