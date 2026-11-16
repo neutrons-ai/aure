@@ -255,7 +255,7 @@ Footprint is what would be deleted, not what would be touched.
 | 6 | Final uncertainty polish (`dream` re-fit) | `fit_method_final`, `FIT_*_FINAL` | `nodes/final_fit.py` 420 | 07-27 |
 | 7 | Checkpointing, `resume`, checkpoint inspection | `resume`, `checkpoints`, `inspect-checkpoint` | `workflow/checkpoints.py` 672 | 02-09 |
 | 8 | Setup-YAML declaration surface | `-c setup.yaml` | `setup.py` 665 + `config.py` 608 | 05-22 |
-| 9 | **Multi-file co-refinement** (one sample, spliced Q) | `-d`, `data_files:` | `build_multi_problem` ~150 | early |
+| 9 | **Multi-file co-refinement** (one sample, spliced Q) | `-d`, `data_files:` | the one-state case of `build_states_problem`; `build_multi_problem` ~150 serves only models with no `states` block | early |
 | 10 | **Multi-state co-refinement + cross-state ties** | `states:`, `shared_/unshared_parameters` | ~320 of `model_builder.py` + skill 234 | 05-17 |
 | 11 | Per-state structure overrides | `states[].layers/substrate` | `config.py:352`, `_state_overrides` | 05-17 |
 | 12 | Nuisance/resolution parameters | `theta_offset`, `sample_broadening`, `background`, `intensity` | scattered, partials-only | grown |

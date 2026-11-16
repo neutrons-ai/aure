@@ -540,10 +540,82 @@ def test_states_all_three_nuisance_wire_for_single_state():
     }
     problem, _by_state, _sorted = build_states_problem(model)
     free = [str(p.name) for p in problem._parameters]
-    assert "s0 background" in free, free
-    assert "s0 theta_offset" in free, free
-    assert "s0 sample_broadening" in free, free
+    # One state: its shared nuisance parameters take no state prefix.
+    assert "background" in free, free
+    assert "theta_offset" in free, free
+    assert "sample_broadening" in free, free
     # Each is tied across the two probes -> exactly one of each.
     assert sum("background" in n for n in free) == 1
     assert sum("theta_offset" in n for n in free) == 1
     assert sum("sample_broadening" in n for n in free) == 1
+
+
+# ----------------------------------------------------------------------
+# A single curve through the states fitter
+# ----------------------------------------------------------------------
+
+
+def _one_state_model(files: list[str]) -> dict:
+    return {
+        "substrate": {"name": "silicon", "sld": 2.07, "roughness": 3.0},
+        "layers": [
+            {"name": "Cu", "sld": 6.5, "thickness": 500.0, "roughness": 5.0},
+        ],
+        "ambient": {"name": "air", "sld": 0.0},
+        "intensity": {"value": 1.0, "min": 0.7, "max": 1.1, "fixed": False},
+        "states": [
+            {
+                "name": "s0",
+                "data_files": [
+                    {"file": f, "label": f"seg{i}"} for i, f in enumerate(files)
+                ],
+            }
+        ],
+    }
+
+
+def test_single_curve_reports_the_flat_single_file_shape():
+    """One state, one file: every run takes the states fitter now, so its
+    result must be the one the flat fitter gave — no per-file breakdown of a
+    single file, unprefixed names, the same χ²."""
+    from aure.nodes.fitting import run_fit_for_model
+
+    f1 = _make_data_file()
+    model = _one_state_model([f1])
+    flat = {k: v for k, v in model.items() if k != "states"}
+    flat["data_file"] = f1
+
+    via_states = run_fit_for_model(model, [], "lm", 0, 50, 50)
+    via_flat = run_fit_for_model(flat, [], "lm", 0, 50, 50)
+
+    assert via_states["per_file_results"] is None
+    assert via_states["chi_squared"] == pytest.approx(via_flat["chi_squared"])
+    assert sorted(via_states["parameters"]) == sorted(
+        name.replace(os.path.splitext(os.path.basename(f1))[0], "seg0")
+        for name in via_flat["parameters"]
+    )
+    assert len(via_states["Q_fit"]) == len(via_flat["Q_fit"])
+
+
+def test_one_state_several_files_keeps_its_per_file_breakdown():
+    from aure.nodes.fitting import run_fit_for_model
+
+    model = _one_state_model([_make_data_file(), _make_data_file(0.05, 0.15)])
+    result = run_fit_for_model(model, [], "lm", 0, 50, 50)
+
+    assert [pf["state"] for pf in result["per_file_results"]] == ["s0", "s0"]
+    assert {"intensity seg0", "intensity seg1"} <= set(result["parameters"])
+
+
+def test_mode_enumeration_asks_for_a_single_curve_not_a_route():
+    """It was gated on "not the states route", which now describes no run."""
+    from aure.nodes.fitting import _is_single_curve
+
+    one = {"name": "s0", "data_files": [{"file": "a"}]}
+    assert _is_single_curve({"states": [one]}, [{"file": "a"}])
+    assert _is_single_curve({"data_file": "a"}, [])
+    assert not _is_single_curve(
+        {"states": [dict(one, data_files=[{"file": "a"}, {"file": "b"}])]}, []
+    )
+    assert not _is_single_curve({"states": [one, dict(one, name="s1")]}, [])
+    assert not _is_single_curve({"data_file": "a"}, [{"file": "a"}, {"file": "b"}])

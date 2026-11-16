@@ -184,3 +184,97 @@ def test_save_problem_json_produces_loadable_file(tmp_path):
     data = json.loads(out.read_text())
     # Serialized bumps problems are JSON objects with some structure
     assert isinstance(data, dict)
+
+
+def test_prepare_from_a_single_state_setup_honours_its_declared_layers(tmp_path):
+    """A setup with one state and a declared stack, run as `aure prepare -c`
+    runs it: the first modeling checkpoint and the exported problem must carry
+    the declared pin, not the stack parsed from the description.
+
+    Intake and analysis are stubbed (they need the LLM); modeling is real.
+    """
+    from bumps.serialize import load_file
+
+    from aure.setup import load_setup
+
+    data_file = Path(_write_tiny_data_file())
+    setup_path = tmp_path / "setup.yaml"
+    setup_path.write_text(
+        "sample_description: 100 A film on silicon\n"
+        "states:\n"
+        "  - name: OCV\n"
+        f"    data_files: [{data_file}]\n"
+        "    layers:\n"
+        "      - {name: copper, sld: 6.48, sld_min: 6.48, sld_max: 6.48,\n"
+        "         thickness: 480, thickness_min: 400, thickness_max: 600,\n"
+        "         roughness: 5}\n"
+    )
+    setup = load_setup(setup_path)
+
+    stub_funcs = {"intake": _stub_intake, "analysis": _stub_analysis}
+    with patch.dict("aure.workflow.runner.NODE_FUNCTIONS", stub_funcs, clear=False):
+        result = run_prepare(
+            data_file=str(data_file),
+            sample_description=setup["sample_description"],
+            output_dir=str(tmp_path / "out"),
+            states=setup["states"],
+        )
+    assert result.get("error") is None, result.get("error")
+
+    (checkpoint,) = (tmp_path / "out" / "checkpoints").glob("*_modeling.json")
+    model = json.loads(checkpoint.read_text())["state"]["current_model"]
+    (copper,) = model["layers"]
+    assert (copper["name"], copper["sld"]) == ("copper", 6.48)
+    assert (copper["sld_min"], copper["sld_max"]) == (6.48, 6.48)
+
+    out = tmp_path / "problem.json"
+    save_problem_json(result["current_model"], out)
+    bounds = {p.name: tuple(p.bounds) for p in load_file(str(out))._parameters}
+    assert bounds["copper rho"] == (6.48, 6.48)
+    assert bounds["copper thickness"] == (400.0, 600.0)
+
+
+def test_prepare_from_a_single_state_setup_honours_its_measurement_overrides(tmp_path):
+    """`ambient`, `intensity` and `back_reflection` on a lone state, with no
+    nuisance key to drag it onto the states route: the exported problem must
+    have the declared solvent, the back-reflected stack and no free intensity."""
+    from bumps.serialize import load_file
+
+    from aure.setup import load_setup
+
+    data_file = Path(_write_tiny_data_file())
+    setup_path = tmp_path / "setup.yaml"
+    setup_path.write_text(
+        "sample_description: 100 A film on silicon\n"
+        "states:\n"
+        "  - name: OCV\n"
+        f"    data_files: [{data_file}]\n"
+        "    ambient: {name: THF, rho: 6.4}\n"
+        "    intensity: false\n"
+        "    back_reflection: true\n"
+    )
+    setup = load_setup(setup_path)
+
+    stub_funcs = {"intake": _stub_intake, "analysis": _stub_analysis}
+    with patch.dict("aure.workflow.runner.NODE_FUNCTIONS", stub_funcs, clear=False):
+        result = run_prepare(
+            data_file=str(data_file),
+            sample_description=setup["sample_description"],
+            output_dir=str(tmp_path / "out"),
+            states=setup["states"],
+        )
+    assert result.get("error") is None, result.get("error")
+
+    model = result["current_model"]
+    assert model["ambient"]["sld"] == 6.4
+    assert model["back_reflection"] is True
+    assert model["intensity"]["fixed"] is True
+
+    out = tmp_path / "problem.json"
+    save_problem_json(model, out)
+    params = {p.name: p for p in load_file(str(out))._parameters}
+    assert params["THF rho"].value == pytest.approx(6.4)
+    # Back reflection puts the ambient at the bottom of the stack, where its
+    # interface is a fitted parameter; a normal stack has no such parameter.
+    assert "THF interface" in params
+    assert not any("intensity" in name for name in params)

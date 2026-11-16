@@ -204,14 +204,189 @@ def test_initial_build_single_state_theta_offset_is_attached():
     assert needs_states_problem(model) is True
 
 
-def test_initial_build_single_state_without_nuisance_not_attached():
-    """A single state with no requested nuisance stays on the model-level build
-    path — no states block is needed."""
+def test_initial_build_single_state_is_attached_without_nuisance():
+    """A single state is attached whatever it carries: the state builder is
+    the only reader of a state's overrides, so a model without its state is a
+    model they were dropped from. (It used to need a nuisance key to qualify.)"""
+    from aure.nodes.model_builder import needs_states_problem
     from aure.nodes.modeling import _build_initial_model
 
     out = _build_initial_model(_make_state(_single_state()))
     assert "error" not in out
-    assert "states" not in out["current_model"]
+    model = out["current_model"]
+    assert [st["name"] for st in model["states"]] == ["state0"]
+    assert needs_states_problem(model) is True
+    # One state has nothing to tie.
+    assert "shared_parameters" not in model
+
+
+def test_single_state_is_attached_without_its_dataset_arrays():
+    """The model is serialized into every refinement prompt and checkpoint;
+    the builder reads the files, so the arrays have no business riding along."""
+    from aure.nodes.modeling import _build_initial_model
+
+    states = _single_state()
+    states[0]["data_files"][0].update(Q=[0.01, 0.02], R=[1.0, 0.5], dR=[0.1, 0.1])
+    out = _build_initial_model(_make_state(states))
+
+    (ds,) = out["current_model"]["states"][0]["data_files"]
+    assert ds == {"file": "/tmp/d2o.dat", "label": "d2o"}
+    # The run's own copy keeps them for plotting.
+    assert states[0]["data_files"][0]["Q"] == [0.01, 0.02]
+
+
+def test_single_state_measurement_overrides_reach_the_model():
+    """`ambient`, `intensity` and `back_reflection` on a lone state used to be
+    read only when a nuisance key rode along. They stay on the state — which
+    is what the builder reads, and what the refine LLM cannot edit — and the
+    model-level fields are rewritten to match, so the model has one answer."""
+    from aure.nodes.modeling import _build_initial_model
+
+    states = _single_state(
+        ambient={"rho": 6.4},
+        intensity={"init": 1.0, "fixed": True},
+        back_reflection=True,
+    )
+    out = _build_initial_model(_make_state(states))
+
+    assert "error" not in out, out.get("error")
+    model = out["current_model"]
+    (attached,) = model["states"]
+    assert attached["ambient"] == {"rho": 6.4}
+    assert attached["intensity"] == {"init": 1.0, "fixed": True}
+    assert attached["back_reflection"] is True
+    assert model["ambient"] == {"name": "air", "sld": 6.4}
+    assert model["back_reflection"] is True
+    assert model["intensity"] == {"value": 1.0, "min": 0.7, "max": 1.1, "fixed": True}
+
+
+# ----------------------------------------------------------------------
+# A single state's declared structure is the model's structure
+# ----------------------------------------------------------------------
+
+_DECLARED_COPPER = {
+    "name": "copper",
+    "sld": 6.48,
+    "sld_min": 6.48,
+    "sld_max": 6.48,
+    "thickness": 480.0,
+    "thickness_min": 400.0,
+    "thickness_max": 600.0,
+    "roughness": 5.0,
+}
+
+
+def test_single_state_declared_layers_become_the_model():
+    """A single-state setup's `layers` were read only on the multi-state route,
+    so the stack — and every bound in it — was dropped for the one parsed from
+    the description (Cu, 6.5 over [4, 8] here)."""
+    from aure.nodes.modeling import _build_initial_model
+
+    states = _single_state(layers=[dict(_DECLARED_COPPER)])
+    out = _build_initial_model(_make_state(states))
+
+    assert "error" not in out, out.get("error")
+    model = out["current_model"]
+    # Verbatim: no default widening of the declared pin.
+    assert model["layers"] == [_DECLARED_COPPER]
+    assert out["baseline_model"]["layers"] == [_DECLARED_COPPER]
+    assert out["model_history"][0]["n_layers"] == 1
+    # The declaration lives on the model only; the attached state has no copy
+    # to shadow it.
+    (attached,) = model["states"]
+    assert "layers" not in attached
+    # The substrate was not declared, so the parsed one stands.
+    assert model["substrate"]["name"] == "silicon"
+    # And the run says which stack it used.
+    assert any("declares its own layer stack" in m["content"] for m in out["messages"])
+    # A copy: editing the model must not rewrite what the setup declared.
+    model["layers"][0]["sld"] = 0.0
+    assert states[0]["layers"][0]["sld"] == 6.48
+
+
+def test_single_state_declared_layers_reach_the_fit_problem(tmp_path):
+    import numpy as np
+
+    from aure.nodes.model_builder import build_problem
+    from aure.nodes.modeling import _build_initial_model
+
+    q = np.linspace(0.01, 0.1, 40)
+    data = tmp_path / "curve.dat"
+    data.write_text(
+        "# Q R dR dQ\n"
+        + "\n".join(f"{a:.6f} {1e-3:.6e} {1e-4:.6e} {0.02 * a:.6e}" for a in q)
+        + "\n"
+    )
+    state = _make_state(_single_state(layers=[dict(_DECLARED_COPPER)]))
+    state["data_file"] = str(data)
+    problem = build_problem(_build_initial_model(state)["current_model"])
+
+    bounds = {p.name: (p.value, tuple(p.bounds)) for p in problem._parameters}
+    assert bounds["copper rho"] == (6.48, (6.48, 6.48))
+    assert bounds["copper thickness"] == (480.0, (400.0, 600.0))
+
+
+def test_single_state_declared_substrate_keeps_the_parsed_layers():
+    from aure.nodes.modeling import _build_initial_model
+
+    substrate = {"name": "quartz", "sld": 4.18, "roughness": 2.0, "roughness_max": 6.0}
+    out = _build_initial_model(_make_state(_single_state(substrate=dict(substrate))))
+
+    assert "error" not in out, out.get("error")
+    model = out["current_model"]
+    assert model["substrate"] == substrate
+    assert [layer["name"] for layer in model["layers"]] == ["Cu"]
+
+
+def test_single_state_declared_layer_may_omit_its_sld_window():
+    """The builder defaults a missing window; the explanation must not demand
+    one, or a declaration the builder accepts fails the modeling node."""
+    from aure.nodes.modeling import _build_initial_model
+
+    bare = {"name": "copper", "sld": 6.48, "thickness": 480.0, "roughness": 5.0}
+    out = _build_initial_model(_make_state(_single_state(layers=[dict(bare)])))
+
+    assert "error" not in out, out.get("error")
+    assert out["current_model"]["layers"] == [bare]
+
+
+def test_single_state_with_nuisance_declares_its_layers_once():
+    """On the states route the declaration used to stay on the state while the
+    model-level stack held the description's. It now lives in one place: left
+    on the state too, it would shadow the model and make a refinement that
+    edits the model's layers change nothing in the fit."""
+    from aure.nodes.modeling import _build_initial_model
+
+    states = _single_state(
+        background={"init": 2e-6, "min": 0.0, "max": 1e-5},
+        layers=[dict(_DECLARED_COPPER)],
+    )
+    out = _build_initial_model(_make_state(states))
+
+    assert "error" not in out, out.get("error")
+    model = out["current_model"]
+    assert model["layers"] == [_DECLARED_COPPER]
+    (attached,) = model["states"]
+    assert "layers" not in attached
+    assert attached["background"] == {"init": 2e-6, "min": 0.0, "max": 1e-5}
+    # The run's own record of the setup is untouched.
+    assert states[0]["layers"] == [_DECLARED_COPPER]
+
+
+def test_multi_state_declared_layers_stay_on_their_states():
+    """With two states the template/override split is the point — a state's
+    own stack must not replace the shared one."""
+    from aure.nodes.modeling import _build_initial_model
+
+    states = _two_states()
+    states[0]["layers"] = [dict(_DECLARED_COPPER)]
+    out = _build_initial_model(_make_state(states))
+
+    assert "error" not in out, out.get("error")
+    model = out["current_model"]
+    assert [layer["name"] for layer in model["layers"]] == ["Cu"]
+    assert model["states"][0]["layers"] == [_DECLARED_COPPER]
+    assert "layers" not in model["states"][1]
 
 
 # ----------------------------------------------------------------------
@@ -415,6 +590,61 @@ def test_refine_single_state_unchanged(monkeypatch):
     assert "error" not in out, out.get("error")
     new_model = out["current_model"]
     assert "states" not in new_model or not new_model["states"]
+
+
+def _one_state_model(**state_fields) -> dict:
+    current = _multi_state_current_model()
+    current["states"] = [dict(current["states"][0], **state_fields)]
+    current.pop("shared_parameters", None)
+    current.pop("unshared_parameters", None)
+    return current
+
+
+def test_refine_cannot_undo_a_single_states_declared_measurement(monkeypatch):
+    """The refine LLM re-emits the whole model, and rule 6 tells it to keep
+    intensity varying. A state's own `ambient` / `intensity` are carried, not
+    re-emitted, and the model-level fields follow them — so a value the setup
+    declared outlives the first iteration."""
+    from aure.nodes import modeling
+
+    current = _one_state_model(
+        ambient={"rho": 6.4}, intensity={"init": 1.0, "fixed": True}
+    )
+    modeling._fold_single_state(current)
+
+    reply = _json_mod.loads(_json_mod.dumps(current))
+    reply["ambient"] = {"name": "D2O", "sld": -0.56}
+    reply["intensity"] = {"value": 1.0, "min": 0.7, "max": 1.1, "fixed": False}
+    _fake_llm(monkeypatch, reply)
+
+    out = modeling._refine_model(_refine_state(current))
+
+    assert "error" not in out, out.get("error")
+    model = out["current_model"]
+    assert model["ambient"]["sld"] == 6.4
+    assert model["intensity"]["fixed"] is True
+    assert model["states"][0]["ambient"] == {"rho": 6.4}
+    assert model["states"][0]["intensity"] == {"init": 1.0, "fixed": True}
+
+
+def test_refine_moves_structure_the_llm_put_on_a_single_state_up(monkeypatch):
+    """Rule 12 invites the LLM to give a state its own `layers`. With one
+    state that would leave the model-level stack as a second, unread
+    description — so it is moved up and replaces it."""
+    from aure.nodes import modeling
+
+    current = _one_state_model()
+    reply = _json_mod.loads(_json_mod.dumps(current))
+    oxide = {"name": "CuO", "sld": 4.0, "thickness": 20.0, "roughness": 3.0}
+    reply["states"][0]["layers"] = reply["layers"] + [oxide]
+    _fake_llm(monkeypatch, reply)
+
+    out = modeling._refine_model(_refine_state(current))
+
+    assert "error" not in out, out.get("error")
+    model = out["current_model"]
+    assert [layer["name"] for layer in model["layers"]][-1] == "CuO"
+    assert "layers" not in model["states"][0]
 
 
 def _single_state_current_model() -> dict:

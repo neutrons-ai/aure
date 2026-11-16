@@ -132,6 +132,10 @@ states:
 # # sld_max, thickness, thickness_min, thickness_max, roughness, roughness_max)
 # # and are passed through verbatim — they are validated when the fit is built,
 # # not when the YAML is read.
+# # With a SINGLE state there is no shared stack to deviate from: its `layers`
+# # (and `substrate`) become the model itself, in place of the stack derived
+# # from `sample_description`. That is how a single-curve run states a known
+# # constant — e.g. sld_min == sld_max holds that SLD.
 #
 # # All states must share the same orientation — mixing normal and back-
 # # reflecting states in one run would silently mis-alias substrate.interface.

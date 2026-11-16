@@ -284,72 +284,83 @@ run must report that the tie applied to no state. Today it reports nothing.
 
 ---
 
-## A single-state setup's `layers` — and every bound in them — is silently discarded
+## Multi-state refinement prompts carry every dataset's Q/R/dR arrays
 
-**Where:** [`src/aure/nodes/model_builder.py`](src/aure/nodes/model_builder.py) —
-`needs_states_problem`, which returns True only for `len(states) > 1` or for a
-state carrying `theta_offset` / `sample_broadening` / `background`.
+**Where:** [`src/aure/nodes/modeling.py`](src/aure/nodes/modeling.py) —
+`_attach_state_metadata`, which copies the intake-enriched states (each
+dataset with its `Q` / `R` / `dR` lists) onto the model, against
+`format_model_refinement_prompt_json` in
+[`src/aure/nodes/prompts.py`](src/aure/nodes/prompts.py), which serializes the
+whole model into the refinement prompt.
 
-**What is wrong.** A setup file with exactly one state, no nuisance parameters,
-and a fully declared `states[0].layers` does not take the states route. It falls
-through to the description-driven path, which builds the model from
-`parsed_sample` and never reads `states[0].layers`. The declared stack, and with
-it every per-layer bound, is dropped without a warning.
+**What is wrong.** For two states or more the arrays ride along into every
+refinement prompt, every `model_history` entry and every checkpoint. Measured
+on a two-state model with one 300-point file per state: the refinement prompt
+is 11,137 characters without the arrays and **49,073** with them. The LLM is
+never asked to read them. A single state is attached without them.
 
-Measured on a real run. The setup declared, for a single state:
+**What it costs.** Tokens on every refinement call of every multi-state run,
+growing with the number of files and points, and the same bulk repeated
+through the checkpoints.
 
-```yaml
-states:
-  - name: OCV3_206931
-    layers:
-      - {name: copper, sld: 6.48, sld_min: 6.48, sld_max: 6.48, ...}
-```
+**The change.** Attach the states without the arrays for any number of states
+(`_strip_dataset_arrays` already does the stripping for the baseline
+snapshot). The builder reads the files, and `evaluation._n_data_from_state`
+already falls back to the run's own `data_files` when the model's carry no
+points; check the web results code for any other reader first.
 
-The **first** modeling checkpoint (`003_modeling.json`) already reported
+## Three builders, three fitters, three web simulators — one of each is used
 
-```
-copper sld=6.55 window=(6.3, 8.5)
-```
+**Where:** [`src/aure/nodes/model_builder.py`](src/aure/nodes/model_builder.py)
+— `build_problem`, `build_multi_problem`;
+[`src/aure/nodes/fitting.py`](src/aure/nodes/fitting.py) — `run_refl1d_fit`,
+`run_multi_refl1d_fit` and their extractors;
+[`src/aure/web/data.py`](src/aure/web/data.py) — `_compute_from_model`,
+`_compute_multi_file_simulation`.
 
-so the value, the pin and the window were all gone before any refinement
-iteration ran. Adding a second state to the same setup honours the identical
-layer block, which is what localises the fault to the routing rather than to the
-layer parsing.
+**What is wrong.** Every model a CLI or web run builds now carries its states
+and goes through `build_states_problem`. The flat paths are reached only by a
+model with no `states` block: a run resumed from before every model carried
+one, or a programmatic caller. They are still a full second and third
+implementation of probe loading, intensity and nuisance wiring, result
+extraction and web recompute, and most of the builder tests exercise them
+rather than the path runs take.
 
-**What it costs.** The setup file is the only surface on which a layer bound can
-be declared at all — there is no top-level `layers:` key (see the roughness-floor
-entry above, which records the same gap from the other side). So for a
-single-curve analysis there is currently **no way to state a known constant**:
-not "this copper is bulk copper at 6.48", not "the solvent SLD is known, fit its
-roughness only" — which is what the expert reference fits themselves do. The
-request is accepted, written into the config, echoed in the run's own setup, and
-then ignored. A user has no way to tell that it did not take effect except by
-reading the exported problem.
+**The change.** Give the flat entry points a synthesized one-state view
+(`state.iter_states` already produces one) and build through
+`build_states_problem`, then delete the duplicated bodies. The one-state case
+already matches them name for name and χ² for χ²
+(`test_one_state_one_file_builds_the_flat_problem`,
+`test_one_state_several_files_builds_the_flat_co_refinement`), and names its
+nuisance parameters as the flat multi-file path does. What is left to
+reconcile is the flat single-file path: it names a model-level background
+`background <file stem>` rather than `background`, and it cannot build the
+angle-based probe `theta_offset` / `sample_broadening` need, so it ignores
+them.
 
-It also silently changes what an experiment measures. An arm intended to test
-"does a stated materials constant improve the fit?" instead tests nothing: the
-constant never reaches the model.
 
-**The change.** Take the states route whenever a state declares its own
-`layers` or `substrate`, not only when there are two or more states or a
-nuisance parameter is present — i.e. add that condition to
-`needs_states_problem`. A single-state states problem is already supported (the
-builder handles it; only the routing predicate excludes it), and the tie
-machinery is inert with one state.
+## The web Setup tab drops a loaded setup's per-state `layers` and `substrate`
 
-Failing that, the honest fallback is to refuse: if a setup declares per-state
-`layers` on a path that cannot honour them, error at load rather than proceed.
-Silently discarding a declared bound is the worst of the three options.
+**Where:** [`src/aure/web/routes.py`](src/aure/web/routes.py) —
+`_minimal_state_prefill`, and `_overridesFromPrefill` / `_buildStateEntry` in
+[`src/aure/web/static/setup.js`](src/aure/web/static/setup.js).
 
-**Aside: the workaround, and why it is not a fix.** Any nuisance parameter flips
-the predicate, so a zero-width `theta_offset: {init: 0, min: 0, max: 0}` forces
-the states route while being numerically inert. It works, and it is what one
-would reach for under time pressure, but it couples an unrelated field to the
-model-building route and would break the moment the predicate changes.
+**What is wrong.** The prefill keeps a state's name, files, `ambient.rho`,
+nuisance triplets, `back_reflection` and `extra_description`. A state's own
+`layers` / `substrate` are not carried, and neither are its ambient bounds.
+Verified: a state declaring `layers`, `substrate` and
+`ambient: {rho: 6.4, sld_min: 6.4, sld_max: 6.4}` prefills as
+`{name, data_files, ambient: {rho: 6.4}}`.
 
-**Verifying a fix.** The setup above, run as-is: the exported `problem.json`
-must show `copper rho` with bounds `(6.48, 6.48)`, and the first modeling
-checkpoint must carry the declared window rather than `(6.3, 8.5)`.
+**What it costs.** A setup that declares a stack — for one state or several —
+loses it on Load, so a run started from the form, or a setup saved back from
+it, is the description-driven one. Nothing on the page says the file held more
+than the form shows.
+
+**The change.** Carry `layers`, `substrate` and the whole `ambient` mapping
+through the prefill and back out in `_buildStateEntry` as opaque pass-through
+(the form needs no editor for them to survive a round trip), and show on the
+state's panel that it carries a declared stack.
 
 ---
 
@@ -418,8 +429,9 @@ ordinary practice — the calibrated expert reference fits in the validation
 corpus hold the ambient SLD fixed and fit only its roughness. A workflow whose
 premise is that the user knows their system needs to accept "I know this
 constant" *reliably*, and today it is a coin flip: undocumented in the
-description path, dropped entirely in a single-state setup file (see the entry
-above), and unprotected against the widener.
+description path and unprotected against the widener. (A setup file is the
+reliable route today: a state's declared `layers` and `ambient` are honoured
+for one state as for several.)
 
 **The change.** Three parts:
 

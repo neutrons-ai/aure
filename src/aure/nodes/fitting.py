@@ -98,10 +98,6 @@ def fitting_node(state: ReflectivityState) -> Dict[str, Any]:
         logger.info(f"[FITTING] Running {method.upper()} optimization...")
 
         data_files = state.get("data_files", [])
-        is_multi_state = isinstance(model, dict) and needs_states_problem(model)
-        is_multi = (
-            len(data_files) > 1 and isinstance(model, dict) and not is_multi_state
-        )
 
         # ========== Thin-layer SLD mode enumeration (gated, single-file) ==========
         # Thin layers sit on a Δρ·t degeneracy ridge with distinct SLD modes a
@@ -110,9 +106,8 @@ def fitting_node(state: ReflectivityState) -> Dict[str, Any]:
         # start the main fit from the best basin. Off by default; never fatal.
         if (
             _mode_enumeration_enabled()
-            and not is_multi_state
-            and not is_multi
             and isinstance(model, dict)
+            and _is_single_curve(model, data_files)
         ):
             try:
                 model = _enumerate_thin_layer_modes(model, state)
@@ -383,19 +378,21 @@ def run_fit_for_model(
 ) -> FitResult:
     """Dispatch to the fitter that matches a model's shape.
 
-    Chooses among the single-experiment, multi-file co-refinement, and
-    multi-state co-refinement fitters using exactly the same predicates as
-    :func:`fitting_node`, so the exploration loop and the terminal
+    A model carrying a ``states`` block — which is every model a CLI or web
+    run builds, one state or several — goes to the states fitter. The flat
+    single-experiment and multi-file fitters serve models with no states block
+    (runs resumed from before every model carried one, programmatic callers).
+    This is the one dispatch, so the exploration loop and the terminal
     ``final_fit`` polish build an identical ``FitProblem`` for the same model.
 
     Deliberately does NOT run thin-layer SLD mode enumeration: that is an
     exploration-seeding step for escaping local minima, not part of
     characterising an already-selected model.
     """
-    is_multi_state = isinstance(model, dict) and needs_states_problem(model)
-    is_multi = len(data_files) > 1 and isinstance(model, dict) and not is_multi_state
+    has_states = isinstance(model, dict) and needs_states_problem(model)
+    is_multi = len(data_files) > 1 and isinstance(model, dict) and not has_states
 
-    if is_multi_state:
+    if has_states:
         return run_states_refl1d_fit(
             model_definition=model,
             method=method,
@@ -425,6 +422,25 @@ def run_fit_for_model(
         export_dir=export_dir,
         model_name=model_name,
     )
+
+
+def _is_single_curve(model: dict, data_files: list) -> bool:
+    """One state, one file — the only shape thin-layer mode enumeration
+    handles. Asked of the model's shape, not of which builder builds it: a
+    single curve is built by the states builder like everything else."""
+    states = model.get("states") or []
+    if len(states) > 1:
+        return False
+    if states:
+        return len(states[0].get("data_files") or []) == 1
+    return len(data_files) <= 1
+
+
+def _build_single_curve_problem(model: dict):
+    """The FitProblem a single-curve fit would use, by the same dispatch."""
+    if needs_states_problem(model):
+        return build_states_problem(model)[0]
+    return build_problem(model)
 
 
 def _mode_enumeration_enabled() -> bool:
@@ -483,7 +499,7 @@ def _enumerate_thin_layer_modes(model: dict, state: ReflectivityState) -> dict:
     working = copy.deepcopy(model)
     # Baseline χ² for the current seeds.
     try:
-        best_chi2 = data_chisq(build_problem(working))
+        best_chi2 = data_chisq(_build_single_curve_problem(working))
     except Exception as e:
         logger.warning(f"[FITTING] Mode enumeration: baseline build failed: {e}")
         return model
@@ -508,7 +524,7 @@ def _enumerate_thin_layer_modes(model: dict, state: ReflectivityState) -> dict:
             trial = copy.deepcopy(working)
             trial["layers"][i]["sld"] = float(seed)
             try:
-                problem = build_problem(trial)
+                problem = _build_single_curve_problem(trial)
                 # amoeba deliberately, not the run's FIT_METHOD and not `de`.
                 # This sweep exists to escape a local optimiser's dependence
                 # on where it starts, by starting it in several places — so a
@@ -649,12 +665,14 @@ def run_states_refl1d_fit(
     export_dir: Optional[str] = None,
     model_name: Optional[str] = None,
 ) -> FitResult:
-    """Execute a multi-state co-refinement fit.
+    """Fit a model that carries a ``states`` block — one state or several.
 
-    Builds a single :func:`build_states_problem` ``FitProblem`` with
-    cross-state parameter aliasing and emits a per-file
-    :class:`PerFileFitResult` (with the ``state`` field populated) for
-    every dataset across every state.
+    Builds a single :func:`build_states_problem` ``FitProblem`` (with
+    cross-state parameter aliasing when there is more than one state) and
+    emits a per-file :class:`PerFileFitResult` (with the ``state`` field
+    populated) for every dataset across every state. A single curve — one
+    state, one file — has no per-file breakdown and reports none, exactly as
+    the flat single-file fitter does.
 
     Per-state ``profile.dat`` files are written under
     ``{export_dir}/state_{name}/`` for downstream consumption.
@@ -666,10 +684,18 @@ def run_states_refl1d_fit(
 
     n_states = len(experiments_by_state)
     n_files = sum(len(v) for v in experiments_by_state.values())
-    logger.info(
-        f"[FITTING] Running {method.upper()} multi-state co-refinement: "
-        f"{n_states} states, {n_files} files total"
-    )
+    if n_states > 1:
+        logger.info(
+            f"[FITTING] Running {method.upper()} multi-state co-refinement: "
+            f"{n_states} states, {n_files} files total"
+        )
+    elif n_files > 1:
+        logger.info(
+            f"[FITTING] Running {method.upper()} co-refinement across "
+            f"{n_files} files..."
+        )
+    else:
+        logger.info(f"[FITTING] Running {method.upper()} with bumps.fit...")
 
     fit_options = _build_fit_options(method, steps, burn)
     result = _run_bumps_fit(problem, fit_options, export_dir, model_name)
@@ -1161,12 +1187,20 @@ def _extract_states_bumps_results(
     iteration: int,
     export_dir: Optional[str] = None,
 ) -> FitResult:
-    """Extract fit results from a multi-state co-refinement FitProblem.
+    """Extract fit results from a states FitProblem.
 
     Emits one :class:`PerFileFitResult` per dataset (across all states),
     each tagged with its ``state`` name. The aggregate ``chi_squared`` is
     the bumps total. Per-state ``profile.dat`` files are written under
     ``export_dir/state_{name}/`` when ``export_dir`` is provided.
+
+    A **single curve** (one state, one file) reports ``per_file_results=None``,
+    the shape the flat single-file extractor has always produced: a breakdown
+    of one file repeats the aggregate — on a slightly different normalization
+    (points, not degrees of freedom) — and everything downstream that reads
+    the breakdown (the per-file χ² window, the evaluator's "fit jointly across
+    several segments" note, per-state residual analysis) is about telling
+    files apart.
     """
     import warnings
 
@@ -1206,10 +1240,20 @@ def _extract_states_bumps_results(
     if hasattr(fit_result, "success"):
         converged = fit_result.success
 
-    logger.info(
-        f"[FITTING] Multi-state fit complete: aggregate χ² = {chi_squared:.3f}, "
-        f"k={n_free_params}"
-    )
+    n_curves = sum(len(v) for v in experiments_by_state.values())
+    single_curve = len(experiments_by_state) == 1 and n_curves == 1
+    if single_curve:
+        logger.info(f"[FITTING] Fit complete: χ² = {chi_squared:.3f}")
+    else:
+        logger.info(
+            f"[FITTING] Fit complete: aggregate χ² = {chi_squared:.3f}, "
+            f"k={n_free_params}"
+        )
+    for name, value in parameters.items():
+        unc_str = (
+            f" ± {uncertainties.get(name, 0):.3f}" if name in uncertainties else ""
+        )
+        logger.info(f"[FITTING]   {name}: {value:.3f}{unc_str}")
 
     # Per-state, per-file extraction.
     per_file: list[PerFileFitResult] = []
@@ -1286,7 +1330,7 @@ def _extract_states_bumps_results(
         # straight back onto this state's entries. refl1d exports one profile per
         # model, so the FitResult's top-level pair is states[0]'s alone — without
         # this the evaluator can only ever check one state of a co-refinement.
-        if export_dir and experiments:
+        if export_dir and experiments and not single_curve:
             try:
                 _write_state_profile(experiments[0], export_dir, state_name)
                 z, rho = _read_state_profile(export_dir, state_name)
@@ -1316,7 +1360,7 @@ def _extract_states_bumps_results(
         residual_ratio=all_residual_ratio,
         sld_z=sld_z,
         sld_rho=sld_rho,
-        per_file_results=per_file,
+        per_file_results=None if single_curve else per_file,
         issues=[],
         suggestions=[],
     )

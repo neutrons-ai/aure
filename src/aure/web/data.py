@@ -379,8 +379,10 @@ class RunData:
             fitted_params = fr.get("parameters", {})
             model = self._get_model_for_iteration(iteration)
 
-            # Multi-state (or single-state with per-state nuisance): emit one
-            # profile per state per iteration via the states-problem path.
+            # A model carrying states (one or several): emit one profile per
+            # state per iteration via the states-problem path. A lone state is
+            # labelled like any single-sample run — there is no second state
+            # for its name to tell it apart from.
             from aure.nodes.model_builder import needs_states_problem as _needs_states
 
             if isinstance(model, dict) and _needs_states(model):
@@ -396,7 +398,9 @@ class RunData:
                 for sr in state_results:
                     profiles.append(
                         {
-                            "label": f"{label} – {sr['state']}",
+                            "label": f"{label} – {sr['state']}"
+                            if len(state_results) > 1
+                            else label,
                             "z": sr["z"],
                             "sld": sr["sld"],
                             "state": sr["state"],
@@ -795,10 +799,10 @@ class RunData:
         if model is None:
             return {"error": "No model available"}
 
-        # Multi-state (or single state with per-state nuisance):
-        # build_states_problem is the only path that wires up shared
-        # theta_offset / sample_broadening correctly. Take precedence
-        # over the legacy multi-file path.
+        # A model carrying states (one or several): build_states_problem is
+        # the only path that reads a state's overrides and wires up shared
+        # theta_offset / sample_broadening. The flat paths below serve models
+        # with no states block (runs older than the always-attached state).
         from aure.nodes.model_builder import needs_states_problem as _needs_states
 
         if isinstance(model, dict) and _needs_states(model):

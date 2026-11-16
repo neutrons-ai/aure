@@ -220,6 +220,29 @@ def _apply_medium(
             consumed.add(iface_name)
 
 
+def _apply_ambient_override(
+    override: Optional[dict],
+    model_ambient: Optional[dict],
+    fitted: dict,
+    consumed: Set[str],
+) -> None:
+    """Write the fitted ambient SLD into a single state's ``ambient`` override.
+
+    The override is merged over the model-level ambient at build time, so it
+    may carry no ``name`` of its own, and it may spell the SLD ``rho`` (the
+    setup file's and the web form's key) rather than ``sld``.
+    """
+    if not isinstance(override, dict):
+        return
+    name = override.get("name") or (model_ambient or {}).get("name")
+    rho_name = f"{name} rho"
+    if not name or rho_name not in fitted:
+        return
+    key = "rho" if "rho" in override and "sld" not in override else "sld"
+    override[key] = fitted[rho_name]
+    consumed.add(rho_name)
+
+
 def _intensity_matches(
     fitted: dict, prefix: str, exclude_prefixes: Tuple[str, ...] = ()
 ) -> List[str]:
@@ -291,6 +314,12 @@ def _apply_fitted_values(definition: dict, fitted: dict) -> Tuple[int, List[str]
     names) and the multi-state shape, where ``build_states_problem`` prefixes
     every *untied* parameter with ``"<state> "``.
 
+    A single state's parameters carry no prefix, so they land on the
+    model-level blocks — and also on that state's own ``ambient`` /
+    ``intensity`` overrides when it has them: the builder reads those in
+    preference to the model's, so a value written to the model alone would be
+    shadowed by the declared starting value on the next rebuild.
+
     A state that inherits the model-level ``layers`` has no per-state structure
     to write untied values into, so when state-prefixed layer parameters exist
     the inherited layers are materialized onto that state first. Tying is
@@ -304,8 +333,22 @@ def _apply_fitted_values(definition: dict, fitted: dict) -> Tuple[int, List[str]
     consumed: Set[str] = set()
     back = bool(definition.get("back_reflection"))
     states = definition.get("states") or []
-    state_prefixes = tuple(
-        f"{st['name']} " for st in states if isinstance(st, dict) and st.get("name")
+    single_state = len(states) == 1
+    if single_state and isinstance(states[0], dict) and states[0].get("name"):
+        # A fit stored before a single state stopped prefixing its parameters
+        # (a run with a nuisance key, an import-refl1d workspace) names them
+        # "<state> ...". Read those as today's unprefixed names.
+        legacy = f"{states[0]['name']} "
+        fitted = {
+            (name[len(legacy) :] if name.startswith(legacy) else name): value
+            for name, value in fitted.items()
+        }
+    state_prefixes = (
+        ()
+        if single_state
+        else tuple(
+            f"{st['name']} " for st in states if isinstance(st, dict) and st.get("name")
+        )
     )
 
     _apply_layers(definition.get("layers"), fitted, "", consumed)
@@ -325,8 +368,22 @@ def _apply_fitted_values(definition: dict, fitted: dict) -> Tuple[int, List[str]
         st_name = st.get("name")
         if not st_name:
             continue
-        prefix = f"{st_name} "
         st_back = bool(st.get("back_reflection", back))
+        if single_state:
+            _apply_layers(st.get("layers"), fitted, "", consumed)
+            _apply_medium(
+                st.get("substrate"),
+                fitted,
+                "",
+                consumed,
+                accepts_interface=not st_back,
+            )
+            _apply_ambient_override(
+                st.get("ambient"), definition.get("ambient"), fitted, consumed
+            )
+            _apply_intensity(st.get("intensity"), fitted, "", consumed)
+            continue
+        prefix = f"{st_name} "
         # A state that inherits a model-level block has nowhere to put an
         # untied fitted value, so materialize the block first. The builders key
         # parameter names off the *model-level* structure, and the copy keeps

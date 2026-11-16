@@ -270,9 +270,14 @@ the config wins.
 **The names you will read back.** A tied parameter keeps refl1d's plain
 `"<layer> <attr>"` spelling and appears once in the fit; an untied one is
 prefixed with its state, `"<state> <layer> <attr>"`. So `Cu thickness` in a
-report means tied, `H2O CuOx thickness` means that state's own. Per-file
-intensities are named `intensity <label>`, which is where the `label:` on each
-data file shows up.
+report means tied, `H2O CuOx thickness` means that state's own. The same goes
+for what is never tied: `H2O intensity` (or `H2O <label> intensity` when the
+state has several files, which is where the `label:` on each data file shows
+up), `H2O background`, `H2O theta_offset`.
+
+A run with **one** state prefixes nothing — there is no second state for the
+name to tell it apart from. Its parameters read `Cu thickness`, `THF rho`,
+`intensity <label>`, `background`, exactly as a single-curve run always has.
 
 ### Which structure each state has
 
@@ -283,6 +288,24 @@ differs); states without `layers:` keep inheriting the shared stack. AuRE can
 also infer the difference from the description, or propose it mid-run as a
 hypothesis. See
 [README](../README.md#when-the-states-differ-in-structure).
+
+**With a single state, its `layers:` are the model.** There is no shared stack
+for one state to differ from, so a `states:` block of length one that declares
+`layers:` (and/or `substrate:`) has the model built from that declaration,
+verbatim — values, windows and pins alike — in place of the stack parsed from
+`sample_description`. This is how a single-curve analysis states a known
+constant: `sld_min` equal to `sld_max` holds that SLD. The run says so in its
+transcript, and the declaration is the *starting* model: the refinement loop
+may still change it.
+
+```yaml
+states:
+  - name: OCV
+    data_files: [REFL_206931_combined_data_auto.txt]
+    layers:
+      - {name: copper, sld: 6.48, sld_min: 6.48, sld_max: 6.48,
+         thickness: 480, thickness_min: 400, thickness_max: 600, roughness: 5}
+```
 
 All states must share the same orientation: mixing normal and back-reflecting
 states in one run is refused, because refl1d puts the substrate roughness on
@@ -352,10 +375,15 @@ an angle-based probe can actually be built, and a partial-looking file whose
 header carries no theta yields a Q-only probe on which the parameter silently
 does nothing.
 
-All four keys work for a single-state run too — a `states:` block of length one
-carrying any of them is routed through the multi-state builder precisely so
-they get wired. They are not, however, reachable from the ad-hoc positional
-route: the synthetic `state0` it builds has no place to put them.
+All four keys work for a single-state run too, as do a single state's
+`ambient:` and `back_reflection:`. Every run is built by the state builder —
+a single state is its one-state case, not a different route — so whatever a
+state declares is read, whether there is one state or several. These
+declarations stay on the state for the whole run: the refinement loop can
+change the layer stack, but not a state's `ambient`, `intensity` or nuisance
+block, so a held value stays held. None of the four is reachable from the
+ad-hoc positional route: the synthetic `state0` it builds has no place to put
+them.
 
 ### Known limits before you write ties by hand
 

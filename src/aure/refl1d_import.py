@@ -997,14 +997,18 @@ def _disambiguate_probe_parameters(
     forgets that each segment had its own fitted value, and on rebuild
     every probe gets the same starting intensity.
 
-    Per-probe attributes (``intensity``) are renamed to
-    ``"<state> <label> intensity"`` (or ``"<state> intensity"`` when
-    the state has a single file). Per-state shared attributes
-    (``theta_offset``, ``sample_broadening``) become
-    ``"<state> <attr>"``. The disambiguation walks ``problem._parameters``
-    by ``id()`` so values are preserved exactly.
+    The names come from the builder's own helpers
+    (:func:`~aure.nodes.model_builder.intensity_parameter_name`,
+    :func:`~aure.nodes.model_builder.nuisance_parameter_name`), so the two
+    cannot drift: several states prefix them with the state
+    (``"<state> <label> intensity"``, ``"<state> <attr>"``), a single state
+    does not (``"intensity <label>"``, ``"<attr>"``). The disambiguation walks
+    ``problem._parameters`` by ``id()`` so values are preserved exactly.
     """
+    from .nodes.model_builder import intensity_parameter_name, nuisance_parameter_name
+
     experiments = list(problem.models)
+    single_state = len(states) == 1
 
     # Build {id(Parameter): new_name} for every per-probe / per-state nuisance.
     rename: dict[int, str] = {}
@@ -1025,10 +1029,14 @@ def _disambiguate_probe_parameters(
             if par is None:
                 continue
             label = ds.get("label", "")
-            if multi_in_state and label:
-                rename[id(par)] = f"{state_name} {label} intensity"
-            else:
-                rename[id(par)] = f"{state_name} intensity"
+            if single_state and not label:
+                label = Path(ds.get("file", "")).stem
+            rename[id(par)] = intensity_parameter_name(
+                state_name,
+                label,
+                single_state=single_state,
+                multi_file=multi_in_state,
+            )
 
         # Per-state shared: theta_offset, sample_broadening, background.
         for attr in ("theta_offset", "sample_broadening", "background"):
@@ -1042,7 +1050,9 @@ def _disambiguate_probe_parameters(
                 lo, hi = _bounds(par)
                 if lo is None or hi is None:
                     continue
-                rename[id(par)] = f"{state_name} {attr}"
+                rename[id(par)] = nuisance_parameter_name(
+                    state_name, attr, single_state=single_state
+                )
 
     if not rename:
         return

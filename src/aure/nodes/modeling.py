@@ -69,50 +69,116 @@ def _strip_dataset_arrays(model: dict) -> dict:
     return slim
 
 
+def _single_state_structure(states_in: list) -> dict:
+    """The ``layers`` / ``substrate`` a *single* state declares, else ``{}``.
+
+    A state's own ``layers`` / ``substrate`` override the model-level template
+    so that states can differ. With one state there is nothing to differ from:
+    its declared structure *is* the model's structure, and
+    :func:`_build_initial_model` builds the model from it — verbatim, so a
+    declared pin is not widened by the defaults applied to a parsed stack.
+
+    Presence tests mirror
+    :func:`~aure.nodes.model_builder._state_overrides`, which is what honours
+    the same keys when there are two states or more.
+    """
+    if len(states_in) != 1:
+        return {}
+    only = states_in[0]
+    declared: dict = {}
+    if only.get("layers") is not None:
+        declared["layers"] = copy.deepcopy(only["layers"])
+    if only.get("substrate"):
+        declared["substrate"] = copy.deepcopy(only["substrate"])
+    return declared
+
+
+def _fold_single_state(model: dict) -> None:
+    """Keep a single-state model reading as one description, in place.
+
+    The state builder gives a state's own fields precedence over the model's,
+    which is what lets several states differ. With one state the model-level
+    fields are then a second description of the same sample, and the one the
+    builder does not read is the one the report, the evaluator and the refine
+    LLM look at first. So, for exactly one state:
+
+    * **structure** (``layers`` / ``substrate``) lives on the model only. A
+      copy on the state — declared in the setup, or written there by the
+      refine LLM — is moved up and replaces the model's;
+    * **measurement overrides** (``ambient`` / ``intensity`` /
+      ``back_reflection``) stay on the state, which is what keeps a declared
+      value out of the refine LLM's reach, and the model-level fields are
+      rewritten to the values those overrides produce.
+
+    No-op for any other number of states.
+    """
+    from .model_builder import _state_overrides
+
+    states = model.get("states") or []
+    if len(states) != 1 or not isinstance(states[0], dict):
+        return
+    only = states[0]
+
+    layers = only.pop("layers", None)
+    if layers is not None:
+        model["layers"] = layers
+    substrate = only.pop("substrate", None)
+    if substrate:
+        model["substrate"] = substrate
+
+    effective = _state_overrides(model, only)
+    if only.get("ambient"):
+        model["ambient"] = effective["ambient"]
+    if "back_reflection" in only:
+        model["back_reflection"] = effective["back_reflection"]
+    spec = only.get("intensity")
+    if spec:
+        # The model-level block is spelled value/min/max/fixed; a state's may
+        # use the setup file's `init`.
+        model["intensity"] = {
+            "value": spec.get("value", spec.get("init", 1.0)),
+            "min": spec.get("min", 0.7),
+            "max": spec.get("max", 1.1),
+            "fixed": bool(spec.get("fixed", False)),
+        }
+
+
 def _attach_state_metadata(
     model_def: dict,
     state: "ReflectivityState",
     *,
     user_config_wins: bool = True,
 ) -> None:
-    """Attach multi-state co-refinement metadata to *model_def* in place.
+    """Attach the run's states to *model_def* in place.
 
-    Pulls the `states` list from the workflow state (populated by intake)
-    and attaches it to *model_def['states']*. The tie spec
-    (`shared_parameters` / `unshared_parameters`) is taken from the user
-    config and validated against the structural layer names. Raises
-    ``ValueError`` when validation fails.
+    Pulls the ``states`` list from the workflow state (populated by intake)
+    and attaches it to ``model_def['states']``, for one state as for several:
+    the state builder is the only code that reads a state's ``ambient`` /
+    ``intensity`` / ``back_reflection`` overrides and its nuisance parameters,
+    so a model without its state is a model those were dropped from. No-op
+    when there are no states at all.
 
-    For a genuine multi-state run (``>= 2`` states) the full states block plus
-    the tie spec is attached. For a *single* state the block is attached **only
-    when it carries a user-requested nuisance parameter** (``background`` /
-    ``theta_offset`` / ``sample_broadening``) so the very first model AuRE fits
-    reflects that choice — :func:`~aure.nodes.model_builder.needs_states_problem`
-    then routes it through the per-state builder which ties that parameter. A
-    single state with no such request is left for the model-level build path
-    (no states block needed). No-op when there are no states at all.
+    **Several states** also get the tie spec (``shared_parameters`` /
+    ``unshared_parameters``), taken from the user config and validated against
+    the structural layer names. Raises ``ValueError`` when validation fails.
+
+    **One state** has nothing to tie. It is attached without its dataset
+    arrays (the model is serialized into every refinement prompt and
+    checkpoint, and the builder reads the files), and folded by
+    :func:`_fold_single_state` so the model reads as one description.
     """
-    from .model_builder import _nuisance_enabled
-
     states_in = state.get("states") or []
     if not states_in:
         return
 
-    multi = len(states_in) >= 2
-    user_nuisance = any(
-        _nuisance_enabled(st.get(k))
-        for st in states_in
-        for k in ("background", "theta_offset", "sample_broadening")
-    )
-    if not multi and not user_nuisance:
-        return
-
-    import copy as _copy
-
-    model_def["states"] = _copy.deepcopy(states_in)
+    model_def["states"] = copy.deepcopy(states_in)
 
     # Cross-state ties only apply to genuine multi-state co-refinement.
-    if not multi:
+    if len(states_in) < 2:
+        for ds in model_def["states"][0].get("data_files") or []:
+            for key in ("Q", "R", "dR"):
+                ds.pop(key, None)
+        _fold_single_state(model_def)
         return
 
     user_config = state.get("user_config") or {}
@@ -340,6 +406,15 @@ def _refine_model(state: ReflectivityState) -> Dict[str, Any]:
                             if ls.get(key):
                                 tgt[key] = copy.deepcopy(ls[key])
                 new_model["states"] = carried
+                if len(carried) == 1:
+                    # One state: there is nothing to tie, and the model must
+                    # keep reading as one description — structure the LLM put
+                    # on the state moves up, and the model-level measurement
+                    # fields follow the state's overrides, which the LLM
+                    # cannot edit.
+                    for key in ("shared_parameters", "unshared_parameters"):
+                        new_model.pop(key, None)
+                    _fold_single_state(new_model)
 
                 user_config = state.get("user_config") or {}
                 # Identity flag is carried over (config wins, else previous).
@@ -772,6 +847,36 @@ def _build_initial_model(state: ReflectivityState) -> Dict[str, Any]:
     ambient = _get_ambient(parsed)
     layers = _build_layers(parsed, features)
 
+    # A single state's declared structure is the model's structure, verbatim:
+    # it replaces what was parsed from the description rather than passing
+    # through `_build_layers`, which would widen a declared pin.
+    states_in = state.get("states") or []
+    declared = _single_state_structure(states_in)
+    if declared:
+        layers = declared.get("layers", layers)
+        substrate = declared.get("substrate", substrate)
+        what = " and ".join(
+            label
+            for key, label in (("layers", "layer stack"), ("substrate", "substrate"))
+            if key in declared
+        )
+        logger.info(
+            "[MODELING] State %r declares its own %s; using it as the model",
+            states_in[0].get("name"),
+            what,
+        )
+        updates["messages"].append(
+            Message(
+                role="system",
+                content=(
+                    f"State {states_in[0].get('name')!r} declares its own {what} "
+                    "in the setup; the model is built from that declaration, "
+                    "not from the sample description."
+                ),
+                timestamp=None,
+            )
+        )
+
     # ========== Build ModelDefinition ==========
     back_reflection = parsed.get("back_reflection", False)
 
@@ -834,7 +939,6 @@ def _build_initial_model(state: ReflectivityState) -> Dict[str, Any]:
             # them from the description so the default "tie everything across
             # states" set does not wrongly tie a parameter the user said varies
             # per state (e.g. a surface oxide in-air vs in-electrolyte).
-            states_in = state.get("states") or []
             if len(states_in) >= 2:
                 # Sample ≠ structure: derive any per-state structural differences
                 # ("state 2 has no oxide") from the description, setting that
@@ -876,9 +980,9 @@ def _build_initial_model(state: ReflectivityState) -> Dict[str, Any]:
 
         # Generate explanation
         explanation = _explain_model(layers, substrate, ambient, features)
-        updates["messages"] = [
+        updates["messages"].append(
             Message(role="assistant", content=explanation, timestamp=None)
-        ]
+        )
 
     except Exception as e:
         updates["error"] = f"Model building failed: {str(e)}"
@@ -1241,9 +1345,13 @@ def _explain_model(layers: list, substrate: dict, ambient: dict, features: dict)
     for i, layer in enumerate(layers, 1):
         t_min = layer.get("thickness_min", layer["thickness"] * 0.5)
         t_max = layer.get("thickness_max", layer["thickness"] * 2.0)
+        # A layer declared in a setup may omit its SLD window; show the one
+        # the builder will apply (`_build_sample`).
+        s_min = layer.get("sld_min", layer["sld"] - 2.5)
+        s_max = layer.get("sld_max", layer["sld"] + 2.5)
         lines.append(
             f"- Layer {i}: d ∈ [{t_min:.0f}, {t_max:.0f}] Å, "
-            f"SLD ∈ [{layer['sld_min']:.1f}, {layer['sld_max']:.1f}], "
+            f"SLD ∈ [{s_min:.1f}, {s_max:.1f}], "
             f"σ ∈ [0, {layer.get('roughness_max', 30):.0f}] Å"
         )
 

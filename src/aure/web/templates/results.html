@@ -986,7 +986,8 @@ function _updateChartsWithSimulation(data) {
   const rqEl = document.getElementById("rq-chart");
   if (rqEl && rqEl.data) {
     if (data.per_file && data.per_file.length) {
-      // Multi-file: one dashed trace per file
+      // One dashed trace per file. A single curve is just "User": the states
+      // path answers every run, so one entry here is not a co-refinement.
       _removeUserTraces("rq-chart");
       data.per_file.forEach((pf, i) => {
         if (pf.Q_fit && pf.Q_fit.length) {
@@ -994,7 +995,9 @@ function _updateChartsWithSimulation(data) {
             x: pf.Q_fit, y: pf.R_fit,
             mode: "lines",
             line: { width: 2.5, color: "#000", dash: "dash" },
-            name: "User – " + (pf.label || ("File " + (i + 1))),
+            name: data.per_file.length > 1
+              ? "User – " + (pf.label || ("File " + (i + 1)))
+              : "User",
             _isUser: true,
           });
         }

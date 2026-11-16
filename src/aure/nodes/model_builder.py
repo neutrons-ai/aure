@@ -6,8 +6,12 @@ Instead, models are stored as structured JSON (ModelDefinition dicts) and
 refl1d objects are built on-the-fly when needed for fitting or visualisation.
 
 Key functions:
-- build_experiment()  — JSON → refl1d Experiment
-- build_problem()     — JSON → bumps FitProblem
+- build_states_problem() — JSON → bumps FitProblem, for any model carrying a
+  ``states`` block (one state or several). This is the builder every CLI and
+  web run uses; see needs_states_problem().
+- build_problem() / build_multi_problem() — the flat builders, for models
+  with no ``states`` block (older checkpoints, programmatic callers)
+- build_experiment()  — JSON → refl1d Experiment (flat, single file)
 - extract_definition() — fitted FitProblem → updated ModelDefinition
 """
 
@@ -995,18 +999,42 @@ _ATTR_DISPLAY = {
 def needs_states_problem(definition: dict) -> bool:
     """Return True when the model must be built via :func:`build_states_problem`.
 
-    The multi-file path (:func:`build_multi_problem`) doesn't honor per-state
-    ``theta_offset`` / ``sample_broadening`` / ``background`` blocks, so a
-    single-state model with those nuisance parameters still needs the states
-    route to wire them correctly. Multi-state models always need it.
+    That is every model carrying a ``states`` block — one state or several. A
+    state is the unit the builder understands: its ``ambient`` / ``intensity``
+    / ``back_reflection`` overrides, its nuisance parameters and its per-file
+    settings are read nowhere else, so a single state is simply the one-state
+    case rather than a reason to take another route. (It used to be: a lone
+    state reached this builder only when it carried a nuisance key, and
+    everything else it declared was dropped without a message.)
+
+    The flat builders (:func:`build_problem`, :func:`build_multi_problem`)
+    remain for definitions with *no* ``states`` block — checkpoints written
+    before every run attached one, and programmatic callers.
     """
-    states = definition.get("states") or []
-    if len(states) > 1:
-        return True
-    return any(
-        st.get("theta_offset") or st.get("sample_broadening") or st.get("background")
-        for st in states
-    )
+    return bool(definition.get("states"))
+
+
+def intensity_parameter_name(
+    state_name: str, label: str, *, single_state: bool, multi_file: bool
+) -> str:
+    """Name of one probe's intensity parameter in a states problem.
+
+    One state keeps the flat builders' spelling, ``"intensity <label>"`` — a
+    state prefix distinguishes nothing when there is one state, and this is
+    the name every single-curve run has always reported. Several states prefix
+    it, with the file label added when a state has more than one file.
+    """
+    if single_state:
+        return f"intensity {label}" if label else "intensity"
+    if multi_file and label:
+        return f"{state_name} {label} intensity"
+    return f"{state_name} intensity"
+
+
+def nuisance_parameter_name(state_name: str, attr: str, *, single_state: bool) -> str:
+    """Name of a state's shared ``theta_offset`` / ``sample_broadening`` /
+    ``background``: bare for one state, state-prefixed for several."""
+    return attr if single_state else f"{state_name} {attr}"
 
 
 def parameter_key(
@@ -1304,7 +1332,10 @@ def build_states_problem(definition: dict):
             "ranged and unranged parameters across states)"
         )
 
-    tied_set = _resolve_tied_set(definition)
+    # One state has nothing to be tied to, and nothing to be told apart from:
+    # tie specs are not consulted and no parameter takes a state prefix.
+    single_state = len(states) == 1
+    tied_set = [] if single_state else _resolve_tied_set(definition)
 
     samples: list = []
     effective_defs: list[dict] = []
@@ -1418,7 +1449,8 @@ def build_states_problem(definition: dict):
     # Rename untied parameters with a state prefix so every name in the
     # FitProblem is unique. Tied parameters keep their refl1d-default
     # "<layer> <attr>" spelling because the same Parameter object is
-    # shared across states.
+    # shared across states. With a single state nothing can collide, so no
+    # name takes a prefix and the problem reads like a flat single-sample one.
     # ------------------------------------------------------------------
     tied_lookup = set(tied_set)
     layers = definition.get("layers", []) or []
@@ -1450,8 +1482,8 @@ def build_states_problem(definition: dict):
             targets.append((amb_name, "interface"))
 
         for layer_name, attr_path in targets:
-            if (layer_name, attr_path) in tied_lookup:
-                continue  # shared with state 0 — keep default name
+            if single_state or (layer_name, attr_path) in tied_lookup:
+                continue  # one state, or shared with state 0 — keep default name
             idx = _layer_index(eff, layer_name, back_reflection=back)
             if idx is None:
                 continue
@@ -1475,10 +1507,14 @@ def build_states_problem(definition: dict):
         for ds, exp in zip(state_files, state_exps):
             if hasattr(exp.probe, "intensity"):
                 label = ds.get("label") or ""
-                if multi_in_state and label:
-                    exp.probe.intensity.name = f"{st_name} {label} intensity"
-                else:
-                    exp.probe.intensity.name = f"{st_name} intensity"
+                if single_state and not label:
+                    label = os.path.splitext(os.path.basename(ds.get("file", "")))[0]
+                exp.probe.intensity.name = intensity_parameter_name(
+                    st_name,
+                    label,
+                    single_state=single_state,
+                    multi_file=multi_in_state,
+                )
             for nuisance_attr in ("theta_offset", "sample_broadening", "background"):
                 if nuisance_attr == "background" and not bg_enabled:
                     continue
@@ -1488,7 +1524,9 @@ def build_states_problem(definition: dict):
                 if id(par) in seen_nuisance:
                     continue
                 seen_nuisance.add(id(par))
-                par.name = f"{st_name} {nuisance_attr}"
+                par.name = nuisance_parameter_name(
+                    st_name, nuisance_attr, single_state=single_state
+                )
 
     problem = FitProblem(all_experiments)
     return problem, experiments_by_state, sorted_files_by_state
@@ -1539,40 +1577,72 @@ def save_problem_json(
     return out
 
 
-def apply_parameters(problem, params: Dict[str, float]) -> None:
-    """Apply fitted parameter values to a ``FitProblem`` by name.
+def _resolve_parameters(by_name: dict, name: str) -> list:
+    """Parameters of a problem that the stored *name* refers to.
 
-    Accepts either the canonical name from :func:`parameter_key` or, for
-    untied multi-state parameters, the legacy ``"<layer> <attr>"``
-    spelling — in which case the value is broadcast to every parameter
-    whose name ends with that suffix.
+    Exact match first. Two spellings from other shapes of the same model are
+    then accepted, so values stored under one still land on a rebuild:
+
+    * a short ``"<layer> <attr>"`` name, broadcast to every state-prefixed
+      parameter ending in it (a flat result applied to a multi-state problem);
+    * a state-prefixed name on a problem that carries no prefix — what
+      single-state runs with a nuisance key, and ``import-refl1d`` workspaces,
+      stored before a single state stopped prefixing its parameters. Accepted
+      only when it identifies exactly one parameter.
     """
-    model_params = getattr(problem, "_parameters", None)
-    if model_params is None:
-        return
+    group = by_name.get(name)
+    if group:
+        return group
 
+    suffix = " " + name
+    group = [
+        par for key, plist in by_name.items() if key.endswith(suffix) for par in plist
+    ]
+    if group:
+        return group
+
+    if name.split()[-1:] == ["intensity"]:
+        # "<state> intensity" / "<state> <label> intensity" -> "intensity <label>"
+        head = name[: -len("intensity")].strip()
+        keys = [k for k in by_name if k == "intensity" or k.startswith("intensity ")]
+        if len(keys) > 1:
+            keys = [
+                k
+                for k in keys
+                if head == k[len("intensity ") :]
+                or head.endswith(" " + k[len("intensity ") :])
+            ]
+    else:
+        keys = [k for k in by_name if name.endswith(" " + k)]
+        if len(keys) > 1:
+            keys = [max(keys, key=len)]
+    if len(keys) == 1 and len(by_name[keys[0]]) == 1:
+        return by_name[keys[0]]
+    return []
+
+
+def _parameters_by_name(problem) -> dict:
     from collections import defaultdict
 
     by_name: dict[str, list] = defaultdict(list)
-    for par in model_params:
+    for par in getattr(problem, "_parameters", None) or []:
         by_name[str(par.name)].append(par)
+    return by_name
 
-    def _resolve(name: str) -> list:
-        group = by_name.get(name)
-        if group:
-            return group
-        # Fallback: legacy short name like "Cu thickness" matches every
-        # state-prefixed name "<state> Cu thickness".
-        suffix = " " + name
-        return [
-            par
-            for key, plist in by_name.items()
-            if key.endswith(suffix)
-            for par in plist
-        ]
+
+def apply_parameters(problem, params: Dict[str, float]) -> None:
+    """Apply fitted parameter values to a ``FitProblem`` by name.
+
+    Names are matched by :func:`_resolve_parameters`: exactly, or through the
+    spellings another shape of the same model used. A name matching several
+    parameters is applied to those whose bounds admit the value.
+    """
+    by_name = _parameters_by_name(problem)
+    if not by_name:
+        return
 
     for name, value in params.items():
-        group = _resolve(name)
+        group = _resolve_parameters(by_name, name)
         if not group:
             continue
         if len(group) == 1:
@@ -1593,25 +1663,31 @@ def apply_parameters(problem, params: Dict[str, float]) -> None:
 
 
 def apply_bounds(problem, bounds: Dict[str, list]) -> None:
-    """Widen parameter bounds on a ``FitProblem`` to user-specified ranges."""
+    """Widen parameter bounds on a ``FitProblem`` to user-specified ranges.
+
+    Every parameter carrying the exact name is widened. Failing that, the name
+    is resolved as :func:`_resolve_parameters` does — e.g. the state-prefixed
+    spelling an older single-state run stored — and used only when it
+    identifies exactly one parameter.
+    """
     from bumps.bounds import init_bounds
 
-    params = getattr(problem, "_parameters", None)
-    if params is None:
-        return
-    for par in params:
-        name = str(par.name)
-        if name not in bounds:
-            continue
-        lo_new, hi_new = bounds[name]
-        cur_bounds = getattr(par, "bounds", None)
-        if isinstance(cur_bounds, tuple) and len(cur_bounds) == 2:
-            lo = min(cur_bounds[0], lo_new)
-            hi = max(cur_bounds[1], hi_new)
-        else:
-            lo, hi = lo_new, hi_new
-        par.range(lo, hi)
-        par.prior = init_bounds((lo, hi))
+    by_name = _parameters_by_name(problem)
+    for name, (lo_new, hi_new) in bounds.items():
+        group = by_name.get(name)
+        if not group:
+            group = _resolve_parameters(by_name, name)
+            if len(group) != 1:
+                continue
+        for par in group:
+            cur_bounds = getattr(par, "bounds", None)
+            if isinstance(cur_bounds, tuple) and len(cur_bounds) == 2:
+                lo = min(cur_bounds[0], lo_new)
+                hi = max(cur_bounds[1], hi_new)
+            else:
+                lo, hi = lo_new, hi_new
+            par.range(lo, hi)
+            par.prior = init_bounds((lo, hi))
 
 
 # ======================================================================

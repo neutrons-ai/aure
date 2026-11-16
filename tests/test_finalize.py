@@ -505,6 +505,7 @@ def test_state_intensity_does_not_leak_into_the_model_level_block():
         "intensity": {"value": 1.0},
         "states": [
             {"name": "D2O", "intensity": {"value": 1.0}},
+            {"name": "H2O", "intensity": {"value": 1.0}},
         ],
     }
 
@@ -513,7 +514,60 @@ def test_state_intensity_does_not_leak_into_the_model_level_block():
     assert n_applied == 1
     assert unapplied == []
     assert defn["states"][0]["intensity"]["value"] == pytest.approx(0.93)
+    assert defn["states"][1]["intensity"]["value"] == pytest.approx(1.0)
     assert defn["intensity"]["value"] == pytest.approx(1.0)
+
+
+def _single_state_definition():
+    return {
+        "layers": [{"name": "Cu", "thickness": 100.0, "sld": 2.0, "roughness": 5.0}],
+        "substrate": {"name": "Si", "sld": 2.07, "roughness": 3.0},
+        "ambient": {"name": "THF", "sld": 6.2},
+        "intensity": {"value": 1.0, "min": 0.7, "max": 1.1, "fixed": False},
+        "states": [
+            {
+                "name": "OCV",
+                "ambient": {"rho": 6.2},
+                "intensity": {"init": 1.0, "min": 0.9, "max": 1.1},
+            }
+        ],
+    }
+
+
+def test_single_state_values_reach_the_model_and_the_states_overrides():
+    """A single state's parameters carry no prefix. They are written to the
+    model-level blocks and to the state's own overrides: the builder reads
+    the override first, so a value on the model alone would be shadowed by the
+    declared starting value on the next rebuild. The override may be nameless
+    and spell the SLD `rho`."""
+    defn = _single_state_definition()
+
+    n_applied, unapplied = _apply_fitted_values(
+        defn, {"THF rho": 5.9, "intensity curve": 0.97, "Cu thickness": 120.0}
+    )
+
+    assert (n_applied, unapplied) == (3, [])
+    assert defn["ambient"]["sld"] == pytest.approx(5.9)
+    assert defn["states"][0]["ambient"] == {"rho": pytest.approx(5.9)}
+    assert defn["intensity"]["value"] == pytest.approx(0.97)
+    assert defn["states"][0]["intensity"]["value"] == pytest.approx(0.97)
+    assert defn["layers"][0]["thickness"] == pytest.approx(120.0)
+    # One structure: nothing is materialized onto the state.
+    assert "layers" not in defn["states"][0]
+
+
+def test_single_state_accepts_names_stored_with_the_state_prefix():
+    """Fits stored before a single state stopped prefixing its parameters —
+    runs with a nuisance key, import-refl1d workspaces — still finalize."""
+    defn = _single_state_definition()
+
+    n_applied, unapplied = _apply_fitted_values(
+        defn, {"OCV THF rho": 5.9, "OCV intensity": 0.97}
+    )
+
+    assert (n_applied, unapplied) == (2, [])
+    assert defn["states"][0]["ambient"] == {"rho": pytest.approx(5.9)}
+    assert defn["states"][0]["intensity"]["value"] == pytest.approx(0.97)
 
 
 def test_apply_fitted_values_reports_unplaceable_names():

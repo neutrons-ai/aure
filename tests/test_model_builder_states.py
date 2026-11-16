@@ -477,3 +477,151 @@ def test_a_fitted_angle_nuisance_starts_from_init_on_both_paths(two_files):
         assert not par.fixed
         assert par.value == pytest.approx(0.004)
         assert tuple(par.bounds) == (-0.01, 0.01)
+
+
+# ----------------------------------------------------------------------
+# A single state is the one-state case of the states builder
+# ----------------------------------------------------------------------
+
+
+def _flat_definition(files: list[str]) -> dict:
+    defn = _two_state_definition(files)
+    defn.pop("states")
+    defn["ambient"] = {"name": "THF", "sld": 6.2}
+    return defn
+
+
+def _describe(problem) -> tuple:
+    return (
+        pytest.approx(float(problem.chisq())),
+        [
+            (p.name, pytest.approx(p.value), tuple(p.bounds))
+            for p in problem._parameters
+        ],
+    )
+
+
+def test_any_states_block_takes_the_states_builder():
+    from aure.nodes.model_builder import needs_states_problem
+
+    bare = {"name": "s0", "data_files": [{"file": "x"}]}
+    assert needs_states_problem({"states": [bare]}) is True
+    assert needs_states_problem({"states": [bare, dict(bare, name="s1")]}) is True
+    assert needs_states_problem({"states": []}) is False
+    assert needs_states_problem({"data_file": "x"}) is False
+
+
+def test_one_state_one_file_builds_the_flat_problem(two_files):
+    """Same parameters, names, bounds and χ² as `build_problem` — a single
+    curve must not be able to tell which builder built it."""
+    from aure.nodes.model_builder import build_problem, build_states_problem
+
+    flat = _flat_definition(two_files)
+    label = os.path.splitext(os.path.basename(two_files[0]))[0]
+    one_state = dict(
+        flat, states=[{"name": "OCV", "data_files": [{"file": two_files[0]}]}]
+    )
+
+    states_problem, _, _ = build_states_problem(one_state)
+    assert _describe(states_problem) == _describe(
+        build_problem(dict(flat, data_file=two_files[0]))
+    )
+    assert f"intensity {label}" in states_problem.labels()
+
+
+def test_one_state_several_files_builds_the_flat_co_refinement(two_files):
+    from aure.nodes.model_builder import build_multi_problem, build_states_problem
+
+    flat = _flat_definition(two_files)
+    files = [{"file": f, "label": f"seg{i}"} for i, f in enumerate(two_files)]
+    one_state = dict(flat, states=[{"name": "OCV", "data_files": files}])
+
+    states_problem, _, _ = build_states_problem(one_state)
+    multi_problem, _, _ = build_multi_problem(flat, files)
+    assert _describe(states_problem) == _describe(multi_problem)
+    assert {"intensity seg0", "intensity seg1", "THF rho"} <= set(
+        states_problem.labels()
+    )
+
+
+def test_one_state_ignores_tie_specs(two_files):
+    """Nothing to tie: a spec naming a layer the stack lacks must not fail
+    the build the way it does when it would silently tie nothing across
+    several states."""
+    from aure.nodes.model_builder import build_states_problem
+
+    one_state = dict(
+        _flat_definition(two_files),
+        states=[{"name": "OCV", "data_files": [{"file": two_files[0]}]}],
+        shared_parameters=["NoSuchLayer.thickness"],
+    )
+    problem, _, _ = build_states_problem(one_state)
+    assert "Cu thickness" in problem.labels()
+
+
+def _legacy_named_problem(two_files, *, n_files: int):
+    from aure.nodes.model_builder import build_states_problem
+
+    files = [
+        {"file": f, "label": f"seg{i}", "theta": 0.6}
+        for i, f in enumerate(two_files[:n_files])
+    ]
+    defn = dict(
+        _flat_definition(two_files),
+        states=[
+            {
+                "name": "OCV",
+                "data_files": files,
+                "background": {"init": 1e-6, "min": 0.0, "max": 1e-5},
+                "theta_offset": {"init": 0.0, "min": -0.02, "max": 0.02},
+            }
+        ],
+    )
+    problem, _, _ = build_states_problem(defn)
+    return problem, {p.name: p for p in problem._parameters}
+
+
+def test_names_stored_with_the_state_prefix_still_apply(two_files):
+    """Single-state runs with a nuisance key, and import-refl1d workspaces,
+    stored "<state> ..." names before a single state stopped prefixing them.
+    Their fits must still land on a rebuilt problem."""
+    from aure.nodes.model_builder import apply_bounds, apply_parameters
+
+    problem, by_name = _legacy_named_problem(two_files, n_files=1)
+    assert {"THF rho", "background", "theta_offset", "intensity seg0"} <= set(by_name)
+
+    apply_parameters(
+        problem,
+        {
+            "OCV THF rho": 5.9,
+            "OCV background": 3e-6,
+            "OCV theta_offset": 0.004,
+            "OCV intensity": 0.93,
+        },
+    )
+    assert by_name["THF rho"].value == pytest.approx(5.9)
+    assert by_name["background"].value == pytest.approx(3e-6)
+    assert by_name["theta_offset"].value == pytest.approx(0.004)
+    assert by_name["intensity seg0"].value == pytest.approx(0.93)
+
+    apply_bounds(problem, {"OCV THF rho": [4.0, 7.5]})
+    lo, hi = by_name["THF rho"].bounds
+    assert (lo, hi) == (4.0, 7.5)
+
+
+def test_prefixed_per_file_intensities_find_their_own_probe(two_files):
+    from aure.nodes.model_builder import apply_parameters
+
+    problem, by_name = _legacy_named_problem(two_files, n_files=2)
+    apply_parameters(problem, {"OCV seg0 intensity": 0.83, "OCV seg1 intensity": 1.07})
+    assert by_name["intensity seg0"].value == pytest.approx(0.83)
+    assert by_name["intensity seg1"].value == pytest.approx(1.07)
+
+
+def test_an_unknown_name_is_still_ignored(two_files):
+    from aure.nodes.model_builder import apply_parameters
+
+    problem, by_name = _legacy_named_problem(two_files, n_files=1)
+    before = {name: par.value for name, par in by_name.items()}
+    apply_parameters(problem, {"OCV no such thing": 1.0, "elsewhere rho": 2.0})
+    assert {name: par.value for name, par in by_name.items()} == before

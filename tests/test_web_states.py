@@ -119,6 +119,34 @@ def test_sld_profiles_dispatch_to_states(tmp_path: Path) -> None:
     assert all("iteration" in p for p in out["profiles"])
 
 
+def test_a_lone_states_profile_is_labelled_like_a_plain_run(tmp_path: Path) -> None:
+    """Every run's model carries its state now, so a single state must not
+    grow a " – state0" suffix on each profile."""
+    rd = RunData(str(tmp_path))
+    state = _make_multi_state_final_state("/tmp/x.dat")
+    state["states"] = state["states"][:1]
+    state["current_model"] = {
+        "substrate": {"name": "Si"},
+        "ambient": {"name": "air"},
+        "layers": [],
+        "states": state["states"],
+    }
+    with (
+        patch.object(rd, "get_final_state", return_value=state),
+        patch.object(
+            rd, "_get_model_for_iteration", return_value=state["current_model"]
+        ),
+        patch(
+            "aure.web.data._compute_states_sld",
+            return_value=[{"state": "D2O", "z": [0.0, 1.0], "sld": [2.07, 6.5]}],
+        ),
+    ):
+        out = rd.get_sld_profiles()
+
+    assert out["profiles"]
+    assert all(" – " not in p["label"] for p in out["profiles"])
+
+
 # ======================================================================
 # UI-shape submit contract for /api/start-analysis (Ticket 15)
 # ======================================================================

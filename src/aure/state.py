@@ -281,6 +281,12 @@ class StateDefinition(TypedDict, total=False):
     others (e.g. a surface oxide in air but not in electrolyte). When omitted,
     the state inherits ``ModelDefinition.layers``/``substrate``. Cross-state
     ties apply only where a layer exists in the relevant states.
+
+    With a *single* state there is no template to differ from: the modeling
+    node builds ``ModelDefinition.layers``/``substrate`` from that state's
+    declaration and the state attached to the model carries no copy. Its
+    ``ambient`` / ``intensity`` / ``back_reflection`` stay on the state, and
+    the model-level fields are kept equal to what they produce.
     """
 
     name: str  # Unique within the model definition
