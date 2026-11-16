@@ -29,11 +29,10 @@ from ..tools.posterior_tools import (
 )
 from .model_builder import (
     build_problem,
-    build_multi_problem,
     build_states_problem,
     data_chisq,
     bic_inputs,
-    needs_states_problem,
+    with_states,
 )
 from .evaluation import (
     BIC_FORMULA,
@@ -376,45 +375,25 @@ def run_fit_for_model(
     export_dir: Optional[str] = None,
     model_name: Optional[str] = None,
 ) -> FitResult:
-    """Dispatch to the fitter that matches a model's shape.
+    """Fit *model*, whatever its shape.
 
-    A model carrying a ``states`` block — which is every model a CLI or web
-    run builds, one state or several — goes to the states fitter. The flat
-    single-experiment and multi-file fitters serve models with no states block
-    (runs resumed from before every model carried one, programmatic callers).
-    This is the one dispatch, so the exploration loop and the terminal
+    There is one fitter, :func:`run_states_refl1d_fit`, because there is one
+    builder. A model that carries its states is fitted as it stands. One with
+    no ``states`` block (a run resumed from before every model carried them)
+    is fitted as the single state it implies — *data_files* when several are
+    being co-refined, else its own ``data_file``
+    (:func:`~aure.nodes.model_builder.with_states`).
+
+    This is the one entry point, so the exploration loop and the terminal
     ``final_fit`` polish build an identical ``FitProblem`` for the same model.
 
     Deliberately does NOT run thin-layer SLD mode enumeration: that is an
     exploration-seeding step for escaping local minima, not part of
     characterising an already-selected model.
     """
-    has_states = isinstance(model, dict) and needs_states_problem(model)
-    is_multi = len(data_files) > 1 and isinstance(model, dict) and not has_states
-
-    if has_states:
-        return run_states_refl1d_fit(
-            model_definition=model,
-            method=method,
-            iteration=iteration,
-            steps=steps,
-            burn=burn,
-            export_dir=export_dir,
-            model_name=model_name,
-        )
-    if is_multi:
-        return run_multi_refl1d_fit(
-            model_definition=model,
-            data_files=data_files,
-            method=method,
-            iteration=iteration,
-            steps=steps,
-            burn=burn,
-            export_dir=export_dir,
-            model_name=model_name,
-        )
-    return run_refl1d_fit(
-        model_definition=model,
+    co_refined = data_files if data_files and len(data_files) > 1 else None
+    return run_states_refl1d_fit(
+        model_definition=with_states(model, co_refined),
         method=method,
         iteration=iteration,
         steps=steps,
@@ -426,21 +405,14 @@ def run_fit_for_model(
 
 def _is_single_curve(model: dict, data_files: list) -> bool:
     """One state, one file — the only shape thin-layer mode enumeration
-    handles. Asked of the model's shape, not of which builder builds it: a
-    single curve is built by the states builder like everything else."""
+    handles. Asked of the model's shape: every shape is built by the same
+    builder, so there is no route to ask instead."""
     states = model.get("states") or []
     if len(states) > 1:
         return False
     if states:
         return len(states[0].get("data_files") or []) == 1
     return len(data_files) <= 1
-
-
-def _build_single_curve_problem(model: dict):
-    """The FitProblem a single-curve fit would use, by the same dispatch."""
-    if needs_states_problem(model):
-        return build_states_problem(model)[0]
-    return build_problem(model)
 
 
 def _mode_enumeration_enabled() -> bool:
@@ -499,7 +471,7 @@ def _enumerate_thin_layer_modes(model: dict, state: ReflectivityState) -> dict:
     working = copy.deepcopy(model)
     # Baseline χ² for the current seeds.
     try:
-        best_chi2 = data_chisq(_build_single_curve_problem(working))
+        best_chi2 = data_chisq(build_problem(working))
     except Exception as e:
         logger.warning(f"[FITTING] Mode enumeration: baseline build failed: {e}")
         return model
@@ -524,7 +496,7 @@ def _enumerate_thin_layer_modes(model: dict, state: ReflectivityState) -> dict:
             trial = copy.deepcopy(working)
             trial["layers"][i]["sld"] = float(seed)
             try:
-                problem = _build_single_curve_problem(trial)
+                problem = build_problem(trial)
                 # amoeba deliberately, not the run's FIT_METHOD and not `de`.
                 # This sweep exists to escape a local optimiser's dependence
                 # on where it starts, by starting it in several places — so a
@@ -566,8 +538,7 @@ def run_refl1d_fit(
     export_dir: Optional[str] = None,
     model_name: Optional[str] = None,
 ) -> FitResult:
-    """
-    Execute refl1d fit by building a FitProblem from a ModelDefinition.
+    """Fit a model as it stands — :func:`run_fit_for_model` with no extra files.
 
     Args:
         model_definition: ModelDefinition dict describing the model
@@ -577,29 +548,10 @@ def run_refl1d_fit(
         burn: Number of burn-in steps for MCMC
         export_dir: Optional directory for bumps/refl1d export output
         model_name: Optional name for the FitProblem (drives export filenames)
-
-    Returns:
-        FitResult dictionary
     """
-    problem = build_problem(model_definition)
-    _name_problem(problem, model_name)
-
-    # Configure fit options based on method
-    fit_options = _build_fit_options(method, steps, burn)
-
-    # Run the fit
-    logger.info(f"[FITTING] Running {method.upper()} with bumps.fit...")
-    result = _run_bumps_fit(problem, fit_options, export_dir, model_name)
-
-    # Extract results
-    fr = _extract_bumps_results(
-        problem=problem,
-        fit_result=result,
-        method=method,
-        iteration=iteration,
-        export_dir=export_dir,
+    return run_fit_for_model(
+        model_definition, [], method, iteration, steps, burn, export_dir, model_name
     )
-    return _attach_posterior(fr, problem, result, method)
 
 
 def run_multi_refl1d_fit(
@@ -612,48 +564,22 @@ def run_multi_refl1d_fit(
     export_dir: Optional[str] = None,
     model_name: Optional[str] = None,
 ) -> FitResult:
-    """Execute a joint fit across multiple data files (co-refinement).
+    """Jointly fit *data_files* as one state of a states-less model.
 
-    A single sample is shared across all experiments so that all
-    structural parameters are automatically tied.  Each data file gets
-    its own probe with an independent intensity parameter.
-
-    Parameters
-    ----------
-    model_definition
-        A ``ModelDefinition`` dict.
-    data_files
-        List of ``DatasetInfo`` dicts (``file``, ``label``).
-    method, iteration, steps, burn, export_dir
-        Same as :func:`run_refl1d_fit`.
-
-    Returns
-    -------
-    FitResult
-        Aggregate results with per-file breakdowns in ``per_file_results``.
+    The files share a single sample, so every structural parameter is tied,
+    and each gets its own intensity. The result carries a per-file breakdown
+    in ``per_file_results``. Unlike :func:`run_fit_for_model` this co-refines
+    the list as given, even a list of one.
     """
-    problem, experiments, sorted_data_files = build_multi_problem(
-        model_definition, data_files
-    )
-    _name_problem(problem, model_name)
-    n_files = len(sorted_data_files)
-    logger.info(
-        f"[FITTING] Running {method.upper()} co-refinement across {n_files} files..."
-    )
-
-    fit_options = _build_fit_options(method, steps, burn)
-    result = _run_bumps_fit(problem, fit_options, export_dir, model_name)
-
-    fr = _extract_multi_bumps_results(
-        problem=problem,
-        experiments=experiments,
-        data_files=sorted_data_files,
-        fit_result=result,
+    return run_states_refl1d_fit(
+        model_definition=with_states(model_definition, data_files),
         method=method,
         iteration=iteration,
+        steps=steps,
+        burn=burn,
         export_dir=export_dir,
+        model_name=model_name,
     )
-    return _attach_posterior(fr, problem, result, method)
 
 
 def run_states_refl1d_fit(
@@ -667,12 +593,13 @@ def run_states_refl1d_fit(
 ) -> FitResult:
     """Fit a model that carries a ``states`` block — one state or several.
 
+    The only fitter: every other entry point in this module arrives here.
+
     Builds a single :func:`build_states_problem` ``FitProblem`` (with
     cross-state parameter aliasing when there is more than one state) and
     emits a per-file :class:`PerFileFitResult` (with the ``state`` field
     populated) for every dataset across every state. A single curve — one
-    state, one file — has no per-file breakdown and reports none, exactly as
-    the flat single-file fitter does.
+    state, one file — has no per-file breakdown and reports none.
 
     Per-state ``profile.dat`` files are written under
     ``{export_dir}/state_{name}/`` for downstream consumption.
@@ -907,277 +834,6 @@ def _run_bumps_fit(
     return result
 
 
-def _extract_bumps_results(
-    problem,
-    fit_result,
-    method: str,
-    iteration: int,
-    export_dir: Optional[str] = None,
-) -> FitResult:
-    """Extract fit results from bumps problem and fit result."""
-    import warnings
-
-    warnings.filterwarnings("ignore", category=UserWarning, module="bumps")
-
-    # Get chi-squared (bumps uses chisq method on problem)
-    chi_squared = data_chisq(problem)
-
-    # Compute theory curve at fitted parameter values
-    Q_fit = []
-    R_fit = []
-    try:
-        experiment = problem.fitness
-        experiment.update()
-        Q_arr, R_arr = experiment.reflectivity()
-        Q_fit = Q_arr.tolist()
-        R_fit = R_arr.tolist()
-    except Exception as e:
-        logger.warning(f"[FITTING] Could not compute theory curve: {e}")
-
-    # Get parameter values and names from problem._parameters
-    parameters = {}
-    uncertainties = {}
-
-    param_bounds = {}
-    for i, par in enumerate(problem._parameters):
-        name = str(par.name)
-        parameters[name] = par.value
-
-        # Get uncertainties from fit result if available
-        if hasattr(fit_result, "dx") and fit_result.dx is not None:
-            try:
-                if i < len(fit_result.dx):
-                    uncertainties[name] = fit_result.dx[i]
-            except (IndexError, TypeError):
-                pass
-
-        # Get parameter bounds
-        if par.bounds is not None:
-            lo, hi = par.bounds
-            param_bounds[name] = [float(lo), float(hi)]
-
-    # Check convergence
-    converged = chi_squared < 100  # Simple heuristic
-    if hasattr(fit_result, "success"):
-        converged = fit_result.success
-
-    logger.info(f"[FITTING] Fit complete: χ² = {chi_squared:.3f}")
-    for name, value in parameters.items():
-        unc_str = (
-            f" ± {uncertainties.get(name, 0):.3f}" if name in uncertainties else ""
-        )
-        logger.info(f"[FITTING]   {name}: {value:.3f}{unc_str}")
-
-    # Read SLD profile from refl1d export if available
-    sld_z, sld_rho = _read_profile_dat(export_dir, getattr(problem, "name", None))
-
-    # Compute residuals and residual ratio for fringe analysis
-    residuals = []
-    residual_ratio = []
-    if Q_fit and R_fit:
-        try:
-            R_data = problem.fitness.probe.R
-            dR_data = problem.fitness.probe.dR
-            R_fit_arr = np.array(R_fit)
-            if R_data is not None and len(R_data) == len(R_fit_arr):
-                # Normalized residuals: (data - model) / error
-                if dR_data is not None and len(dR_data) == len(R_data):
-                    safe_dR = np.maximum(np.abs(dR_data), 1e-20)
-                    residuals = ((R_data - R_fit_arr) / safe_dR).tolist()
-                # Ratio for fringe analysis: data / model
-                safe_R_fit = np.maximum(R_fit_arr, 1e-20)
-                residual_ratio = (R_data / safe_R_fit).tolist()
-        except Exception as e:
-            logger.debug(f"[FITTING] Could not compute residuals: {e}")
-
-    fr = FitResult(
-        iteration=iteration,
-        method=method,
-        chi_squared=chi_squared,
-        converged=converged,
-        parameters=parameters,
-        uncertainties=uncertainties if uncertainties else None,
-        bounds=param_bounds if param_bounds else None,
-        Q_fit=Q_fit,
-        R_fit=R_fit,
-        residuals=residuals,
-        residual_ratio=residual_ratio,
-        sld_z=sld_z,
-        sld_rho=sld_rho,
-        per_file_results=None,
-        issues=[],
-        suggestions=[],
-    )
-    # Everything BIC needs, read straight off the problem (see
-    # model_builder.bic_inputs). Recorded rather than re-derived downstream so
-    # `evaluation` scores this fit with the same n and k that produced it.
-    fr.update(bic_inputs(problem))  # type: ignore[typeddict-item]
-    return fr
-
-
-def _extract_multi_bumps_results(
-    problem,
-    experiments: list,
-    data_files: list[dict],
-    fit_result,
-    method: str,
-    iteration: int,
-    export_dir: Optional[str] = None,
-) -> FitResult:
-    """Extract fit results from a multi-experiment FitProblem.
-
-    Returns an aggregate ``FitResult`` with per-file breakdowns stored
-    in ``per_file_results``.
-    """
-    import warnings
-
-    warnings.filterwarnings("ignore", category=UserWarning, module="bumps")
-
-    # Aggregate chi-squared
-    chi_squared = data_chisq(problem)
-
-    # Extract parameters.  Structural params are shared (single Parameter
-    # object across experiments) but per-probe params (intensity,
-    # sample_broadening, theta_offset) exist once per experiment and often
-    # carry the same ``.name`` — which would collide in a dict.  Build a
-    # map of id(par) -> file-label so we can disambiguate such names.
-    per_probe_attrs = ("intensity", "sample_broadening", "theta_offset")
-    probe_param_labels: dict[int, str] = {}
-    for exp, ds in zip(experiments, data_files):
-        probe = getattr(exp, "probe", None)
-        if probe is None:
-            continue
-        for attr in per_probe_attrs:
-            par = getattr(probe, attr, None)
-            if par is not None:
-                probe_param_labels[id(par)] = ds.get("label", "")
-
-    parameters: dict = {}
-    uncertainties: dict = {}
-    param_bounds: dict = {}
-    for i, par in enumerate(problem._parameters):
-        name = str(par.name)
-        # Disambiguate per-probe parameter names by appending the file label
-        # when the base name would collide with an already-seen entry.
-        if name in parameters and id(par) in probe_param_labels:
-            label = probe_param_labels[id(par)]
-            if label:
-                name = f"{name} {label}"
-        elif id(par) in probe_param_labels:
-            # Even on first sight, if this is a per-probe param and the
-            # same base name will appear again for another probe, pre-empt
-            # the collision by suffixing now.
-            label = probe_param_labels[id(par)]
-            same_name_probes = sum(
-                1
-                for p in problem._parameters
-                if str(p.name) == name and id(p) in probe_param_labels
-            )
-            if label and same_name_probes > 1:
-                name = f"{name} {label}"
-        parameters[name] = par.value
-        if hasattr(fit_result, "dx") and fit_result.dx is not None:
-            try:
-                if i < len(fit_result.dx):
-                    uncertainties[name] = fit_result.dx[i]
-            except (IndexError, TypeError):
-                pass
-        if par.bounds is not None:
-            lo, hi = par.bounds
-            param_bounds[name] = [float(lo), float(hi)]
-
-    converged = chi_squared < 100
-    if hasattr(fit_result, "success"):
-        converged = fit_result.success
-
-    logger.info(f"[FITTING] Multi-file fit complete: aggregate χ² = {chi_squared:.3f}")
-    for name, value in parameters.items():
-        unc_str = (
-            f" ± {uncertainties.get(name, 0):.3f}" if name in uncertainties else ""
-        )
-        logger.info(f"[FITTING]   {name}: {value:.3f}{unc_str}")
-
-    # Per-file theory curves, chi2, and residuals
-    per_file: list[PerFileFitResult] = []
-    all_Q: list[float] = []
-    all_R: list[float] = []
-    all_residuals: list[float] = []
-    all_residual_ratio: list[float] = []
-
-    for idx, (exp, ds) in enumerate(zip(experiments, data_files)):
-        pf: dict[str, Any] = {"file": ds["file"], "label": ds["label"]}
-        try:
-            exp.update()
-            Q_arr, R_arr = exp.reflectivity()
-            pf["Q_fit"] = Q_arr.tolist()
-            pf["R_fit"] = R_arr.tolist()
-            all_Q.extend(pf["Q_fit"])
-            all_R.extend(pf["R_fit"])
-
-            # Per-file chi2 (Experiment has no .chisq(); compute from residuals)
-            resid = exp.residuals()
-            n_pts = len(resid)
-            pf["chi_squared"] = (
-                float(np.sum(resid**2) / n_pts) if n_pts > 0 else float("inf")
-            )
-            logger.info(f"[FITTING]   {ds['label']}: χ² = {pf['chi_squared']:.3f}")
-
-            # Residuals
-            R_data = exp.probe.R
-            dR_data = exp.probe.dR
-            R_fit_arr = np.array(pf["R_fit"])
-            res = []
-            ratio = []
-            if R_data is not None and len(R_data) == len(R_fit_arr):
-                if dR_data is not None and len(dR_data) == len(R_data):
-                    safe_dR = np.maximum(np.abs(dR_data), 1e-20)
-                    res = ((R_data - R_fit_arr) / safe_dR).tolist()
-                safe_R_fit = np.maximum(R_fit_arr, 1e-20)
-                ratio = (R_data / safe_R_fit).tolist()
-            pf["residuals"] = res
-            pf["residual_ratio"] = ratio
-            all_residuals.extend(res)
-            all_residual_ratio.extend(ratio)
-        except Exception as e:
-            logger.warning(
-                f"[FITTING] Could not extract results for {ds['label']}: {e}"
-            )
-            pf["Q_fit"] = []
-            pf["R_fit"] = []
-            pf["chi_squared"] = float("inf")
-            pf["residuals"] = []
-            pf["residual_ratio"] = []
-
-        per_file.append(PerFileFitResult(**pf))
-
-    # Read SLD profile
-    sld_z, sld_rho = _read_profile_dat(export_dir, getattr(problem, "name", None))
-
-    fr = FitResult(
-        iteration=iteration,
-        method=method,
-        chi_squared=chi_squared,
-        converged=converged,
-        parameters=parameters,
-        uncertainties=uncertainties if uncertainties else None,
-        bounds=param_bounds if param_bounds else None,
-        Q_fit=all_Q,
-        R_fit=all_R,
-        residuals=all_residuals,
-        residual_ratio=all_residual_ratio,
-        sld_z=sld_z,
-        sld_rho=sld_rho,
-        per_file_results=per_file,
-        issues=[],
-        suggestions=[],
-    )
-    # Everything BIC needs, read straight off the problem (see
-    # model_builder.bic_inputs). Recorded rather than re-derived downstream so
-    # `evaluation` scores this fit with the same n and k that produced it.
-    fr.update(bic_inputs(problem))  # type: ignore[typeddict-item]
-    return fr
-
-
 def _extract_states_bumps_results(
     problem,
     experiments_by_state: dict,
@@ -1195,8 +851,8 @@ def _extract_states_bumps_results(
     ``export_dir/state_{name}/`` when ``export_dir`` is provided.
 
     A **single curve** (one state, one file) reports ``per_file_results=None``,
-    the shape the flat single-file extractor has always produced: a breakdown
-    of one file repeats the aggregate — on a slightly different normalization
+    the shape a single-file fit has always had: a breakdown of one file
+    repeats the aggregate — on a slightly different normalization
     (points, not degrees of freedom) — and everything downstream that reads
     the breakdown (the per-file χ² window, the evaluator's "fit jointly across
     several segments" note, per-state residual analysis) is about telling

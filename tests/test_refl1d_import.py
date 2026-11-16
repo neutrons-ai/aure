@@ -683,7 +683,6 @@ def test_setup_mode_round_trip_preserves_per_probe_intensities(tmp_path):
     from aure.nodes.model_builder import (
         apply_parameters,
         build_states_problem,
-        needs_states_problem,
     )
     from aure.refl1d_import import import_refl1d
 
@@ -751,8 +750,8 @@ def test_setup_mode_round_trip_preserves_per_probe_intensities(tmp_path):
     model = final["state"]["current_model"]
     params = final["state"]["fit_results"][0]["parameters"]
 
-    # Dispatch must pick the states-problem path (single state + nuisance).
-    assert needs_states_problem(model)
+    # The imported model carries its state, which is where the nuisance lives.
+    assert [st["name"] for st in model["states"]] == ["run_A"]
 
     # Per-probe intensities preserved (no collapse).
     intensity_keys = [k for k in params if "intensity" in k]

@@ -198,6 +198,22 @@ class TestApplyOverridesToModelScript:
 # ======================================================================
 
 
+def _states_simulation(chi2: float) -> dict:
+    """What ``_compute_states_simulation`` returns for a single curve."""
+    return {
+        "per_file": [
+            {
+                "label": "curve",
+                "state": "state0",
+                "Q_fit": [0.01, 0.02],
+                "R_fit": [1.0, 0.5],
+            }
+        ],
+        "sld_profiles": [{"state": "state0", "z": [0.0, 10.0], "sld": [2.0, 6.5]}],
+        "chi_squared": chi2,
+    }
+
+
 class TestRunDataSimulate:
     """Unit tests for RunData.simulate() with mocked model execution."""
 
@@ -206,22 +222,52 @@ class TestRunDataSimulate:
 
         rd = RunData(str(output_dir))
 
-        mock_result = {
-            "Q_fit": [0.01, 0.02],
-            "R_fit": [1.0, 0.5],
-            "z": [0.0, 10.0],
-            "sld": [2.0, 6.5],
-            "chi_squared": 1.23,
-        }
-
-        with patch("aure.web.data._compute_from_model", return_value=mock_result):
+        with patch(
+            "aure.web.data._compute_states_simulation",
+            return_value=_states_simulation(1.23),
+        ):
             result = rd.simulate({"copper thickness": 500.0})
 
+        # A single curve keeps the flat shorthand next to the general shape.
         assert result["Q_fit"] == [0.01, 0.02]
         assert result["R_fit"] == [1.0, 0.5]
         assert result["sld_z"] == [0.0, 10.0]
         assert result["sld_rho"] == [2.0, 6.5]
         assert result["chi_squared"] == 1.23
+        assert [pf["label"] for pf in result["per_file"]] == ["curve"]
+
+    def test_simulate_several_curves_has_no_single_curve_shorthand(self, output_dir):
+        from aure.web.data import RunData
+
+        rd = RunData(str(output_dir))
+        sim = _states_simulation(2.0)
+        sim["per_file"].append(dict(sim["per_file"][0], label="other"))
+
+        with patch("aure.web.data._compute_states_simulation", return_value=sim):
+            result = rd.simulate({"copper thickness": 500.0})
+
+        assert "Q_fit" not in result
+        assert result["sld_z"] == [0.0, 10.0]  # still one state
+        assert len(result["per_file"]) == 2
+
+    def test_simulate_builds_a_stateless_model_as_its_one_state(self, output_dir):
+        """A model stored before every model carried its states goes through
+        the same simulation, as the single state it describes."""
+        from aure.web.data import RunData
+
+        rd = RunData(str(output_dir))
+        seen = {}
+
+        def fake(model, parameters, *, bounds=None):
+            seen["states"] = model["states"]
+            return _states_simulation(1.0)
+
+        with patch("aure.web.data._compute_states_simulation", side_effect=fake):
+            rd.simulate({"copper thickness": 500.0})
+
+        (only,) = seen["states"]
+        assert only["name"] == "state0"
+        assert len(only["data_files"]) == 1
 
     def test_simulate_no_model_returns_error(self, tmp_path):
         from aure.web.data import RunData
@@ -240,7 +286,7 @@ class TestRunDataSimulate:
         rd = RunData(str(output_dir))
 
         with patch(
-            "aure.web.data._compute_from_model",
+            "aure.web.data._compute_states_simulation",
             side_effect=RuntimeError("exec failed"),
         ):
             result = rd.simulate({"copper thickness": 500.0})
@@ -258,14 +304,10 @@ class TestApiSimulate:
     """Integration tests for the /api/simulate endpoint."""
 
     def test_simulate_success(self, client, output_dir):
-        mock_result = {
-            "Q_fit": [0.01, 0.02],
-            "R_fit": [0.9, 0.4],
-            "z": [0.0, 10.0],
-            "sld": [2.0, 6.5],
-            "chi_squared": 1.5,
-        }
-        with patch("aure.web.data._compute_from_model", return_value=mock_result):
+        with patch(
+            "aure.web.data._compute_states_simulation",
+            return_value=_states_simulation(1.5),
+        ):
             resp = client.post(
                 "/api/simulate",
                 json={"parameters": {"copper thickness": 500.0}},

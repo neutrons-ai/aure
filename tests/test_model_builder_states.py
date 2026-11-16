@@ -491,57 +491,122 @@ def _flat_definition(files: list[str]) -> dict:
     return defn
 
 
-def _describe(problem) -> tuple:
-    return (
-        pytest.approx(float(problem.chisq())),
-        [
-            (p.name, pytest.approx(p.value), tuple(p.bounds))
-            for p in problem._parameters
-        ],
-    )
+#: The parameters of `_flat_definition`, as the flat single-sample builders
+#: always spelled and ranged them. Pinned as literals: the flat builders are
+#: now views onto the state builder, so comparing the two would compare a
+#: thing with itself.
+_FLAT_STRUCTURE = [
+    ("silicon interface", 3.0, (0, 15.0)),
+    ("Cu interface", 5.0, (5.0, 20.0)),
+    ("Cu rho", 6.5, (4.0, 8.0)),
+    ("Cu thickness", 500.0, (250.0, 750.0)),
+    ("Ti interface", 3.0, (3.0, 15.0)),
+    ("Ti rho", -1.95, (-3.0, 0.0)),
+    ("Ti thickness", 30.0, (10.0, 60.0)),
+    ("THF rho", 6.2, (pytest.approx(4.96), pytest.approx(7.44))),
+]
 
 
-def test_any_states_block_takes_the_states_builder():
-    from aure.nodes.model_builder import needs_states_problem
-
-    bare = {"name": "s0", "data_files": [{"file": "x"}]}
-    assert needs_states_problem({"states": [bare]}) is True
-    assert needs_states_problem({"states": [bare, dict(bare, name="s1")]}) is True
-    assert needs_states_problem({"states": []}) is False
-    assert needs_states_problem({"data_file": "x"}) is False
+def _describe(problem) -> list:
+    return [(p.name, p.value, tuple(p.bounds)) for p in problem._parameters]
 
 
-def test_one_state_one_file_builds_the_flat_problem(two_files):
-    """Same parameters, names, bounds and χ² as `build_problem` — a single
-    curve must not be able to tell which builder built it."""
+def _intensity(label: str) -> tuple:
+    return (f"intensity {label}", 1.0, (0.7, 1.1))
+
+
+def test_a_single_curve_reads_like_a_flat_problem(two_files):
+    """No state prefix anywhere, and the intensity named after the file —
+    whether the model carries its one state, or is given it."""
     from aure.nodes.model_builder import build_problem, build_states_problem
 
     flat = _flat_definition(two_files)
-    label = os.path.splitext(os.path.basename(two_files[0]))[0]
+    stem = os.path.splitext(os.path.basename(two_files[0]))[0]
+    expected = [_intensity(stem), *_FLAT_STRUCTURE]
+
     one_state = dict(
         flat, states=[{"name": "OCV", "data_files": [{"file": two_files[0]}]}]
     )
+    carried, _, _ = build_states_problem(one_state)
+    implied = build_problem(dict(flat, data_file=two_files[0]))
 
-    states_problem, _, _ = build_states_problem(one_state)
-    assert _describe(states_problem) == _describe(
-        build_problem(dict(flat, data_file=two_files[0]))
-    )
-    assert f"intensity {label}" in states_problem.labels()
+    assert _describe(carried) == expected
+    assert _describe(implied) == expected
+    assert float(carried.chisq()) == pytest.approx(float(implied.chisq()))
 
 
-def test_one_state_several_files_builds_the_flat_co_refinement(two_files):
+def test_several_files_of_one_state_read_like_a_flat_co_refinement(two_files):
     from aure.nodes.model_builder import build_multi_problem, build_states_problem
 
     flat = _flat_definition(two_files)
     files = [{"file": f, "label": f"seg{i}"} for i, f in enumerate(two_files)]
-    one_state = dict(flat, states=[{"name": "OCV", "data_files": files}])
+    expected = [_intensity("seg0"), *_FLAT_STRUCTURE, _intensity("seg1")]
 
-    states_problem, _, _ = build_states_problem(one_state)
-    multi_problem, _, _ = build_multi_problem(flat, files)
-    assert _describe(states_problem) == _describe(multi_problem)
-    assert {"intensity seg0", "intensity seg1", "THF rho"} <= set(
-        states_problem.labels()
+    carried, _, _ = build_states_problem(
+        dict(flat, states=[{"name": "OCV", "data_files": files}])
     )
+    implied, experiments, sorted_files = build_multi_problem(flat, files)
+
+    assert _describe(carried) == expected
+    assert _describe(implied) == expected
+    assert len(experiments) == 2
+    assert [ds["label"] for ds in sorted_files] == ["seg0", "seg1"]
+    # One sample shared by both experiments: every structural parameter tied.
+    assert experiments[0].sample is experiments[1].sample
+
+
+def test_with_states_gives_a_stateless_model_the_state_it_implies():
+    from aure.nodes.model_builder import with_states
+
+    flat = {"layers": [], "data_file": "/x/a.txt", "ambient": {"name": "air"}}
+    two = [{"file": "/x/a.txt", "label": "a"}, {"file": "/x/b.txt", "label": "b"}]
+
+    assert with_states(flat)["states"] == [
+        {"name": "state0", "data_files": [{"file": "/x/a.txt"}]}
+    ]
+    assert with_states(flat, two)["states"] == [{"name": "state0", "data_files": two}]
+    assert "states" not in flat  # a view, not a mutation
+    # No overrides on the implied state: the model-level fields apply as written.
+    assert set(with_states(flat)["states"][0]) == {"name", "data_files"}
+
+    # A model that brings its states keeps them, whatever files are passed.
+    own = dict(flat, states=[{"name": "OCV", "data_files": [{"file": "/x/c.txt"}]}])
+    assert with_states(own, two) is own
+
+
+def test_the_flat_entry_points_honour_a_models_own_state(two_files):
+    """They used to build from the model-level fields and `data_file` alone,
+    ignoring a state the model carried. A state's override now reaches every
+    entry point, because there is one builder behind them."""
+    from aure.nodes.model_builder import build_experiment, build_problem
+
+    model = dict(
+        _flat_definition(two_files),
+        data_file="/nonexistent/ignored.dat",
+        states=[
+            {
+                "name": "OCV",
+                "data_files": [{"file": two_files[0], "label": "curve"}],
+                "ambient": {"rho": 5.5},
+                "intensity": {"init": 0.9, "fixed": True},
+            }
+        ],
+    )
+    by_name = {p.name: p for p in build_problem(model)._parameters}
+    assert by_name["THF rho"].value == pytest.approx(5.5)
+    assert "intensity curve" not in by_name  # held, so not a fit parameter
+    assert build_experiment(model).probe.intensity.value == pytest.approx(0.9)
+
+
+def test_the_single_shape_views_refuse_other_shapes(two_files):
+    from aure.nodes.model_builder import build_experiment, build_multi_problem
+
+    files = [{"file": f, "label": f"seg{i}"} for i, f in enumerate(two_files)]
+    flat = _flat_definition(two_files)
+    with pytest.raises(ValueError, match="single-curve"):
+        build_experiment(dict(flat, states=[{"name": "OCV", "data_files": files}]))
+    with pytest.raises(ValueError, match="single-state"):
+        build_multi_problem(_two_state_definition(two_files), files)
 
 
 def test_one_state_ignores_tie_specs(two_files):
@@ -616,6 +681,26 @@ def test_prefixed_per_file_intensities_find_their_own_probe(two_files):
     apply_parameters(problem, {"OCV seg0 intensity": 0.83, "OCV seg1 intensity": 1.07})
     assert by_name["intensity seg0"].value == pytest.approx(0.83)
     assert by_name["intensity seg1"].value == pytest.approx(1.07)
+
+
+def test_the_flat_single_file_background_name_still_applies(two_files):
+    """The flat single-file builder left refl1d's "background <probe>" name in
+    place; every path now says "background". A fit stored under the old name
+    must still land."""
+    from aure.nodes.model_builder import apply_parameters, build_problem
+
+    model = dict(
+        _flat_definition(two_files),
+        data_file=two_files[0],
+        background={"enabled": True, "min": 0.0, "max": 1e-5},
+    )
+    problem = build_problem(model)
+    by_name = {p.name: p for p in problem._parameters}
+    assert "background" in by_name
+
+    stem = os.path.splitext(os.path.basename(two_files[0]))[0]
+    apply_parameters(problem, {f"background {stem}": 4e-6})
+    assert by_name["background"].value == pytest.approx(4e-6)
 
 
 def test_an_unknown_name_is_still_ignored(two_files):

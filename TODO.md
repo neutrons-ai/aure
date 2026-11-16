@@ -309,36 +309,6 @@ snapshot). The builder reads the files, and `evaluation._n_data_from_state`
 already falls back to the run's own `data_files` when the model's carry no
 points; check the web results code for any other reader first.
 
-## Three builders, three fitters, three web simulators — one of each is used
-
-**Where:** [`src/aure/nodes/model_builder.py`](src/aure/nodes/model_builder.py)
-— `build_problem`, `build_multi_problem`;
-[`src/aure/nodes/fitting.py`](src/aure/nodes/fitting.py) — `run_refl1d_fit`,
-`run_multi_refl1d_fit` and their extractors;
-[`src/aure/web/data.py`](src/aure/web/data.py) — `_compute_from_model`,
-`_compute_multi_file_simulation`.
-
-**What is wrong.** Every model a CLI or web run builds now carries its states
-and goes through `build_states_problem`. The flat paths are reached only by a
-model with no `states` block: a run resumed from before every model carried
-one, or a programmatic caller. They are still a full second and third
-implementation of probe loading, intensity and nuisance wiring, result
-extraction and web recompute, and most of the builder tests exercise them
-rather than the path runs take.
-
-**The change.** Give the flat entry points a synthesized one-state view
-(`state.iter_states` already produces one) and build through
-`build_states_problem`, then delete the duplicated bodies. The one-state case
-already matches them name for name and χ² for χ²
-(`test_one_state_one_file_builds_the_flat_problem`,
-`test_one_state_several_files_builds_the_flat_co_refinement`), and names its
-nuisance parameters as the flat multi-file path does. What is left to
-reconcile is the flat single-file path: it names a model-level background
-`background <file stem>` rather than `background`, and it cannot build the
-angle-based probe `theta_offset` / `sample_broadening` need, so it ignores
-them.
-
-
 ## The web Setup tab drops a loaded setup's per-state `layers` and `substrate`
 
 **Where:** [`src/aure/web/routes.py`](src/aure/web/routes.py) —

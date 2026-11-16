@@ -6,12 +6,12 @@ Instead, models are stored as structured JSON (ModelDefinition dicts) and
 refl1d objects are built on-the-fly when needed for fitting or visualisation.
 
 Key functions:
-- build_states_problem() — JSON → bumps FitProblem, for any model carrying a
-  ``states`` block (one state or several). This is the builder every CLI and
-  web run uses; see needs_states_problem().
-- build_problem() / build_multi_problem() — the flat builders, for models
-  with no ``states`` block (older checkpoints, programmatic callers)
-- build_experiment()  — JSON → refl1d Experiment (flat, single file)
+- build_states_problem() — JSON → bumps FitProblem. The one builder: one state
+  or several, with the per-state experiments it returns alongside.
+- build_problem() / build_multi_problem() / build_experiment() — views onto
+  it for callers that want just the problem, one state's experiments, or a
+  single curve's experiment. A definition with no ``states`` block is given
+  the one state it implies (with_states()).
 - extract_definition() — fitted FitProblem → updated ModelDefinition
 """
 
@@ -206,38 +206,54 @@ def _configure_intensity(probe, spec) -> None:
     probe.intensity.range(spec.get("min", 0.7), spec.get("max", 1.1))
 
 
-def build_experiment(definition: dict):
-    """Construct a refl1d ``Experiment`` from a ``ModelDefinition`` dict.
+def with_states(definition: dict, data_files: list | None = None) -> dict:
+    """*definition*, carrying the one state it implies when it has none.
 
-    Parameters
-    ----------
-    definition
-        A ``ModelDefinition`` dict with keys: substrate, layers, ambient,
-        data_file, back_reflection, and optionally intensity.
+    :func:`build_states_problem` is the only builder. A model with no
+    ``states`` block — a checkpoint written before every model carried its
+    states, or a definition assembled by hand — describes exactly one state,
+    and this is where it is given one: *data_files* when the caller passes the
+    files being co-refined, otherwise the model's own ``data_file``. The
+    synthesized state carries no overrides, so every model-level field
+    (``ambient``, ``intensity``, nuisance blocks, ``dq_is_fwhm``) applies as
+    written.
 
-    Returns
-    -------
-    experiment : refl1d.experiment.Experiment
+    A definition that already has states is returned untouched, and
+    *data_files* is ignored: its states own their files. Never mutates
+    *definition*.
     """
-    import warnings
+    if definition.get("states"):
+        return definition
+    files = list(data_files) if data_files else [{"file": definition["data_file"]}]
+    return {**definition, "states": [{"name": _SYNTHESIZED_STATE, "data_files": files}]}
 
-    warnings.filterwarnings("ignore", category=UserWarning, module="refl1d")
-    from refl1d.names import Experiment
 
-    data_file = definition["data_file"]
-    dq_is_fwhm = definition.get("dq_is_fwhm", True)
-    probe = load_probe(data_file, dq_is_fwhm=dq_is_fwhm)
-    intensity = definition.get("intensity", {})
+#: Name of the state :func:`with_states` synthesizes; the same name the CLI
+#: gives the single state it builds from a positional data file.
+_SYNTHESIZED_STATE = "state0"
 
-    sample = _build_sample(definition)
 
-    _configure_intensity(probe, intensity)
+def build_experiment(definition: dict):
+    """Construct the refl1d ``Experiment`` of a single-curve model.
 
-    # Optional fittable flat background.
-    _configure_background(probe, definition.get("background", {}))
+    A view onto :func:`build_states_problem` for the one shape that has a
+    single experiment: one state with one file (a states-less definition is
+    that, by :func:`with_states`).
 
-    experiment = Experiment(probe=probe, sample=sample)
-    return experiment
+    Raises
+    ------
+    ValueError
+        When the model has more than one curve — ask
+        :func:`build_states_problem` for its experiments instead.
+    """
+    _problem, by_state, _files = build_states_problem(with_states(definition))
+    experiments = [exp for group in by_state.values() for exp in group]
+    if len(experiments) != 1:
+        raise ValueError(
+            f"build_experiment needs a single-curve model; this one has "
+            f"{len(experiments)} curves — use build_states_problem"
+        )
+    return experiments[0]
 
 
 _OUTER_ROUGHNESS_MAX_DEFAULT = 30.0
@@ -839,37 +855,30 @@ def bic_inputs(problem) -> dict:
 
 
 def build_problem(definition: dict):
-    """Construct a bumps ``FitProblem`` from a ``ModelDefinition`` dict.
+    """Construct the bumps ``FitProblem`` for a ``ModelDefinition`` dict.
 
-    Parameters
-    ----------
-    definition
-        A ``ModelDefinition`` dict.
-
-    Returns
-    -------
-    problem : bumps.fitproblem.FitProblem
+    Whatever the model's shape — one curve, several files of one state,
+    several states — this is :func:`build_states_problem` without the
+    per-state bookkeeping. A definition with no ``states`` block is built as
+    the single state it describes (:func:`with_states`).
     """
-    from bumps.fitproblem import FitProblem
-
-    experiment = build_experiment(definition)
-    return FitProblem(experiment)
+    return build_states_problem(with_states(definition))[0]
 
 
 def build_multi_problem(definition: dict, data_files: list[dict]):
-    """Build a joint ``FitProblem`` for multi-file co-refinement.
+    """Build the joint ``FitProblem`` for several files of one sample.
 
-    A *single* refl1d ``Sample`` is shared across multiple
-    ``Experiment`` objects, each with its own ``Probe`` (loaded from a
-    separate data file).  Because the ``Sample`` is shared, all
-    structural parameters (thickness, SLD, roughness) are automatically
-    tied — they are the same ``bumps.parameter.Parameter`` objects.
-    Each probe gets its own independent intensity parameter.
+    A view onto :func:`build_states_problem`: *data_files* become the one
+    state of a states-less definition (:func:`with_states`), which shares a
+    single refl1d ``Sample`` across its experiments — so every structural
+    parameter is tied — and gives each probe its own intensity.
 
     Parameters
     ----------
     definition
-        A ``ModelDefinition`` dict (the model structure).
+        A ``ModelDefinition`` dict with a single state, or none. One that
+        carries its own state is built from that state's files; *data_files*
+        is then ignored.
     data_files
         List of ``DatasetInfo`` dicts, each with ``"file"`` (path) and
         ``"label"`` (human-readable tag).
@@ -877,98 +886,27 @@ def build_multi_problem(definition: dict, data_files: list[dict]):
     Returns
     -------
     problem : bumps.fitproblem.FitProblem
-        A ``FitProblem`` wrapping a list of experiments.
     experiments : list
         The individual ``Experiment`` objects (sorted by increasing Q).
     sorted_data_files : list
-        The *data_files* list reordered to match *experiments*.
+        The files reordered to match *experiments*.
+
+    Raises
+    ------
+    ValueError
+        When the definition carries several states — that is
+        :func:`build_states_problem`'s return shape, not this one's.
     """
-    import warnings
-
-    warnings.filterwarnings("ignore", category=UserWarning, module="refl1d")
-    from refl1d.names import Experiment
-    from bumps.fitproblem import FitProblem
-
-    sample = _build_sample(definition)
-    intensity = definition.get("intensity", {})
-    default_fwhm = definition.get("dq_is_fwhm", True)
-
-    # Sort data files by minimum Q so experiments are in increasing Q order
-    indexed = list(enumerate(data_files))
-    probes = []
-    for _i, ds in indexed:
-        fwhm = ds.get("dq_is_fwhm", default_fwhm)
-        theta = ds.get("theta", 0.0)
-        if theta and theta > 0:
-            probes.append(load_probe_from_angle(ds["file"], theta, dq_is_fwhm=fwhm))
-        else:
-            probes.append(load_probe(ds["file"], dq_is_fwhm=fwhm))
-
-    sort_order = sorted(
-        range(len(probes)),
-        key=lambda k: float(probes[k].Q.min()) if len(probes[k].Q) else 0.0,
+    problem, by_state, files_by_state = build_states_problem(
+        with_states(definition, data_files)
     )
-
-    sorted_data_files = [data_files[k] for k in sort_order]
-    sorted_probes = [probes[k] for k in sort_order]
-
-    broadening = definition.get("sample_broadening", {})
-    offset = definition.get("theta_offset", {})
-    background = definition.get("background", {})
-
-    # Shared sample_broadening / theta_offset / background parameters.  These
-    # describe the *sample* / *measurement*, not the individual segment, so
-    # they must be tied across all probes in a co-refinement.  We configure
-    # the range on the first probe that exposes the attribute and then alias
-    # the same bumps Parameter onto subsequent probes.
-    shared_broadening = None
-    shared_offset = None
-    shared_background = None
-
-    experiments = []
-    for probe, ds in zip(sorted_probes, sorted_data_files):
-        # Each probe gets its own independent intensity parameter
-        _configure_intensity(probe, intensity)
-
-        # Give each probe's intensity a unique, stable name keyed by the
-        # file label so it round-trips with the fit-result parameter names
-        # produced by ``_extract_multi_bumps_results`` ("intensity <label>").
-        # Without this, every probe's intensity is named "intensity", so
-        # ``apply_parameters`` cannot match the per-file values sent by the
-        # Results-page sliders and intensity overrides are silently dropped.
-        label = ds.get("label") or ""
-        if label and hasattr(probe, "intensity"):
-            probe.intensity.name = f"intensity {label}"
-
-        # sample_broadening / theta_offset only exist on NeutronProbe
-        # (angle-based), not on QProbe (Q-based from load4).  Tie them
-        # across probes so the fit uses a single shared parameter.
-        if _nuisance_enabled(broadening) and hasattr(probe, "sample_broadening"):
-            if shared_broadening is None:
-                _configure_angle_nuisance(probe, "sample_broadening", broadening)
-                shared_broadening = probe.sample_broadening
-            else:
-                probe.sample_broadening = shared_broadening
-        if _nuisance_enabled(offset) and hasattr(probe, "theta_offset"):
-            if shared_offset is None:
-                _configure_angle_nuisance(probe, "theta_offset", offset)
-                shared_offset = probe.theta_offset
-            else:
-                probe.theta_offset = shared_offset
-
-        # Single fittable flat background tied across all segments.
-        if _nuisance_enabled(background) and hasattr(probe, "background"):
-            if shared_background is None:
-                _configure_background(probe, background)
-                probe.background.name = "background"
-                shared_background = probe.background
-            else:
-                probe.background = shared_background
-
-        experiments.append(Experiment(probe=probe, sample=sample))
-
-    problem = FitProblem(experiments)
-    return problem, experiments, sorted_data_files
+    if len(by_state) != 1:
+        raise ValueError(
+            f"build_multi_problem needs a single-state model; this one has "
+            f"{len(by_state)} states — use build_states_problem"
+        )
+    (name,) = by_state
+    return problem, by_state[name], files_by_state[name]
 
 
 # ======================================================================
@@ -996,32 +934,14 @@ _ATTR_DISPLAY = {
 }
 
 
-def needs_states_problem(definition: dict) -> bool:
-    """Return True when the model must be built via :func:`build_states_problem`.
-
-    That is every model carrying a ``states`` block — one state or several. A
-    state is the unit the builder understands: its ``ambient`` / ``intensity``
-    / ``back_reflection`` overrides, its nuisance parameters and its per-file
-    settings are read nowhere else, so a single state is simply the one-state
-    case rather than a reason to take another route. (It used to be: a lone
-    state reached this builder only when it carried a nuisance key, and
-    everything else it declared was dropped without a message.)
-
-    The flat builders (:func:`build_problem`, :func:`build_multi_problem`)
-    remain for definitions with *no* ``states`` block — checkpoints written
-    before every run attached one, and programmatic callers.
-    """
-    return bool(definition.get("states"))
-
-
 def intensity_parameter_name(
     state_name: str, label: str, *, single_state: bool, multi_file: bool
 ) -> str:
     """Name of one probe's intensity parameter in a states problem.
 
-    One state keeps the flat builders' spelling, ``"intensity <label>"`` — a
-    state prefix distinguishes nothing when there is one state, and this is
-    the name every single-curve run has always reported. Several states prefix
+    One state is spelled ``"intensity <label>"`` — a state prefix
+    distinguishes nothing when there is one state, and this is the name every
+    single-curve run has always reported. Several states prefix
     it, with the file label added when a state has more than one file.
     """
     if single_state:
@@ -1564,12 +1484,8 @@ def save_problem_json(
     """
     from bumps.serialize import save_file
 
-    if needs_states_problem(definition):
-        problem, _exps, _sorted = build_states_problem(definition)
-    elif data_files and len(data_files) > 1:
-        problem, _experiments, _sorted = build_multi_problem(definition, data_files)
-    else:
-        problem = build_problem(definition)
+    multi = data_files if data_files and len(data_files) > 1 else None
+    problem = build_problem(with_states(definition, multi))
 
     out = os.path.abspath(str(path))
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
@@ -1588,7 +1504,10 @@ def _resolve_parameters(by_name: dict, name: str) -> list:
     * a state-prefixed name on a problem that carries no prefix — what
       single-state runs with a nuisance key, and ``import-refl1d`` workspaces,
       stored before a single state stopped prefixing its parameters. Accepted
-      only when it identifies exactly one parameter.
+      only when it identifies exactly one parameter;
+    * ``"background <probe>"``, refl1d's default, which the flat single-file
+      builder used to leave in place where every other path says
+      ``"background"``.
     """
     group = by_name.get(name)
     if group:
@@ -1600,6 +1519,10 @@ def _resolve_parameters(by_name: dict, name: str) -> list:
     ]
     if group:
         return group
+
+    if name.startswith("background ") and "background" in by_name:
+        # The flat single-file builder left refl1d's "background <probe>" name.
+        return by_name["background"]
 
     if name.split()[-1:] == ["intensity"]:
         # "<state> intensity" / "<state> <label> intensity" -> "intensity <label>"

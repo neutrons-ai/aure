@@ -329,21 +329,19 @@ def test_fitting_node_never_uses_none_basename(tmp_path, monkeypatch):
             "_n_free_params": 3,
         }
 
-    def _boom(branch):
-        def _f(*a, **kw):
-            raise AssertionError(f"{branch} branch should not run")
-
-        return _f
-
-    monkeypatch.setattr(fitting, "run_refl1d_fit", fake_single)
-    monkeypatch.setattr(fitting, "run_multi_refl1d_fit", _boom("multi"))
-    monkeypatch.setattr(fitting, "run_states_refl1d_fit", _boom("states"))
+    # Every model arrives at the one fitter, whatever its shape.
+    monkeypatch.setattr(fitting, "run_states_refl1d_fit", fake_single)
 
     data_file = _make_data_file()
     run_dir = tmp_path / "230536"
     run_dir.mkdir()
     state = {
-        "current_model": {"substrate": {"material": "Si"}, "layers": [], "ambient": {}},
+        "current_model": {
+            "substrate": {"material": "Si"},
+            "layers": [],
+            "ambient": {},
+            "data_file": data_file,
+        },
         "user_config": None,  # the regression condition
         "iteration": 0,
         "data_files": [{"file": data_file}],
@@ -456,21 +454,6 @@ def test_states_no_spurious_background_when_absent():
     problem, _by_state, _sorted = build_states_problem(_two_state_model(files))
     free = [str(p.name) for p in problem._parameters]
     assert not any("background" in n for n in free), free
-
-
-def test_needs_states_problem_triggers_on_single_state_background():
-    from aure.nodes.model_builder import needs_states_problem
-
-    model = {
-        "states": [
-            {
-                "name": "s0",
-                "data_files": [{"file": "x"}],
-                "background": {"min": 0.0, "max": 1e-5},
-            }
-        ]
-    }
-    assert needs_states_problem(model) is True
 
 
 def test_states_background_surfaces_in_fit_results():
@@ -619,3 +602,42 @@ def test_mode_enumeration_asks_for_a_single_curve_not_a_route():
     )
     assert not _is_single_curve({"states": [one, dict(one, name="s1")]}, [])
     assert not _is_single_curve({"data_file": "a"}, [{"file": "a"}, {"file": "b"}])
+
+
+def test_every_model_shape_arrives_at_the_one_fitter(monkeypatch):
+    """There is one builder, so there is one fitter. A model with no `states`
+    block is fitted as the single state it implies: its own `data_file`, or
+    the run's files when several are co-refined."""
+    from aure.nodes import fitting
+
+    seen = []
+
+    def fake(**kw):
+        seen.append(kw["model_definition"]["states"])
+        return {"chi_squared": 1.0}
+
+    monkeypatch.setattr(fitting, "run_states_refl1d_fit", fake)
+    flat = {"layers": [], "data_file": "/x/a.txt"}
+    two = [{"file": "/x/a.txt", "label": "a"}, {"file": "/x/b.txt", "label": "b"}]
+    own = [{"name": "OCV", "data_files": [{"file": "/x/c.txt"}]}]
+
+    fitting.run_fit_for_model(flat, [], "lm", 0, 10, 10)
+    fitting.run_fit_for_model(flat, two[:1], "lm", 0, 10, 10)
+    fitting.run_fit_for_model(flat, two, "lm", 0, 10, 10)
+    fitting.run_fit_for_model(dict(flat, states=own), two, "lm", 0, 10, 10)
+    fitting.run_refl1d_fit(flat)
+    fitting.run_multi_refl1d_fit(flat, two[:1])
+
+    single = [{"name": "state0", "data_files": [{"file": "/x/a.txt"}]}]
+    assert (
+        seen
+        == [
+            single,
+            single,  # one file is not a co-refinement: the model's own data_file
+            [{"name": "state0", "data_files": two}],
+            own,  # a model's states own their files; the run's list is not consulted
+            single,
+            [{"name": "state0", "data_files": two[:1]}],  # co-refines the list as given
+        ]
+    )
+    assert "states" not in flat  # never mutated

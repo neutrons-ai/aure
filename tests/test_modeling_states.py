@@ -173,7 +173,6 @@ def test_initial_build_single_state_background_is_attached():
     """A single state that requests `background` must be attached so the first
     model AuRE fits includes it (regression: single-state nuisance was dropped
     by the `< 2 states` guard)."""
-    from aure.nodes.model_builder import needs_states_problem
     from aure.nodes.modeling import _build_initial_model
 
     out = _build_initial_model(
@@ -183,14 +182,11 @@ def test_initial_build_single_state_background_is_attached():
     model = out["current_model"]
     assert model.get("states"), "single-state nuisance not attached to first model"
     assert model["states"][0]["background"] == {"init": 2e-6, "min": 0.0, "max": 1e-5}
-    # Routes through the per-state builder that ties the background.
-    assert needs_states_problem(model) is True
     # A single state has no cross-state ties.
     assert model.get("shared_parameters", []) == []
 
 
 def test_initial_build_single_state_theta_offset_is_attached():
-    from aure.nodes.model_builder import needs_states_problem
     from aure.nodes.modeling import _build_initial_model
 
     out = _build_initial_model(
@@ -201,21 +197,18 @@ def test_initial_build_single_state_theta_offset_is_attached():
     assert "error" not in out, out.get("error")
     model = out["current_model"]
     assert model.get("states") and model["states"][0].get("theta_offset")
-    assert needs_states_problem(model) is True
 
 
 def test_initial_build_single_state_is_attached_without_nuisance():
     """A single state is attached whatever it carries: the state builder is
     the only reader of a state's overrides, so a model without its state is a
     model they were dropped from. (It used to need a nuisance key to qualify.)"""
-    from aure.nodes.model_builder import needs_states_problem
     from aure.nodes.modeling import _build_initial_model
 
     out = _build_initial_model(_make_state(_single_state()))
     assert "error" not in out
     model = out["current_model"]
     assert [st["name"] for st in model["states"]] == ["state0"]
-    assert needs_states_problem(model) is True
     # One state has nothing to tie.
     assert "shared_parameters" not in model
 
@@ -317,7 +310,9 @@ def test_single_state_declared_layers_reach_the_fit_problem(tmp_path):
         + "\n".join(f"{a:.6f} {1e-3:.6e} {1e-4:.6e} {0.02 * a:.6e}" for a in q)
         + "\n"
     )
-    state = _make_state(_single_state(layers=[dict(_DECLARED_COPPER)]))
+    states = _single_state(layers=[dict(_DECLARED_COPPER)])
+    states[0]["data_files"] = [{"file": str(data), "label": "curve"}]
+    state = _make_state(states)
     state["data_file"] = str(data)
     problem = build_problem(_build_initial_model(state)["current_model"])
 

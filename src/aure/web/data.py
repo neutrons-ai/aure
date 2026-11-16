@@ -378,51 +378,32 @@ class RunData:
 
             fitted_params = fr.get("parameters", {})
             model = self._get_model_for_iteration(iteration)
-
-            # A model carrying states (one or several): emit one profile per
-            # state per iteration via the states-problem path. A lone state is
-            # labelled like any single-sample run — there is no second state
-            # for its name to tell it apart from.
-            from aure.nodes.model_builder import needs_states_problem as _needs_states
-
-            if isinstance(model, dict) and _needs_states(model):
-                try:
-                    state_results = _compute_states_sld(model, fitted_params)
-                except Exception as exc:
-                    logger.debug(
-                        "Could not compute multi-state SLD for iter %d: %s",
-                        iteration,
-                        exc,
-                    )
-                    state_results = []
-                for sr in state_results:
-                    profiles.append(
-                        {
-                            "label": f"{label} – {sr['state']}"
-                            if len(state_results) > 1
-                            else label,
-                            "z": sr["z"],
-                            "sld": sr["sld"],
-                            "state": sr["state"],
-                            "iteration": iteration,
-                        }
-                    )
+            if not isinstance(model, dict):
                 continue
 
+            # One profile per state per iteration. A lone state is labelled
+            # like any single-sample run — there is no second state for its
+            # name to tell it apart from.
             try:
-                result = _compute_sld_from_model(
-                    model,
-                    fitted_params,
-                    output_dir=self.output_dir,
-                    iteration=iteration,
+                state_results = _compute_states_sld(
+                    _with_run_states(model, state), fitted_params
                 )
-                if result and result.get("z") is not None:
-                    profiles.append(
-                        {"label": label, "z": result["z"], "sld": result["sld"]}
-                    )
             except Exception as exc:
                 logger.debug(
                     "Could not compute SLD for iteration %d: %s", iteration, exc
+                )
+                state_results = []
+            for sr in state_results:
+                profiles.append(
+                    {
+                        "label": f"{label} – {sr['state']}"
+                        if len(state_results) > 1
+                        else label,
+                        "z": sr["z"],
+                        "sld": sr["sld"],
+                        "state": sr["state"],
+                        "iteration": iteration,
+                    }
                 )
 
         self._sld_cache = {"profiles": profiles}
@@ -772,11 +753,9 @@ class RunData:
     ) -> dict:
         """Compute reflectivity, SLD, and chi² for user-specified parameters.
 
-        Builds a model from the ModelDefinition (or legacy script) and applies
-        the given parameter values, then computes curves via refl1d.
-
-        For multi-file co-refinement, returns per-file curves in a
-        ``per_file`` list alongside the SLD profile.
+        Builds the model through the state builder — the one builder; a model
+        with no ``states`` block is simulated as the single state it implies —
+        applies the given parameter values, and computes the curves via refl1d.
 
         Parameters
         ----------
@@ -786,72 +765,51 @@ class RunData:
             Fit iteration whose model structure to use.  When *None*,
             falls back to the current (latest) model.
 
-        Returns ``{"Q_fit", "R_fit", "sld_z", "sld_rho", "chi_squared"}``,
-        or ``{"per_file": [...], "sld_z", "sld_rho", "chi_squared"}`` for
-        multi-file.
+        Returns ``{"per_file": [...], "sld_profiles": [...], "chi_squared"}``:
+        one R(Q) entry per file and one SLD profile per state. Two shorthands
+        ride along when they are unambiguous — ``sld_z`` / ``sld_rho`` for a
+        single state, and ``Q_fit`` / ``R_fit`` for a single curve.
         """
+        state = self.get_final_state()
         if iteration is not None:
             model = self._get_model_for_iteration(iteration)
         else:
-            state = self.get_final_state()
             model = state.get("current_model")
 
         if model is None:
             return {"error": "No model available"}
-
-        # A model carrying states (one or several): build_states_problem is
-        # the only path that reads a state's overrides and wires up shared
-        # theta_offset / sample_broadening. The flat paths below serve models
-        # with no states block (runs older than the always-attached state).
-        from aure.nodes.model_builder import needs_states_problem as _needs_states
-
-        if isinstance(model, dict) and _needs_states(model):
-            try:
-                return _compute_states_simulation(
-                    model,
-                    parameters,
-                    bounds=bounds,
-                )
-            except Exception as exc:
-                return {"error": str(exc)}
-
-        # Check for multi-file co-refinement
-        state = self.get_final_state()
-        data_files = state.get("data_files", [])
-        has_multi = len(data_files) > 1
-
-        if has_multi and isinstance(model, dict):
-            try:
-                return _compute_multi_file_simulation(
-                    model,
-                    data_files,
-                    parameters,
-                    bounds=bounds,
-                )
-            except Exception as exc:
-                return {"error": str(exc)}
+        if not isinstance(model, dict):
+            return {"error": "Model computation returned no result"}
 
         try:
-            result = _compute_from_model(
-                model,
-                parameters,
-                bounds=bounds,
-                output_dir=self.output_dir,
-                compute_reflectivity=True,
+            result = _compute_states_simulation(
+                _with_run_states(model, state), parameters, bounds=bounds
             )
         except Exception as exc:
             return {"error": str(exc)}
 
-        if result is None:
-            return {"error": "Model computation returned no result"}
+        profiles = result.get("sld_profiles") or []
+        if len(profiles) == 1:
+            result["sld_z"] = profiles[0].get("z") or []
+            result["sld_rho"] = profiles[0].get("sld") or []
+        per_file = result.get("per_file") or []
+        if len(per_file) == 1:
+            result["Q_fit"] = per_file[0].get("Q_fit") or []
+            result["R_fit"] = per_file[0].get("R_fit") or []
+        return result
 
-        return {
-            "Q_fit": result.get("Q_fit") or [],
-            "R_fit": result.get("R_fit") or [],
-            "sld_z": result.get("z") or [],
-            "sld_rho": result.get("sld") or [],
-            "chi_squared": result.get("chi_squared"),
-        }
+
+def _with_run_states(model: dict, state: dict) -> dict:
+    """*model* with its states, synthesized from the run when it has none.
+
+    A model stored before every model carried its states is the single state
+    the run fitted: the run's files when several were co-refined, else the
+    model's own ``data_file``.
+    """
+    from aure.nodes.model_builder import with_states
+
+    data_files = state.get("data_files") or []
+    return with_states(model, data_files if len(data_files) > 1 else None)
 
 
 # ======================================================================
@@ -878,154 +836,6 @@ def _rejoin_message_content(data: object) -> None:
 # ======================================================================
 # Model computation helpers (JSON ModelDefinition path)
 # ======================================================================
-
-
-def _compute_sld_from_model(
-    model: object,
-    fitted_params: Dict[str, float],
-    output_dir: Path,
-    iteration: int,
-) -> Optional[Dict[str, Any]]:
-    """Compute SLD profile from a model (dict or legacy script).
-
-    Thin convenience wrapper: delegates to ``_compute_from_model`` with
-    ``compute_reflectivity=False``.
-    """
-    return _compute_from_model(
-        model, fitted_params, output_dir=output_dir, compute_reflectivity=False
-    )
-
-
-def _compute_from_model(
-    model: object,
-    parameters: Dict[str, float],
-    *,
-    bounds: Optional[Dict[str, list]] = None,
-    output_dir: Optional[Path] = None,
-    compute_reflectivity: bool = False,
-) -> Optional[Dict[str, Any]]:
-    """Build a model, apply parameters, and extract curves.
-
-    Returns a dict with keys ``z``, ``sld``, and optionally ``Q_fit``,
-    ``R_fit``, ``chi_squared``.
-    """
-    from aure.nodes.model_builder import (
-        apply_bounds,
-        apply_parameters,
-        build_problem,
-        data_chisq,
-    )
-
-    if not isinstance(model, dict):
-        return None
-
-    # New JSON ModelDefinition path
-    definition = dict(model)  # type: ignore[arg-type]
-    problem = build_problem(definition)
-
-    if bounds:
-        apply_bounds(problem, bounds)
-    if parameters:
-        apply_parameters(problem, parameters)
-
-    experiment = problem.fitness
-    if hasattr(experiment, "_models"):
-        experiment = experiment._models[0]
-
-    result: Dict[str, Any] = {}
-
-    # SLD profile
-    try:
-        z_arr, sld_arr, _ = experiment.smooth_profile(dz=1.0)
-        result["z"] = np.array(z_arr).tolist()
-        result["sld"] = np.array(sld_arr).tolist()
-    except Exception:
-        result["z"] = None
-        result["sld"] = None
-
-    # Reflectivity + chi² (optional)
-    if compute_reflectivity:
-        try:
-            experiment.update()
-            Q_arr, R_arr = experiment.reflectivity()
-            result["Q_fit"] = np.array(Q_arr).tolist()
-            result["R_fit"] = np.array(R_arr).tolist()
-        except Exception:
-            result["Q_fit"] = None
-            result["R_fit"] = None
-        try:
-            chi2 = float(data_chisq(problem))
-            result["chi_squared"] = chi2 if math.isfinite(chi2) else None
-        except Exception:
-            result["chi_squared"] = None
-
-    return result
-
-
-def _compute_multi_file_simulation(
-    model: dict,
-    data_files: list,
-    parameters: Dict[str, float],
-    *,
-    bounds: Optional[Dict[str, list]] = None,
-) -> dict:
-    """Simulate reflectivity for a multi-file co-refinement model.
-
-    Builds a joint ``FitProblem`` via ``build_multi_problem``, applies
-    the user's parameter values, then extracts per-file R(Q) curves
-    and the shared SLD profile.
-    """
-    from aure.nodes.model_builder import (
-        apply_bounds,
-        apply_parameters,
-        build_multi_problem,
-        data_chisq,
-    )
-
-    definition = dict(model)
-    problem, experiments, sorted_data_files = build_multi_problem(
-        definition, data_files
-    )
-
-    if bounds:
-        apply_bounds(problem, bounds)
-    if parameters:
-        apply_parameters(problem, parameters)
-
-    result: Dict[str, Any] = {}
-
-    # SLD profile (shared across all experiments)
-    try:
-        z_arr, sld_arr, _ = experiments[0].smooth_profile(dz=1.0)
-        result["sld_z"] = np.array(z_arr).tolist()
-        result["sld_rho"] = np.array(sld_arr).tolist()
-    except Exception:
-        result["sld_z"] = []
-        result["sld_rho"] = []
-
-    # Per-file reflectivity
-    per_file = []
-    for exp, ds in zip(experiments, sorted_data_files):
-        pf: Dict[str, Any] = {"label": ds.get("label", "")}
-        try:
-            exp.update()
-            Q_arr, R_arr = exp.reflectivity()
-            pf["Q_fit"] = np.array(Q_arr).tolist()
-            pf["R_fit"] = np.array(R_arr).tolist()
-        except Exception:
-            pf["Q_fit"] = []
-            pf["R_fit"] = []
-        per_file.append(pf)
-    result["per_file"] = per_file
-
-    # Aggregate chi²
-    try:
-        chi2 = float(data_chisq(problem))
-        result["chi_squared"] = chi2 if math.isfinite(chi2) else None
-    except Exception:
-        result["chi_squared"] = None
-
-    return result
 
 
 def _with_angle_theta(model: dict) -> dict:
@@ -1075,11 +885,12 @@ def _compute_states_simulation(
     *,
     bounds: Optional[Dict[str, list]] = None,
 ) -> dict:
-    """Simulate per-state R(Q) and SLD profiles for a multi-state model.
+    """Simulate R(Q) per file and an SLD profile per state.
 
-    Builds the joint ``FitProblem`` via :func:`build_states_problem`,
-    applies user parameters, then extracts one R(Q) curve per state file
-    and one SLD profile per state.
+    The only simulation path: builds the ``FitProblem`` via
+    :func:`build_states_problem` (the model must carry its states — see
+    :func:`_with_run_states`), applies user parameters, then extracts one
+    R(Q) curve per state file and one SLD profile per state.
     """
     from aure.nodes.model_builder import (
         apply_bounds,
@@ -1160,6 +971,6 @@ def _compute_states_sld(
     model: dict,
     parameters: Dict[str, float],
 ) -> List[Dict[str, Any]]:
-    """Return ``[{state, z, sld}]`` for each state in a multi-state model."""
+    """Return ``[{state, z, sld}]`` for each state of a model."""
     sim = _compute_states_simulation(model, parameters)
     return sim.get("sld_profiles") or []
