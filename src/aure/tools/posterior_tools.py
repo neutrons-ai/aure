@@ -1039,12 +1039,14 @@ def posterior_for_report(state: Mapping[str, Any]) -> tuple:
     last fit's. *source* is ``"final_fit"``, ``"selected"`` or ``"last"``;
     ``(None, None)`` when no fit carries a summary.
     """
+    from ..state import final_fit_result
+
     fits = list(state.get("fit_results") or [])
     if not fits:
         return None, None
-    final = state.get("final_fit") or {}
-    if final.get("ran") and isinstance(fits[-1].get("posterior"), dict):
-        return fits[-1]["posterior"], "final_fit"
+    polish = final_fit_result(dict(state))
+    if polish is not None and isinstance(polish.get("posterior"), dict):
+        return polish["posterior"], "final_fit"
     selection = state.get("final_selection") or {}
     index = selection.get("index") if selection.get("selected") else None
     if isinstance(index, int) and 0 <= index < len(fits):

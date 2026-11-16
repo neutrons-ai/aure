@@ -347,8 +347,9 @@ class TestContextGeneration:
     def test_context_parameters_come_from_the_selected_fit(self):
         """χ² is taken from the finalize-selected fit, so the parameters must be
         too — reading `fit_results[-1]` paired the selected χ² with another
-        iteration's values whenever finalize did not pick the last one."""
-        from aure.exporters.isaac import _selected_fit
+        iteration's values whenever finalize did not pick the last one. (An
+        adopted final polish is covered in test_reported_fit.py.)"""
+        from aure.state import reported_fit
 
         state = {
             "final_selection": {"selected": True, "index": 0},
@@ -357,8 +358,8 @@ class TestContextGeneration:
                 {"chi_squared": 4.7, "parameters": {"Cu thickness": 120.0}},
             ],
         }
-        assert _selected_fit(state)["parameters"] == {"Cu thickness": 495.0}
+        assert reported_fit(state)[0]["parameters"] == {"Cu thickness": 495.0}
 
         # No selection record (legacy / imported): fall back to the last fit.
         state["final_selection"] = {}
-        assert _selected_fit(state)["parameters"] == {"Cu thickness": 120.0}
+        assert reported_fit(state)[0]["parameters"] == {"Cu thickness": 120.0}

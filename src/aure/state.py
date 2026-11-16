@@ -770,6 +770,70 @@ def flatten_data_files(states: List[dict]) -> List[dict]:
     return flat
 
 
+def selected_fit(state: dict) -> Optional[dict]:
+    """The exploration fit ``finalize`` chose, or the last fit without a choice.
+
+    This is the fit that was *judged*: it carries the evaluation's stamps (the
+    SLD-profile veto among them) and it is what the final polish, when one
+    runs, starts from. It is not necessarily what a run reports — see
+    :func:`reported_fit`.
+    """
+    fits = state.get("fit_results") or []
+    if not fits:
+        return None
+    selection = state.get("final_selection") or {}
+    index = selection.get("index") if selection.get("selected") else None
+    if isinstance(index, int) and 0 <= index < len(fits):
+        return fits[index]
+    return fits[-1]
+
+
+def final_fit_result(state: dict) -> Optional[dict]:
+    """The final polish's ``FitResult`` while it is the run's latest fit.
+
+    ``final_fit`` appends its result after the exploration fits and stamps it
+    ``final_fit: True``. ``None`` when no polish ran, and when a later fit
+    follows it (a restarted run): the polish then describes an earlier answer.
+    A state written before the stamp existed is taken at its record's word.
+    """
+    fits = state.get("fit_results") or []
+    if not fits or not (state.get("final_fit") or {}).get("ran"):
+        return None
+    stamped = any(isinstance(fr, dict) and fr.get("final_fit") for fr in fits)
+    if stamped and not fits[-1].get("final_fit"):
+        return None
+    return fits[-1]
+
+
+def exploration_fits(state: dict) -> List[dict]:
+    """``fit_results`` without the final polish — one per iteration fitted."""
+    fits = list(state.get("fit_results") or [])
+    polish = final_fit_result(state)
+    return [fr for fr in fits if fr is not polish and not fr.get("final_fit")]
+
+
+def reported_fit(state: dict) -> tuple:
+    """``(fit, source)`` — the fit whose numbers a run reports as its answer.
+
+    When the final polish was **adopted**, ``current_model`` and
+    ``current_chi2`` carry its values, so the χ², the method, the parameter
+    table and the uncertainties have to come from it too (*source*
+    ``"final_fit"``). Otherwise — no polish, or one that did not hold the
+    selected fit's χ² and was only recorded — it is :func:`selected_fit`
+    (*source* ``"selected"``). ``(None, None)`` without any fit.
+
+    Every surface that renders the answer resolves it here: the terminal
+    report, ``--json``, ``aure batch``, the web Results tab and the ISAAC
+    exporter each used to index ``final_selection`` themselves, and showed the
+    exploration fit's numbers under a model holding the polish's.
+    """
+    polish = final_fit_result(state)
+    if polish is not None and (state.get("final_fit") or {}).get("adopted"):
+        return polish, "final_fit"
+    fit = selected_fit(state)
+    return (fit, "selected") if fit is not None else (None, None)
+
+
 def is_multi_state(definition: dict) -> bool:
     """Return True if *definition* has more than one explicit state."""
     return len(definition.get("states") or []) > 1

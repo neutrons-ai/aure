@@ -64,7 +64,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from ..state import Message, ReflectivityState
+from ..state import Message, ReflectivityState, selected_fit
 from ..tools.posterior_tools import locate_point, posterior_digest
 from .evaluation import _get_chi2_max
 from .finalize import (
@@ -153,13 +153,7 @@ def _profile_veto_reason(state: ReflectivityState) -> Optional[str]:
     way the report resolves it — ``final_selection["index"]``, else the last fit.
     """
     selection = state.get("final_selection") or {}
-    fit_results = state.get("fit_results") or []
-
-    index = selection.get("index") if selection.get("selected") else None
-    if isinstance(index, int) and 0 <= index < len(fit_results):
-        fit = fit_results[index]
-    else:
-        fit = fit_results[-1] if fit_results else None
+    fit = selected_fit(state)
 
     if selection.get("selected_has_profile_artifact") or has_profile_artifact(fit):
         return (
@@ -337,7 +331,10 @@ def final_fit_node(state: ReflectivityState) -> Dict[str, Any]:
     adopted = _is_finite_number(chi2_after) and chi2_after <= chi2_before * (1.0 + tol)
 
     # Always persist the dream fit so its uncertainties + chains are on record,
-    # whether or not we adopt its point estimate as the reported model.
+    # whether or not we adopt its point estimate as the reported model. The
+    # stamp is how `state.reported_fit` and the web tell it from an iteration:
+    # it shares the selected fit's iteration number.
+    result["final_fit"] = True  # type: ignore[typeddict-unknown-key]
     updates["fit_results"] = [result]
 
     final_fit_record = {
@@ -360,7 +357,7 @@ def final_fit_node(state: ReflectivityState) -> Dict[str, Any]:
     post = result.get("posterior")
     if isinstance(post, dict):
         final_fit_record["posterior"] = posterior_digest(post)
-        explored = _selected_exploration_fit(state)
+        explored = selected_fit(state)
         if explored is not None:
             placed = locate_point(
                 post, explored.get("parameters") or {}, explored.get("_chi2_total")
@@ -412,16 +409,6 @@ def final_fit_node(state: ReflectivityState) -> Dict[str, Any]:
         )
     ]
     return updates
-
-
-def _selected_exploration_fit(state: ReflectivityState) -> Optional[dict]:
-    """The finalize-selected exploration ``FitResult`` (before the polish is appended)."""
-    fits = state.get("fit_results") or []
-    selection = state.get("final_selection") or {}
-    index = selection.get("index") if selection.get("selected") else None
-    if isinstance(index, int) and 0 <= index < len(fits):
-        return fits[index]
-    return fits[-1] if fits else None
 
 
 def _format_posterior_check(record: dict) -> str:

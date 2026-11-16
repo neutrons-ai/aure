@@ -220,16 +220,26 @@ class RunData:
                 if ds.get("label"):
                     state_for_label[ds["label"]] = st_name
 
+        # Every entry's ``iteration`` is the fit's INDEX in ``fit_results`` —
+        # what /api/parameters, /api/simulate and a restart's ``fit_iteration``
+        # take. It equals the iteration number for a plain run; it has to be
+        # the index for the final polish, which shares the iteration number of
+        # the fit it polished and would otherwise be merged into it, leaving
+        # the run's reported fit unselectable.
+        from ..state import final_fit_result
+
+        fit_results = state.get("fit_results", [])
+        polish = final_fit_result(state)
         models: List[dict] = []
-        for fr in state.get("fit_results", []):
-            iteration = fr.get("iteration", len(models))
+        for iteration, fr in enumerate(fit_results):
             chi2 = fr.get("chi_squared")
             per_file = fr.get("per_file_results") or []
+            name = _fit_name(fr, iteration, polish)
 
             if has_multi and per_file:
                 # Emit one model curve per file per iteration
                 for pf in per_file:
-                    label = f"{pf.get('label', '?')} – iter {iteration}"
+                    label = f"{pf.get('label', '?')} – {name.lower()}"
                     pf_chi2 = pf.get("chi_squared")
                     if pf_chi2 is not None:
                         label += f" (χ²={pf_chi2:.2f})"
@@ -248,7 +258,7 @@ class RunData:
                         entry["state"] = pf_state
                     models.append(entry)
             else:
-                label = f"Iteration {iteration}"
+                label = name
                 if chi2 is not None:
                     label += f" (χ²={chi2:.2f})"
                 models.append(
@@ -265,11 +275,11 @@ class RunData:
         # (avoids picking based on a single segment's chi2 in multi-file mode)
         best_iteration = None
         best_chi2 = float("inf")
-        for fr in state.get("fit_results", []):
+        for index, fr in enumerate(fit_results):
             c = fr.get("chi_squared")
             if c is not None and c < best_chi2:
                 best_chi2 = c
-                best_iteration = fr.get("iteration")
+                best_iteration = index
 
         # Build unique iteration list for the selector
         seen = set()
@@ -278,17 +288,10 @@ class RunData:
             it = m.get("iteration")
             if it is not None and it not in seen:
                 seen.add(it)
-                # Aggregate chi2 from fit_results for this iteration
-                fr_match = next(
-                    (
-                        fr
-                        for fr in state.get("fit_results", [])
-                        if fr.get("iteration") == it
-                    ),
-                    None,
-                )
+                # Aggregate chi2 from fit_results for this fit
+                fr_match = fit_results[it] if 0 <= it < len(fit_results) else None
                 agg_chi2 = fr_match.get("chi_squared") if fr_match else None
-                label = f"Iteration {it}"
+                label = _fit_name(fr_match or {}, it, polish)
                 if agg_chi2 is not None:
                     label += f" (χ²={agg_chi2:.2f})"
                 iterations.append({"iteration": it, "label": label})
@@ -345,6 +348,26 @@ class RunData:
         # Fallback: current model (best we can do)
         return state.get("current_model")
 
+    def _model_for_fit(self, index: int) -> object | None:
+        """The model ``fit_results[index]`` was fitted on.
+
+        An iteration's fit: the model history entry of its iteration number.
+        The final polish: ``current_model`` — finalize wrote the selected
+        fit's values into it before the polish ran, which moves every bound
+        derived from a value, so the polish's parameters can sit outside the
+        selected iteration's stored model and are infeasible against it.
+        """
+        from ..state import final_fit_result
+
+        state = self.get_final_state()
+        fits = state.get("fit_results") or []
+        if not 0 <= index < len(fits):
+            return self._get_model_for_iteration(index)
+        fit = fits[index]
+        if fit.get("final_fit") or fit is final_fit_result(state):
+            return state.get("current_model")
+        return self._get_model_for_iteration(fit.get("iteration", index))
+
     # ------------------------------------------------------------------
     # SLD profiles  (requires refl1d model execution)
     # ------------------------------------------------------------------
@@ -363,21 +386,23 @@ class RunData:
         if self._sld_cache is not None:
             return self._sld_cache
 
+        from ..state import final_fit_result
+
         state = self.get_final_state()
         fit_results = state.get("fit_results", [])
+        polish = final_fit_result(state)
 
         profiles: List[dict] = []
 
         for idx, fr in enumerate(fit_results):
-            iteration = fr.get("iteration", idx)
             chi2 = fr.get("chi_squared")
 
-            label = f"Iteration {iteration}"
+            label = _fit_name(fr, idx, polish)
             if chi2 is not None:
                 label += f" (χ²={chi2:.2f})"
 
             fitted_params = fr.get("parameters", {})
-            model = self._get_model_for_iteration(iteration)
+            model = self._model_for_fit(idx)
             if not isinstance(model, dict):
                 continue
 
@@ -389,9 +414,7 @@ class RunData:
                     _with_run_states(model, state), fitted_params
                 )
             except Exception as exc:
-                logger.debug(
-                    "Could not compute SLD for iteration %d: %s", iteration, exc
-                )
+                logger.debug("Could not compute SLD for fit %d: %s", idx, exc)
                 state_results = []
             for sr in state_results:
                 profiles.append(
@@ -402,7 +425,7 @@ class RunData:
                         "z": sr["z"],
                         "sld": sr["sld"],
                         "state": sr["state"],
-                        "iteration": iteration,
+                        "iteration": idx,
                     }
                 )
 
@@ -420,7 +443,7 @@ class RunData:
         ----------
         iteration
             0-based index into ``fit_results``.  When *None* (default),
-            the iteration with the lowest chi-squared is used.
+            the run's reported fit (:func:`aure.state.reported_fit`) is used.
 
         Returns::
 
@@ -456,15 +479,20 @@ class RunData:
                 best_chi2 = c
                 best_idx = i
 
-        # The finalize node's choice is the run's answer — default to it so the
-        # table agrees with final_state.json and the exported problem.json. It
-        # can differ from best_idx via the parsimony tie-break.
+        # The run's reported fit is the default, so the table agrees with
+        # final_state.json and the exported problem.json: the adopted final
+        # polish when there is one (its values are in `current_model`, and its
+        # ± are what the polish was run for), else the finalize node's choice
+        # — which can differ from best_idx via the parsimony tie-break.
+        from ..state import reported_fit
+
         default_idx = best_idx
         selection = state.get("final_selection") or {}
-        if selection.get("selected"):
-            sel_index = selection.get("index")
-            if isinstance(sel_index, int) and 0 <= sel_index < len(fit_results):
-                default_idx = sel_index
+        reported, source = reported_fit(state)
+        if source == "final_fit" or selection.get("selected"):
+            default_idx = next(
+                (i for i, fr in enumerate(fit_results) if fr is reported), best_idx
+            )
 
         idx = iteration if iteration is not None else default_idx
         idx = max(0, min(idx, len(fit_results) - 1))
@@ -476,9 +504,7 @@ class RunData:
 
         # Fallback: read bounds from model definition or problem.json
         if not bounds:
-            iter_num = selected.get("iteration", idx)
-            iter_model = self._get_model_for_iteration(iter_num)
-            bounds = self._read_bounds_from_model_definition(iter_model)
+            bounds = self._read_bounds_from_model_definition(self._model_for_fit(idx))
         if not bounds:
             bounds = self._read_bounds_from_problem_json()
 
@@ -772,7 +798,8 @@ class RunData:
         """
         state = self.get_final_state()
         if iteration is not None:
-            model = self._get_model_for_iteration(iteration)
+            # *iteration* is an index into fit_results.
+            model = self._model_for_fit(iteration)
         else:
             model = state.get("current_model")
 
@@ -797,6 +824,19 @@ class RunData:
             result["Q_fit"] = per_file[0].get("Q_fit") or []
             result["R_fit"] = per_file[0].get("R_fit") or []
         return result
+
+
+def _fit_name(fit: dict, index: int, polish: Optional[dict] = None) -> str:
+    """How a fit is named in the Results tab: its iteration, or the final fit.
+
+    The final polish shares the iteration number of the fit it polished, so
+    naming it "Iteration k" gave two entries one label. *polish* is
+    :func:`aure.state.final_fit_result` for the run, which also recognises a
+    polish stored before results were stamped ``final_fit``.
+    """
+    if fit.get("final_fit") or (polish is not None and fit is polish):
+        return f"Final {fit.get('method') or 'uncertainty'} fit"
+    return f"Iteration {fit.get('iteration', index)}"
 
 
 def _with_run_states(model: dict, state: dict) -> dict:

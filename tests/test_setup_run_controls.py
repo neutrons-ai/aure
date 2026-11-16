@@ -616,6 +616,62 @@ def test_batch_headline_chi2_is_the_selected_fit(tmp_path, data_file, monkeypatc
     assert "4.700" not in result.output
 
 
+_POLISHED_RUN = {
+    "Q": [0.01],
+    # An lm exploration fit, then the adopted DREAM polish of it.
+    "fit_results": [
+        {
+            "chi_squared": 1.30,
+            "method": "lm",
+            "parameters": {"Cu thickness": 495.0},
+            "uncertainties": {"Cu thickness": 0.2},
+            "issues": [],
+        },
+        {
+            "chi_squared": 1.25,
+            "method": "dream",
+            "parameters": {"Cu thickness": 497.5},
+            "uncertainties": {"Cu thickness": 3.1},
+            "issues": [],
+            "final_fit": True,
+        },
+    ],
+    "final_selection": {"selected": True, "index": 0, "iteration": 0},
+    "final_fit": {"ran": True, "adopted": True, "method": "dream"},
+}
+
+
+def test_analyze_json_reports_an_adopted_final_polish(tmp_path, data_file, monkeypatch):
+    """`fit_result` was the exploration fit, and carried no uncertainties at
+    all — the ± the polish is run for never reached a script."""
+    import json
+
+    result = _run_analyze(
+        tmp_path, data_file, monkeypatch, dict(_POLISHED_RUN), args=("--json",)
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["fit_result"] == {
+        "chi_squared": 1.25,
+        "method": "dream",
+        "parameters": {"Cu thickness": 497.5},
+        "uncertainties": {"Cu thickness": 3.1},
+    }
+    assert payload["selection"]["reported_fit"] == "final_fit"
+    assert payload["selection"]["of_iterations_fitted"] == 1
+
+
+def test_batch_headline_chi2_follows_an_adopted_final_polish(
+    tmp_path, data_file, monkeypatch
+):
+    result = _run_batch(tmp_path, data_file, monkeypatch, dict(_POLISHED_RUN))
+
+    assert result.exit_code == 0, result.output
+    assert "Done – χ² = 1.250" in result.output
+    assert "1.300" not in result.output
+
+
 def test_batch_flags_a_vetoed_model(tmp_path, data_file, monkeypatch):
     state = {
         "Q": [0.01],

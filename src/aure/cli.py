@@ -844,7 +844,9 @@ def analyze(
             _, _, selected = _selected_fit(result)
             output_data["fit_result"] = {
                 "chi_squared": (selected or {}).get("chi_squared"),
+                "method": (selected or {}).get("method"),
                 "parameters": (selected or {}).get("parameters"),
+                "uncertainties": (selected or {}).get("uncertainties"),
             }
             output_data["selection"] = _selection_payload(result)
         click.echo(json.dumps(output_data, indent=2))
@@ -853,22 +855,22 @@ def analyze(
 
 
 def _selected_fit(result: dict) -> tuple:
-    """``(fit_results, final_selection, selected_fit)`` for a finished run.
+    """``(exploration_fits, final_selection, reported_fit)`` for a finished run.
 
     The answer is the iteration ``finalize`` chose, which is routinely *not* the
     last one performed — it rejects regressions, prefers the simpler model inside
-    the χ² band, and sets profile-vetoed fits aside. Every surface that reports a
-    run has to resolve it the same way or they disagree about which model the run
-    produced. Falls back to the last fit for a legacy state with no selection.
+    the χ² band, and sets profile-vetoed fits aside. And when the final polish of
+    that choice was adopted, the numbers to report are the polish's: the model
+    holds its values, so the χ², the method and the ± have to be its too. Every
+    surface that reports a run resolves it through
+    :func:`aure.state.reported_fit` or they disagree about what the run produced.
+
+    The list is the exploration fits only — the polish is not an iteration.
     """
-    fit_list = result.get("fit_results") or []
-    selection = result.get("final_selection") or {}
-    if not fit_list:
-        return fit_list, selection, None
-    index = selection.get("index") if selection.get("selected") else None
-    if isinstance(index, int) and 0 <= index < len(fit_list):
-        return fit_list, selection, fit_list[index]
-    return fit_list, selection, fit_list[-1]
+    from .state import exploration_fits, reported_fit
+
+    fit, _source = reported_fit(result)
+    return exploration_fits(result), result.get("final_selection") or {}, fit
 
 
 def _selection_payload(result: dict) -> dict:
@@ -880,14 +882,20 @@ def _selection_payload(result: dict) -> dict:
     no signal at all.
     """
     from .nodes.finalize import has_profile_artifact
+    from .state import reported_fit, selected_fit
 
-    fit_list, selection, fit = _selected_fit(result)
+    fit_list, selection, _fit = _selected_fit(result)
     return {
         "iteration": selection.get("iteration"),
         "index": selection.get("index"),
         "of_iterations_fitted": len(fit_list),
+        # "final_fit" when `fit_result` is the adopted final polish of that
+        # iteration rather than the iteration's own fit.
+        "reported_fit": reported_fit(result)[1],
         "superseded_last_iteration": bool(selection.get("superseded_last_iteration")),
-        "profile_artifact": has_profile_artifact(fit),
+        # The evaluator's stamp, so read off the fit it judged — the polish is
+        # never evaluated and carries none.
+        "profile_artifact": has_profile_artifact(selected_fit(result)),
         "demoted_for_profile_artifact": bool(
             selection.get("demoted_for_profile_artifact")
         ),
@@ -1156,9 +1164,29 @@ def _print_analysis_results(result: dict, output_dir: Optional[str] = None):
             if isinstance(chi2, (int, float))
             else f"    χ²: {chi2}"
         )
-        if best_chi2 is not None and best_chi2 != chi2:
-            click.echo(f"    Best χ²: {best_chi2:.4f}")
-        click.echo(f"    Method: {fit.get('method', 'unknown')}")
+        from .state import reported_fit, selected_fit
+
+        explored = selected_fit(result) or {}
+        polished = reported_fit(result)[1] == "final_fit"
+        if polished:
+            # The exploration χ² is the one the loop compared models on; the
+            # polish's is the reported one. "Best χ²" would print the former
+            # under the latter and read as a contradiction.
+            explored_chi2 = explored.get("chi_squared")
+            shown = (
+                f"{explored_chi2:.4f}"
+                if isinstance(explored_chi2, (int, float))
+                else "n/a"
+            )
+            click.echo(
+                f"    Method: {fit.get('method', 'unknown')} — final fit of the "
+                f"selected iteration ({explored.get('method', 'unknown')} "
+                f"exploration χ² = {shown})"
+            )
+        else:
+            if best_chi2 is not None and best_chi2 != chi2:
+                click.echo(f"    Best χ²: {best_chi2:.4f}")
+            click.echo(f"    Method: {fit.get('method', 'unknown')}")
         click.echo(f"    Iterations: {len(fit_list)}")
         if selection.get("selected"):
             click.echo(f"    Selected iteration: {selection.get('iteration')}")
@@ -1198,8 +1226,12 @@ def _print_analysis_results(result: dict, output_dir: Optional[str] = None):
     # The SLD-profile veto, which χ² cannot show. Loudest thing in the report when
     # the model being reported is the one the check rejected.
     from .nodes.finalize import has_profile_artifact
+    from .state import selected_fit as _judged_fit
 
-    if selection.get("selected_has_profile_artifact") or has_profile_artifact(fit):
+    # Read off the fit the evaluator judged; the final polish carries no stamp.
+    if selection.get("selected_has_profile_artifact") or has_profile_artifact(
+        _judged_fit(result)
+    ):
         click.echo(
             click.style(
                 "  ⚠  THE REPORTED MODEL IS NOT PHYSICALLY VALID", fg="red", bold=True

@@ -591,24 +591,6 @@ That is why the thin-layer mode-enumeration sweep keeps amoeba — its
 seed-dependence is the mechanism the sweep exploits — and why `de` belongs
 where the answer, not the landscape, is what is wanted.
 
-## Six LLM calls bypass `invoke_with_timeout`, so the call ledger never sees them
-
-The convention is that every call goes through `invoke_with_timeout(get_llm(), …)`,
-which bounds it and writes its row in `llm_calls.jsonl`. Six call `llm.invoke`
-directly instead: `analyze_fit_quality_with_llm` (the verdict on every pass) and
-`propose_hypothesis_revision_with_llm` in `nodes/evaluation.py`, and
-`_refine_model`, `_refine_model_legacy`, `_extract_cross_state_unshared` and
-`_extract_per_state_structure` in `nodes/modeling.py`. They get no per-call
-timeout and no ledger row, and they carry the long prompts: on the 51-curve
-gpt-5.4 validation sweep the ledger held about 10 of a run's 21 calls but only
-18% of its prompt tokens, so token and cost totals read from it are low by about
-a factor of five. The validation harness recovers the
-rest by replaying checkpoints (`scripts/replay_llm_calls.py`). Found while adding
-the `temperature` field to the ledger; routing the six through the wrapper is
-the fix.
-
----
-
 ## The profile veto throws away fits an analyst would repair
 
 **Where:** [`src/aure/tools/feature_tools.py`](src/aure/tools/feature_tools.py)
@@ -749,30 +731,28 @@ one change can fix both.
 
 ---
 
-## The report's "Fit Results" ignore an adopted final DREAM polish
+## The validation harness scores the exploration fit under an adopted polish
 
-**Where:** [`src/aure/cli.py`](src/aure/cli.py): `_selected_fit`, used by
-`_print_analysis_results` and by `--json`'s `fit_result`. Also
-[`src/aure/web/data.py`](src/aure/web/data.py): the default iteration of the
-Results tab.
+**Where:** [`validation/batch_runner.py`](validation/batch_runner.py) —
+`_selected_fit`, used for the job summary's χ² and for the `selected_fit` block
+of `state_summary.json`.
 
-**What is wrong.** All three resolve the reported fit as
-`fit_results[final_selection["index"]]`, which is the exploration fit.
-`final_fit` appends its DREAM `FitResult` after that and, when it adopts it,
-writes the DREAM values into `current_model` and `current_chi2`. With a `de`
-exploration and an adopted polish, the terminal report shows:
+**What is wrong.** It is one more private copy of "which fit is the answer":
+`fit_results[final_selection["index"]]`. AuRE's own surfaces now resolve the
+reported fit through `aure.state.reported_fit`, which returns the adopted
+final polish when there is one. The harness still scores the exploration fit —
+its χ², its values and its uncertainties — while the run's model and exported
+`problem.json` hold the polish's. Its own comment says it means "the reported
+answer, which is what a comparison should score".
 
-- under *Final Model*, the DREAM values;
-- under *Fit Results*, the exploration χ², `Method: de` and the exploration
-  values, with **no uncertainties**.
+**What it costs.** Only sweeps run with `FIT_METHOD_FINAL` set. There, scored
+parameters and ± are the exploration fit's (with an `lm` exploration, `lm`'s
+covariance estimates), not the DREAM ones the run reports.
 
-The ± that the polish exists to produce never reach the parameter table or
-`--json`. Found while adding the posterior check, which resolves this correctly
-through `posterior_tools.posterior_for_report`.
-
-**The change.** Resolve the displayed fit as the final DREAM `FitResult` when
-`final_fit["adopted"]` is set, in one helper the CLI report, `--json`, `aure
-batch` and the web default all use. `posterior_for_report` is the pattern.
+**The change.** Use `aure.state.reported_fit`, keeping `selected_fit` for the
+`profile_artifact` flag (the polish is never evaluated and carries none). It
+changes what a polished sweep scores, so past and future sweep numbers are not
+comparable across the change — decide that before making it.
 
 ---
 

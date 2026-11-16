@@ -194,6 +194,19 @@ the parsimony selection:
 **Never fatal.** A fit failure is caught and recorded (`ran=False`); the run
 still reports the finalize-selected model.
 
+**Which fit is reported.** `aure.state.reported_fit` answers it, for every
+surface — the terminal report, `--json`, `aure batch`, the web Results tab and
+the ISAAC export's context: the **adopted** polish when there is one (its
+values are what `current_model` holds, so the χ², the method and the ± have to
+be its too), otherwise the fit finalize selected. A polish that was not
+adopted is on record but is never reported in place of the selected fit. The
+polish's `FitResult` is stamped `final_fit: True`; it is not an iteration, so
+iteration counts leave it out, and the web lists it as "Final dream fit", its
+own entry after the iterations. The SLD-profile veto is still read from the
+*selected* fit (`aure.state.selected_fit`), which is the one the evaluator
+judged. A restart drops the previous `final_fit` record, so a new answer is
+never reported with the old one's polish.
+
 **The posterior check of the answer.** Whether or not it is adopted, the polish
 is the run's longest DREAM chain on the reported structure, so its posterior
 summary is what the report shows. `final_fit.posterior` records whether the

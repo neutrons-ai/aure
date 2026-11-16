@@ -59,23 +59,6 @@ Parameters:
 """
 
 
-def _selected_fit(state: dict) -> Optional[dict]:
-    """The fit ``finalize`` chose as the run's answer, not the last one fitted.
-
-    Resolved the way the CLI report resolves it: ``final_selection["index"]``,
-    falling back to the last fit for a legacy or imported state that has no
-    selection record.
-    """
-    fit_results = state.get("fit_results") or []
-    if not fit_results:
-        return None
-    selection = state.get("final_selection") or {}
-    index = selection.get("index") if selection.get("selected") else None
-    if isinstance(index, int) and 0 <= index < len(fit_results):
-        return fit_results[index]
-    return fit_results[-1]
-
-
 def _posterior_statement(state: dict) -> Optional[str]:
     """One sentence when the reported fit's DREAM posterior is not trusted.
 
@@ -108,8 +91,12 @@ def _profile_veto_statement(state: dict) -> Optional[str]:
     """
     from ..nodes.finalize import has_profile_artifact
 
+    from ..state import selected_fit
+
+    # The veto is the evaluator's stamp on the fit it judged — the exploration
+    # fit finalize chose, never the final polish, which nothing evaluates.
     selection = state.get("final_selection") or {}
-    fit = _selected_fit(state)
+    fit = selected_fit(state)
     if not (
         selection.get("selected_has_profile_artifact") or has_profile_artifact(fit)
     ):
@@ -141,12 +128,13 @@ def _generate_context_description(state: dict) -> str:
     hypothesis = state.get("hypothesis") or "None provided"
     fallback = sample_description
 
-    # Collect final fit info. χ² comes from the finalize-selected fit, so the
-    # parameters have to come from that same fit — reading fit_results[-1] paired
-    # the selected χ² with a different iteration's values whenever finalize did not
-    # pick the last one.
+    # Collect final fit info. χ² is the reported answer's, so the parameters have
+    # to come from that same fit (`state.reported_fit`): the adopted final polish
+    # when there is one, else the fit finalize chose — never simply the last one.
+    from ..state import reported_fit
+
     chi2 = state.get("current_chi2") or state.get("best_chi2") or "N/A"
-    selected = _selected_fit(state)
+    selected = reported_fit(state)[0]
     param_summary = "N/A"
     params = (selected or {}).get("parameters") or {}
     if params:

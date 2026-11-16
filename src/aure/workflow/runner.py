@@ -579,8 +579,12 @@ def prepare_state_for_restart(
     new_state["workflow_complete"] = False
     new_state["error"] = None
     # The restarted run must pick its own winner over the extended set of
-    # iterations, so drop the previous run's terminal selection.
+    # iterations, so drop the previous run's terminal selection — and the
+    # polish of it. Left in place, an "adopted" record would have the report
+    # and problem.json follow the old answer's polish when the new run does
+    # not produce one (final_fit is a no-op when the feature is off).
     new_state["finalized"] = False
+    new_state["final_fit"] = None
 
     # ---- Grant more iteration budget -------------------------------
     used = new_state.get("iteration", 0)
