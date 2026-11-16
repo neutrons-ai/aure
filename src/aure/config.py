@@ -433,7 +433,7 @@ def _parse_states(
             "intensity",
         ):
             if opt in entry:
-                state[opt] = _normalise_nuisance(opt, entry[opt])
+                state[opt] = _normalise_nuisance(opt, entry[opt], name)
         # Per-state structure overrides (sample != structure): a state may carry
         # its own complete layers/substrate, passed through verbatim.
         for opt in ("layers", "substrate"):
@@ -502,24 +502,42 @@ def _detect_kind(state_name: str, data_files: List[dict]) -> str:
 # disables. ``theta_offset`` / ``sample_broadening`` are partials-only (see
 # ``_NUISANCE_KEYS``); ``background`` applies to any state (combined or
 # partial) — a single tied, fittable flat background per state.
+# ``intensity`` is the builder's own fallback when the key is absent, so
+# ``true`` asks for exactly what omission already gives.
 _TRIPLET_DEFAULTS: dict = {
     "theta_offset": {"init": 0.0, "min": -0.02, "max": 0.02},
     "sample_broadening": {"init": 0.0, "min": 0.0, "max": 0.05},
     "background": {"init": 1e-6, "min": 0.0, "max": 1e-5},
+    "intensity": {"init": 1.0, "min": 0.7, "max": 1.1},
 }
 
 
-def _normalise_nuisance(key: str, value: Any) -> Any:
-    """Expand ``true`` for triplet nuisance params into their default dict."""
+def _normalise_nuisance(key: str, value: Any, state_name: str = "") -> Any:
+    """Expand ``true`` for triplet nuisance params into their default dict.
+
+    Anything that is neither a bool, null nor a mapping is refused here: the
+    builder reads these as mappings, and a value passed through unchecked
+    loads clean and then fails the first fit with a ``TypeError`` that names
+    neither the key nor the state.
+    """
     if key not in _TRIPLET_DEFAULTS:
         return value
     if value is True:
         return dict(_TRIPLET_DEFAULTS[key])
+    if value is False and key == "intensity":
+        # The other three are unfitted when absent, so None disables them.
+        # Intensity is fitted when absent, and None falls back to that — so
+        # `false` has to say "fixed" in so many words.
+        return {"init": 1.0, "fixed": True}
     if value in (False, None):
         return None
     if isinstance(value, dict):
         return value
-    raise ConfigError(f"`{key}` must be true/false or a {{init, min, max}} mapping.")
+    where = f"State {state_name!r}: " if state_name else ""
+    raise ConfigError(
+        f"{where}`{key}` must be true/false or a {{init, min, max}} mapping, "
+        f"got {value!r}."
+    )
 
 
 def format_user_criteria(cfg: Optional[UserConfig]) -> str:

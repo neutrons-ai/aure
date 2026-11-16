@@ -315,20 +315,22 @@ state:
   own alignment and its own incoherent background.
 
 Each accepts either `true` (use the default range) or an explicit
-`{init, min, max}` mapping; `false` or omission leaves the parameter fixed and
-unfitted. `background` also accepts `fixed: true` to set a constant value
-without fitting it. The defaults behind `true`:
+`{init, min, max}` mapping; `false` leaves the parameter fixed and unfitted.
+Anything else — a bare number, a string — is refused when the setup loads.
+`background` also accepts `fixed: true` to set a constant value without
+fitting it. The defaults behind `true`:
 
 | Key | `init` | `min` | `max` |
 |---|---|---|---|
 | `theta_offset` | 0.0 | −0.02 | 0.02 |
 | `sample_broadening` | 0.0 | 0.0 | 0.05 |
 | `background` | 1e-6 | 0.0 | 1e-5 |
+| `intensity` | 1.0 | 0.7 | 1.1 |
 
-`intensity` has no `true` shorthand — write the mapping. (`intensity: true`
-loads without complaint and then fails in the builder with `'bool' object is
-not a mapping`; recorded in [TODO.md](../TODO.md).) Its own defaults, when the
-key is absent altogether, are `init` 1.0 over `[0.7, 1.1]`.
+`intensity` differs from the other three in what omission means. They are
+unfitted when the key is absent; intensity is *fitted* when absent, over the
+range in the table — so `intensity: true` asks for the default explicitly, and
+`intensity: false` fixes it at 1.0.
 
 **`theta_offset` and `sample_broadening` need an incident angle.** They exist
 only on refl1d's angle-based probe, which AuRE builds when a file's header

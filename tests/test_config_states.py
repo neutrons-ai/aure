@@ -219,6 +219,81 @@ def test_background_dict_passthrough(tmp_path: Path) -> None:
     assert cfg["states"][0]["background"] == {"init": 2e-6, "min": 0.0, "max": 1e-5}
 
 
+def _intensity_cfg(tmp_path: Path, value: str) -> Path:
+    f = tmp_path / "REFL_1_combined_data_auto.txt"
+    if not f.exists():
+        _write(tmp_path, f.name)
+    return _write_yaml(
+        tmp_path,
+        f"""
+        states:
+          - name: A
+            data_files: [{f.name}]
+            intensity: {value}
+        """,
+    )
+
+
+def test_intensity_true_expands_to_the_builder_default(tmp_path: Path) -> None:
+    # `true` asks for what omission already gives: init 1.0 over [0.7, 1.1].
+    cfg = load_user_config(_intensity_cfg(tmp_path, "true"))
+    assert cfg["states"][0]["intensity"] == {"init": 1.0, "min": 0.7, "max": 1.1}
+
+
+def test_intensity_false_fixes_it(tmp_path: Path) -> None:
+    # Intensity is fitted when absent, so `false` cannot mean "absent" the way
+    # it does for the other nuisance keys — it has to say fixed.
+    cfg = load_user_config(_intensity_cfg(tmp_path, "false"))
+    assert cfg["states"][0]["intensity"] == {"init": 1.0, "fixed": True}
+
+
+@pytest.mark.parametrize("key", ["intensity", "background"])
+def test_bare_scalar_nuisance_is_refused_at_load(tmp_path: Path, key: str) -> None:
+    f = _write(tmp_path, "REFL_1_combined_data_auto.txt")
+    cfg_path = _write_yaml(
+        tmp_path,
+        f"""
+        states:
+          - name: A
+            data_files: [{f.name}]
+            {key}: 0.95
+        """,
+    )
+    with pytest.raises(ConfigError, match=rf"State 'A': `{key}` must be .*0\.95"):
+        load_user_config(cfg_path)
+
+
+@pytest.mark.parametrize(
+    "value, fitted",
+    [("true", True), ("false", False)],
+)
+def test_intensity_shorthand_builds(tmp_path: Path, value: str, fitted: bool) -> None:
+    """The setup → builder path that used to die with "'bool' is not a mapping"."""
+    import numpy as np
+
+    from aure.nodes.model_builder import build_states_problem
+
+    q = np.linspace(0.01, 0.1, 40)
+    r = np.clip((0.0217 / (2 * q)) ** 4, 1e-10, 1.0)
+    rows = "\n".join(
+        f"{a:.6f} {b:.6e} {0.05 * b:.6e} {0.02 * a:.6e}" for a, b in zip(q, r)
+    )
+    _write(tmp_path, "REFL_1_combined_data_auto.txt", "# Q R dR dQ\n" + rows + "\n")
+    cfg = load_user_config(_intensity_cfg(tmp_path, value))
+
+    definition = {
+        "substrate": {"name": "silicon", "sld": 2.07, "roughness": 3.0},
+        "layers": [{"name": "Cu", "sld": 6.5, "thickness": 500.0, "roughness": 5.0}],
+        "ambient": {"name": "air", "sld": 0.0},
+        "states": cfg["states"],
+    }
+    _, by_state, _ = build_states_problem(definition)
+    intensity = by_state["A"][0].probe.intensity
+    assert intensity.fixed is not fitted
+    if fitted:
+        assert tuple(intensity.bounds) == (0.7, 1.1)
+
+
 def test_shared_and_unshared_mutually_exclusive(tmp_path: Path) -> None:
     f = _write(tmp_path, "REFL_1_combined_data_auto.txt")
     cfg_path = _write_yaml(
