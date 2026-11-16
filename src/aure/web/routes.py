@@ -252,12 +252,6 @@ def _apply_overrides_to_model_definition(
 # ------------------------------------------------------------------
 
 
-#: Nuisance keys whose ``fixed: true`` the builder honours (a constant, not a
-#: fit). The prefill must carry it: dropping it turns a held parameter into a
-#: fitted one the moment the run is started from the form.
-_FIXABLE_NUISANCE = ("intensity", "background")
-
-
 def _minimal_state_prefill(states: list[dict]) -> list[dict]:
     """Return a lightweight states payload for setup-page prefill."""
     out = []
@@ -281,12 +275,18 @@ def _minimal_state_prefill(states: list[dict]) -> list[dict]:
             v = st.get(k)
             if isinstance(v, dict):
                 slim[k] = {sub: v[sub] for sub in ("init", "min", "max") if sub in v}
-                if k in _FIXABLE_NUISANCE and v.get("fixed"):
-                    # A held parameter's constant is its value, and the builder
-                    # reads ``value`` before ``init`` — so that is the number
-                    # the form's init box must show.
-                    if "value" in v:
-                        slim[k]["init"] = v["value"]
+                if v.get("fixed"):
+                    # Carry `fixed`: dropping it turns a held parameter into a
+                    # fitted one the moment the run is started from the form.
+                    # The init box shows the constant the builder will hold —
+                    # intensity reads ``value`` first (finalize and
+                    # import-refl1d write it), the other three ``init`` first.
+                    if k == "intensity":
+                        held = v.get("value", v.get("init"))
+                    else:
+                        held = v.get("init", v.get("value"))
+                    if held is not None:
+                        slim[k]["init"] = held
                     slim[k]["fixed"] = True
         if "back_reflection" in st:
             slim["back_reflection"] = bool(st["back_reflection"])

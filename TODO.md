@@ -139,46 +139,6 @@ decide that first.
 
 ---
 
-## A held parameter that is not intensity or background is fitted anyway
-
-**Where:** [`src/aure/nodes/model_builder.py`](src/aure/nodes/model_builder.py)
-— the `theta_offset` / `sample_broadening` blocks in `build_states_problem`
-and `build_multi_problem`; `_nuisance_enabled`.
-
-**What is wrong.** `_nuisance_enabled` counts a `fixed` key as "on", and both
-blocks then call `.range(min, max)` unconditionally. So
-`theta_offset: {init: 0.01, fixed: true}` loads clean and is fitted over
-`[-0.02, 0.02]` — the opposite of what it says. Verified on both paths;
-`build_multi_problem` also starts it from 0.0, not the declared 0.01. `intensity` and
-`background` honour `fixed`; these two do not, and nothing at load time says
-so. The web Setup tab offers "fixed" only on the two that work.
-
-**The change.** Honour `fixed` the way `_configure_background` does (set the
-value, skip the range), or refuse `fixed` on these keys in
-`_normalise_nuisance`. The first makes all four nuisance keys read the same.
-
-## `aure import-refl1d` drops a held background, so it is rebuilt at 0
-
-**Where:** [`src/aure/refl1d_import.py`](src/aure/refl1d_import.py) —
-`_shared_nuisance_for_state` (via `_probe_nuisance`), which recovers a
-nuisance parameter only when it is ranged.
-
-**What is wrong.** A refl1d fit that held its background at a constant
-records nothing for it, so the imported state has no `background` key and
-rebuilds with the probe's default of 0. Verified: a source problem with
-`probe.background` fixed at 2e-6 imports with no `background` on the state.
-Same shape as the fixed-intensity defect `_configure_intensity` fixed in the
-builder, one step earlier — here the value never reaches the definition.
-
-**What it costs.** The imported model is not the one that was fitted, and χ²
-on a rebuild differs from the χ² recorded at import, with no message. Only
-matters for a held background that is not 0; a fitted one round-trips.
-
-**The change.** Recover an unranged, non-zero background as
-`{init: <value>, fixed: true}`, which the builder already honours.
-
----
-
 ## Tie a shared layer to the first state that *has* it, not always to state 0
 
 **Where:** [`src/aure/nodes/model_builder.py`](src/aure/nodes/model_builder.py) —

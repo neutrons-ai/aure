@@ -165,7 +165,6 @@ def _detect_state_kind(file_paths: list[str]) -> str:
     return "partials" if partials and not combined else "combined"
 
 
-
 # --------------------------------------------------------------------------
 # Probe → data file writer
 # --------------------------------------------------------------------------
@@ -349,20 +348,24 @@ def _probe_intensity(probe) -> dict:
 
 
 def _probe_nuisance(probe, attr: str) -> Optional[dict]:
-    """Recover a ranged per-state nuisance parameter from a probe.
+    """Recover a per-state nuisance parameter from a probe.
 
-    Returns ``None`` when the probe doesn't expose *attr* or when it
-    isn't ranged (i.e. wasn't a free parameter in the original fit).
-    Otherwise returns ``{"init": fitted_value, "min": lo, "max": hi}``
-    so the rebuilt :func:`~aure.nodes.model_builder.build_states_problem`
-    starts from the fitted state with the same bounds.
+    A ranged (fitted) parameter returns ``{"init": fitted_value, "min": lo,
+    "max": hi}`` so the rebuilt
+    :func:`~aure.nodes.model_builder.build_states_problem` starts from the
+    fitted state with the same bounds. An unranged one that the original fit
+    held away from the probe's default of 0 returns ``{"init": value,
+    "fixed": True}`` — dropping it rebuilt a background held at 2e-6 at 0, a
+    different model with a different χ². Returns ``None`` when the probe
+    doesn't expose *attr*, or holds it at 0 (nothing to record).
     """
     par = getattr(probe, attr, None)
     if par is None:
         return None
     lo, hi = _bounds(par)
     if lo is None or hi is None:
-        return None
+        value = float(par.value)
+        return {"init": value, "fixed": True} if value != 0.0 else None
     return {
         "init": float(par.value),
         "min": float(lo),
@@ -374,8 +377,9 @@ def _shared_nuisance_for_state(experiments, exp_indices, attr: str) -> Optional[
     """Recover one shared nuisance parameter for a state.
 
     The state's probes must share a single ``Parameter`` object for *attr*
-    (i.e. the original fit used a per-state shared nuisance) and the
-    parameter must be ranged. Returns ``None`` otherwise.
+    (i.e. the original fit used a per-state shared nuisance), which is then
+    recovered by :func:`_probe_nuisance` — fitted or held. Returns ``None``
+    otherwise.
     """
     if not exp_indices:
         return None

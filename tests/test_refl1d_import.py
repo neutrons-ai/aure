@@ -1134,3 +1134,99 @@ def test_a_fixed_intensity_is_rebuilt_at_its_imported_value(tmp_path, one_file):
     assert intensity.fixed
     assert intensity.value == pytest.approx(0.9)
     assert float(rebuilt.chisq()) == pytest.approx(expected_chi2, rel=1e-6)
+
+
+def test_a_held_background_is_rebuilt_at_its_imported_value(tmp_path, one_file):
+    """The importer recovered a nuisance parameter only when it was ranged, so
+    a background the fit held at 2e-6 was dropped and rebuilt at 0."""
+    from aure.nodes.model_builder import build_states_problem
+    from aure.refl1d_import import import_refl1d
+
+    defn = _single_state_definition(one_file)
+    defn["states"] = [
+        {
+            "name": "state0",
+            "data_files": [{"file": one_file}],
+            "background": {"init": 2e-6, "fixed": True},
+        }
+    ]
+    src = _save_problem_to(tmp_path, defn)
+    out = tmp_path / "imported"
+    import_refl1d(str(src), str(out))
+    final = json.loads((out / "final_state.json").read_text())["state"]
+    model = final["current_model"]
+
+    assert model["states"][0]["background"] == {"init": 2e-6, "fixed": True}
+    rebuilt, by_state, _ = build_states_problem(model)
+    background = by_state["state0"][0].probe.background
+    assert background.fixed
+    assert background.value == pytest.approx(2e-6)
+    assert float(rebuilt.chisq()) == pytest.approx(final["current_chi2"], rel=1e-6)
+
+
+def test_a_background_held_at_zero_records_nothing(tmp_path, one_file):
+    """0 is the probe's own default, so there is nothing to carry."""
+    from aure.refl1d_import import import_refl1d
+
+    src = _save_problem_to(tmp_path, _single_state_definition(one_file))
+    out = tmp_path / "imported"
+    import_refl1d(str(src), str(out))
+    model = json.loads((out / "final_state.json").read_text())["state"]["current_model"]
+    assert "background" not in model["states"][0]
+
+
+def test_setup_mode_recovers_a_held_theta_offset(tmp_path):
+    """Setup mode: a theta_offset the fit held at 0.004 beats the setup's
+    `theta_offset: true`, which would otherwise refit it from 0."""
+    import yaml
+    from bumps.serialize import save_file
+
+    from aure.nodes.model_builder import build_states_problem
+    from aure.refl1d_import import import_refl1d
+
+    files = [
+        _make_partial_data_file(tmp_path, i + 1, theta_deg=0.5 * (i + 1))
+        for i in range(2)
+    ]
+    defn = _single_state_definition(files[0])
+    defn["states"] = [
+        {
+            "name": "run_A",
+            "data_files": [
+                {"file": f, "theta": 0.5 * (i + 1)} for i, f in enumerate(files)
+            ],
+            "theta_offset": {"init": 0.004, "fixed": True},
+        }
+    ]
+    problem, _, _ = build_states_problem(defn)
+    expected_chi2 = float(problem.chisq())
+
+    fit_dir = tmp_path / "refl1d_output" / "fit_iter0_lm"
+    fit_dir.mkdir(parents=True)
+    save_file(str(fit_dir / "problem.json"), problem)
+    setup_path = tmp_path / "plan.yaml"
+    setup_path.write_text(
+        yaml.safe_dump(
+            {
+                "sample_description": "x",
+                "states": [
+                    {
+                        "name": "run_A",
+                        "theta_offset": True,
+                        "data_files": [{"file": f} for f in files],
+                    }
+                ],
+            }
+        )
+    )
+
+    out = tmp_path / "imported"
+    import_refl1d(str(fit_dir), str(out), setup_path=str(setup_path))
+    model = json.loads((out / "final_state.json").read_text())["state"]["current_model"]
+
+    assert model["states"][0]["theta_offset"] == {"init": 0.004, "fixed": True}
+    rebuilt, by_state, _ = build_states_problem(model)
+    offset = by_state["run_A"][0].probe.theta_offset
+    assert offset.fixed
+    assert offset.value == pytest.approx(0.004)
+    assert float(rebuilt.chisq()) == pytest.approx(expected_chi2, rel=1e-6)

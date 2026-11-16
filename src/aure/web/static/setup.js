@@ -959,10 +959,6 @@ let stateOverrides = {};  // { [stateName]: { ambient,
                           //                  back_reflection: bool,
                           //                  extra_description: str } }
 
-// Nuisance keys whose `fixed: true` the builder honours (held at `init`
-// rather than fitted). Mirrors `_FIXABLE_NUISANCE` in routes.py.
-const FIXABLE_TRIPLETS = ["intensity", "background"];
-
 function _overridesFromPrefill(st) {
   // Turn one state of a server prefill payload (`_minimal_state_prefill`)
   // into a stateOverrides entry. The single reader for both the previous-run
@@ -976,7 +972,7 @@ function _overridesFromPrefill(st) {
       ["init", "min", "max"].forEach(function (sub) {
         if (typeof st[k][sub] === "number") t[sub] = st[k][sub];
       });
-      if (FIXABLE_TRIPLETS.indexOf(k) >= 0 && st[k].fixed === true) t.fixed = true;
+      if (st[k].fixed === true) t.fixed = true;
       if (Object.keys(t).length) ov[k] = t;
     },
   );
@@ -1064,8 +1060,7 @@ function _fitFilesForState(name) {
 
 function _triplet(name, key, ov) {
   // Render an {init, min, max} triplet of numeric inputs, plus a "fixed"
-  // switch for the keys the builder can hold constant (FIXABLE_TRIPLETS).
-  // Fixed holds the parameter at `init`; min/max are kept but unused.
+  // switch. Fixed holds the parameter at `init`; min/max are kept but unused.
   const wrap = document.createElement("div");
   wrap.className = "row g-2 mb-2 align-items-end";
   const rangeInputs = [];
@@ -1098,32 +1093,30 @@ function _triplet(name, key, ov) {
     wrap.appendChild(col);
     if (sub !== "init") rangeInputs.push(inp);
   });
-  if (FIXABLE_TRIPLETS.indexOf(key) >= 0) {
-    const safeId = (name + "-" + key).replace(/[^\w-]/g, "_");
-    const col = document.createElement("div");
-    col.className = "col-auto form-check form-switch ms-2 mb-1";
-    col.innerHTML =
-      '<input class="form-check-input" type="checkbox" id="ov-fixed-' + safeId + '">' +
-      '<label class="form-check-label small" for="ov-fixed-' + safeId + '">' +
-      "fixed</label>";
-    const box = col.querySelector("input");
-    box.checked = !!(ov[key] && ov[key].fixed === true);
-    const syncDisabled = function () {
-      rangeInputs.forEach(function (inp) { inp.disabled = box.checked; });
-    };
+  const safeId = (name + "-" + key).replace(/[^\w-]/g, "_");
+  const col = document.createElement("div");
+  col.className = "col-auto form-check form-switch ms-2 mb-1";
+  col.innerHTML =
+    '<input class="form-check-input" type="checkbox" id="ov-fixed-' + safeId + '">' +
+    '<label class="form-check-label small" for="ov-fixed-' + safeId + '">' +
+    "fixed</label>";
+  const box = col.querySelector("input");
+  box.checked = !!(ov[key] && ov[key].fixed === true);
+  const syncDisabled = function () {
+    rangeInputs.forEach(function (inp) { inp.disabled = box.checked; });
+  };
+  syncDisabled();
+  box.addEventListener("change", function () {
+    const o = _ensureOverride(name);
+    const cur = o[key] || {};
+    if (box.checked) cur.fixed = true;
+    else delete cur.fixed;
+    if (Object.keys(cur).length) { o[key] = cur; }
+    else { delete o[key]; }
     syncDisabled();
-    box.addEventListener("change", function () {
-      const o = _ensureOverride(name);
-      const cur = o[key] || {};
-      if (box.checked) cur.fixed = true;
-      else delete cur.fixed;
-      if (Object.keys(cur).length) { o[key] = cur; }
-      else { delete o[key]; }
-      syncDisabled();
-      _saveFormValues();
-    });
-    wrap.appendChild(col);
-  }
+    _saveFormValues();
+  });
+  wrap.appendChild(col);
   return wrap;
 }
 

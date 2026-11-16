@@ -161,6 +161,29 @@ def _configure_background(probe, spec) -> bool:
     return True
 
 
+# Fallbacks when a theta_offset / sample_broadening block omits a value.
+_ANGLE_NUISANCE_DEFAULTS = {
+    "theta_offset": {"init": 0.0, "min": -0.02, "max": 0.02},
+    "sample_broadening": {"init": 0.0, "min": 0.0, "max": 0.5},
+}
+
+
+def _configure_angle_nuisance(probe, attr: str, spec: dict) -> None:
+    """Set ``probe.<attr>`` (``theta_offset`` / ``sample_broadening``).
+
+    The same contract as :func:`_configure_background`: the value is always
+    applied, and ``fixed: true`` withholds the range. These two used to range
+    unconditionally, so a parameter declared fixed was fitted anyway. The
+    caller gates on :func:`_nuisance_enabled` and on the probe having *attr*
+    (only the angle-based ``NeutronProbe`` does).
+    """
+    defaults = _ANGLE_NUISANCE_DEFAULTS[attr]
+    par = getattr(probe, attr)
+    par.value = spec.get("init", spec.get("value", defaults["init"]))
+    if not spec.get("fixed", False):
+        par.range(spec.get("min", defaults["min"]), spec.get("max", defaults["max"]))
+
+
 def _configure_intensity(probe, spec) -> None:
     """Set ``probe.intensity`` from an intensity block.
 
@@ -918,17 +941,13 @@ def build_multi_problem(definition: dict, data_files: list[dict]):
         # across probes so the fit uses a single shared parameter.
         if _nuisance_enabled(broadening) and hasattr(probe, "sample_broadening"):
             if shared_broadening is None:
-                probe.sample_broadening.range(
-                    broadening.get("min", 0.0), broadening.get("max", 0.5)
-                )
+                _configure_angle_nuisance(probe, "sample_broadening", broadening)
                 shared_broadening = probe.sample_broadening
             else:
                 probe.sample_broadening = shared_broadening
         if _nuisance_enabled(offset) and hasattr(probe, "theta_offset"):
             if shared_offset is None:
-                probe.theta_offset.range(
-                    offset.get("min", -0.02), offset.get("max", 0.02)
-                )
+                _configure_angle_nuisance(probe, "theta_offset", offset)
                 shared_offset = probe.theta_offset
             else:
                 probe.theta_offset = shared_offset
@@ -1368,21 +1387,13 @@ def build_states_problem(definition: dict):
 
             if _nuisance_enabled(broadening) and hasattr(probe, "sample_broadening"):
                 if shared_broadening is None:
-                    init = broadening.get("init", broadening.get("value", 0.0))
-                    probe.sample_broadening.value = init
-                    probe.sample_broadening.range(
-                        broadening.get("min", 0.0), broadening.get("max", 0.5)
-                    )
+                    _configure_angle_nuisance(probe, "sample_broadening", broadening)
                     shared_broadening = probe.sample_broadening
                 else:
                     probe.sample_broadening = shared_broadening
             if _nuisance_enabled(offset) and hasattr(probe, "theta_offset"):
                 if shared_offset is None:
-                    init = offset.get("init", offset.get("value", 0.0))
-                    probe.theta_offset.value = init
-                    probe.theta_offset.range(
-                        offset.get("min", -0.02), offset.get("max", 0.02)
-                    )
+                    _configure_angle_nuisance(probe, "theta_offset", offset)
                     shared_offset = probe.theta_offset
                 else:
                     probe.theta_offset = shared_offset

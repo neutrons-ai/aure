@@ -317,8 +317,10 @@ state:
 Each accepts either `true` (use the default range) or an explicit
 `{init, min, max}` mapping; `false` leaves the parameter fixed and unfitted.
 Anything else — a bare number, a string — is refused when the setup loads.
-`background` also accepts `fixed: true` to set a constant value without
-fitting it. The defaults behind `true`:
+A mapping may also carry `fixed: true` to hold the parameter at `init`
+without fitting it (`min` / `max` are then ignored) — e.g.
+`theta_offset: {init: 0.004, fixed: true}` for an offset measured elsewhere.
+The defaults behind `true`:
 
 | Key | `init` | `min` | `max` |
 |---|---|---|---|

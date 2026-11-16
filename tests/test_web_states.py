@@ -1014,10 +1014,10 @@ def test_the_setup_form_keeps_a_held_nuisance_parameter_held(tmp_path: Path) -> 
 
 
 def test_prefill_shows_a_held_parameter_at_its_value() -> None:
-    """An imported or finalized state records a held intensity as `value`; the
-    builder reads `value` before `init`, so that is the constant to show. A
-    fitted one keeps its `init` (the starting point), not the fitted `value`,
-    and `fixed` is not carried on keys the builder cannot hold."""
+    """The init box shows the constant the builder will hold. Intensity reads
+    `value` first (an imported or finalized state records a held intensity
+    there); the other three read `init` first. A fitted parameter keeps its
+    `init` (the starting point), not a fitted `value`."""
     from aure.web.routes import _minimal_state_prefill
 
     (slim,) = _minimal_state_prefill(
@@ -1027,10 +1027,12 @@ def test_prefill_shows_a_held_parameter_at_its_value() -> None:
                 "data_files": [{"file": "/x.txt", "label": "x"}],
                 "intensity": {"value": 0.9, "min": 0.7, "max": 1.1, "fixed": True},
                 "background": {"init": 1e-6, "min": 0, "max": 1e-5, "value": 3e-6},
-                "theta_offset": {"init": 0.0, "min": -0.01, "max": 0.01, "fixed": True},
+                "theta_offset": {"init": 0.004, "value": 0.009, "fixed": True},
+                "sample_broadening": {"value": 0.01, "fixed": True},
             }
         ]
     )
     assert slim["intensity"] == {"init": 0.9, "min": 0.7, "max": 1.1, "fixed": True}
     assert slim["background"] == {"init": 1e-6, "min": 0, "max": 1e-5}
-    assert slim["theta_offset"] == {"init": 0.0, "min": -0.01, "max": 0.01}
+    assert slim["theta_offset"] == {"init": 0.004, "fixed": True}
+    assert slim["sample_broadening"] == {"init": 0.01, "fixed": True}

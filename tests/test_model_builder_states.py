@@ -428,3 +428,52 @@ def test_model_level_fixed_intensity_value_applies_on_every_builder(two_files):
     )
     assert [e.probe.intensity.value for e in experiments] == pytest.approx([0.95] * 2)
     assert all(e.probe.intensity.fixed for e in experiments)
+
+
+@pytest.mark.parametrize("attr", ["theta_offset", "sample_broadening"])
+def test_a_held_angle_nuisance_is_not_fitted(two_files, attr):
+    """`fixed: true` on theta_offset / sample_broadening used to be ranged
+    anyway, so a parameter declared held was fitted. Both builder paths."""
+    from aure.nodes.model_builder import build_multi_problem, build_states_problem
+
+    spec = {"init": 0.004, "min": 0.0, "max": 0.02, "fixed": True}
+    files = [
+        {"file": f, "label": f"f{i}", "theta": 0.6} for i, f in enumerate(two_files)
+    ]
+
+    defn = _two_state_definition(two_files)
+    defn["states"] = [{"name": "A", "data_files": files, attr: spec}]
+    _, by_state, _ = build_states_problem(defn)
+    pars = [getattr(e.probe, attr) for e in by_state["A"]]
+
+    defn = _two_state_definition(two_files)
+    defn.pop("states")
+    defn[attr] = spec
+    _, experiments, _ = build_multi_problem(defn, files)
+    pars_multi = [getattr(e.probe, attr) for e in experiments]
+
+    for group in (pars, pars_multi):
+        assert group[0] is group[1]  # still one parameter shared across files
+        assert group[0].fixed
+        assert group[0].value == pytest.approx(0.004)
+
+
+def test_a_fitted_angle_nuisance_starts_from_init_on_both_paths(two_files):
+    from aure.nodes.model_builder import build_multi_problem, build_states_problem
+
+    spec = {"init": 0.004, "min": -0.01, "max": 0.01}
+    files = [{"file": two_files[0], "label": "f0", "theta": 0.6}]
+
+    defn = _two_state_definition(two_files)
+    defn["states"] = [{"name": "A", "data_files": files, "theta_offset": spec}]
+    _, by_state, _ = build_states_problem(defn)
+
+    defn = _two_state_definition(two_files)
+    defn.pop("states")
+    defn["theta_offset"] = spec
+    _, experiments, _ = build_multi_problem(defn, files)
+
+    for par in (by_state["A"][0].probe.theta_offset, experiments[0].probe.theta_offset):
+        assert not par.fixed
+        assert par.value == pytest.approx(0.004)
+        assert tuple(par.bounds) == (-0.01, 0.01)
