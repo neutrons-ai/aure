@@ -267,13 +267,19 @@ what makes "the copper oxide thickness may differ … everything else is the sam
 sample" a working declaration. Declaring either key turns that extraction off —
 the config wins.
 
-**The names you will read back.** A tied parameter keeps refl1d's plain
-`"<layer> <attr>"` spelling and appears once in the fit; an untied one is
-prefixed with its state, `"<state> <layer> <attr>"`. So `Cu thickness` in a
-report means tied, `H2O CuOx thickness` means that state's own. The same goes
-for what is never tied: `H2O intensity` (or `H2O <label> intensity` when the
-state has several files, which is where the `label:` on each data file shows
-up), `H2O background`, `H2O theta_offset`.
+**The names you will read back.** A parameter that one object serves in two
+or more states keeps refl1d's plain `"<layer> <attr>"` spelling and appears
+once in the fit; one that belongs to a single state is prefixed with it,
+`"<state> <layer> <attr>"`. So `Cu thickness` in a report always means shared,
+and `H2O CuOx thickness` means that state's own — because it was untied, or
+because H2O is the only state that has the layer. This holds for a layer that
+exists only in states' own `layers:` as much as for one in the shared stack,
+and a tie applies among every state that has the layer, whichever state comes
+first. No two parameters ever share a name: a model that would produce that
+(two layers of one stack with the same name, typically) is refused when it is
+built. The same goes for what is never tied: `H2O intensity` (or
+`H2O <label> intensity` when the state has several files, which is where the
+`label:` on each data file shows up), `H2O background`, `H2O theta_offset`.
 
 A run with **one** state prefixes nothing — there is no second state for the
 name to tell it apart from. Its parameters read `Cu thickness`, `THF rho`,

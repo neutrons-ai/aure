@@ -1093,3 +1093,51 @@ def test_per_state_structure_extracted_from_description(monkeypatch):
     h2o_names = [layer["name"] for layer in by_name["H2O"]["layers"]]
     assert "Cu oxide" not in h2o_names and "Cu" in h2o_names
     assert not by_name["D2O"].get("layers")  # inherits template (oxide present)
+
+
+# ----------------------------------------------------------------------
+# Repeated layer names
+# ----------------------------------------------------------------------
+
+
+def test_a_refined_model_with_a_repeated_layer_name_is_rejected():
+    """Parameters are named after their layer, so the builder refuses a stack
+    with a repeated name. Rejected at the parse, a refinement falls back to
+    the previous model; left to the builder, the fit fails."""
+    from aure.nodes.modeling import _validate_model_json
+
+    model = {
+        "substrate": {"name": "Si", "sld": 2.07},
+        "ambient": {"name": "air", "sld": 0.0},
+        "layers": [{"name": "Cu"}, {"name": "Ti"}],
+    }
+    assert _validate_model_json(model)
+    assert not _validate_model_json(
+        dict(model, layers=[{"name": "Cu"}, {"name": "Cu"}])
+    )
+    own = {"name": "A", "layers": [{"name": "oxide"}, {"name": "oxide"}]}
+    assert not _validate_model_json(dict(model, states=[own]))
+
+
+def test_a_description_naming_a_material_twice_gets_distinct_layer_names():
+    """A Ti adhesion layer and a Ti cap is a legitimate sample. There is no
+    previous model to fall back to on the first build, so the names are made
+    unique and the transcript says so."""
+    from aure.nodes.modeling import _build_initial_model
+
+    state = _make_state([])
+    ti = {"name": "Ti", "sld": -1.9, "thickness": 30.0, "roughness": 3.0}
+    state["parsed_sample"]["layers"] = [
+        dict(ti),
+        state["parsed_sample"]["layers"][0],
+        dict(ti),
+    ]
+    out = _build_initial_model(state)
+
+    assert "error" not in out, out.get("error")
+    assert [layer["name"] for layer in out["current_model"]["layers"]] == [
+        "Ti",
+        "Cu",
+        "Ti (2)",
+    ]
+    assert any("Ti → Ti (2)" in m["content"] for m in out["messages"])

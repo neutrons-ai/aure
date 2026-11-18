@@ -17,7 +17,7 @@ Key functions:
 
 import logging
 import os
-from typing import Dict
+from typing import Any, Dict
 
 logger = logging.getLogger(__name__)
 
@@ -1292,29 +1292,19 @@ def _tie_across_states(
     * if two tied states hold it at **different** values, they are not one
       quantity and the declaration contradicts itself: refused, naming both.
 
-    Otherwise the first state's parameter is shared, as before. A layer absent
-    from the first state is not tied (and one absent from a later state is
-    simply skipped there) — per-state structure, not an error.
+    Otherwise the parameter of the first state that has the layer is shared.
+    The tie holds among **every** state that has the layer, wherever they come
+    in the list: it used to be anchored on the first state, so a layer absent
+    from it — an oxide that forms later, say — was fitted independently in
+    each state that did have it. A state without the layer is simply not a
+    member (per-state structure, not an error), and a layer only one state has
+    has nothing to be tied to.
     """
     import math
 
-    ref_def, ref_sample = effective_defs[0], samples[0]
-    ref_back = ref_def.get("back_reflection", False)
-
     for layer_name, attr_path in tied_set:
-        ref_idx = _layer_index(ref_def, layer_name, back_reflection=ref_back)
-        if ref_idx is None:
-            logger.debug(
-                "[STATES] tie %s.%s not applied — layer absent from state %r",
-                layer_name,
-                attr_path,
-                states[0].get("name"),
-            )
-            continue
-
-        members = [(0, ref_sample[ref_idx])]
-        for i in range(1, len(states)):
-            eff = effective_defs[i]
+        members = []
+        for i, eff in enumerate(effective_defs):
             idx = _layer_index(
                 eff, layer_name, back_reflection=eff.get("back_reflection", False)
             )
@@ -1327,6 +1317,8 @@ def _tie_across_states(
                 )
                 continue
             members.append((i, samples[i][idx]))
+        if len(members) < 2:
+            continue
 
         params = [(i, _get_layer_param(slab, attr_path)) for i, slab in members]
         held = [(i, par) for i, par in params if _is_held(par)]
@@ -1354,6 +1346,41 @@ def _tie_across_states(
 
         for _i, slab in members:
             _set_layer_param(slab, attr_path, shared)
+
+    _relink_roughness_ties(samples)
+
+
+def _relink_roughness_ties(samples: list) -> None:
+    """Point every ``roughness_tie`` expression at its slab's current thickness.
+
+    ``_build_sample`` builds σ = fraction × thickness from the slab's own
+    thickness parameter. When the tie pass then replaces that thickness with
+    the object shared across states, the expression keeps the old one: the
+    roughness follows a detached thickness that is still ranged, so it stays
+    in the fit as a free parameter nothing else uses — under the same name as
+    the shared one. Rebuilding the expression from the slab as it now stands
+    removes it. Slabs that shared one expression (a tied interface) share the
+    rebuilt one.
+    """
+    rebuilt: dict[int, Any] = {}
+    for sample in samples:
+        for slab in sample:
+            expr = getattr(slab, "interface", None)
+            if expr is None or hasattr(expr, "range"):
+                continue  # a plain parameter, not a tie
+            if id(expr) not in rebuilt:
+                fraction = next(
+                    (
+                        arg
+                        for arg in getattr(expr, "args", ())
+                        if str(getattr(arg, "name", "")).endswith(" rough_frac")
+                    ),
+                    None,
+                )
+                rebuilt[id(expr)] = (
+                    fraction * slab.thickness if fraction is not None else expr
+                )
+            slab.interface = rebuilt[id(expr)]
 
 
 def check_state_ties(definition: dict) -> None:
@@ -1553,52 +1580,68 @@ def build_states_problem(definition: dict):
         all_experiments.extend(state_experiments)
 
     # ------------------------------------------------------------------
-    # Rename untied parameters with a state prefix so every name in the
-    # FitProblem is unique. Tied parameters keep their refl1d-default
-    # "<layer> <attr>" spelling because the same Parameter object is
-    # shared across states. With a single state nothing can collide, so no
-    # name takes a prefix and the problem reads like a flat single-sample one.
+    # Name the structural parameters. One rule, read off the objects the tie
+    # pass left behind rather than off the tie *spec*: a parameter that serves
+    # two or more states keeps refl1d's "<layer> <attr>", and one that serves
+    # a single state is "<state> <layer> <attr>". So an unprefixed name always
+    # means shared, and no two parameters can share a name.
+    #
+    # The targets are each state's OWN effective stack. They used to be the
+    # model-level template, so a layer living only in states' own `layers`
+    # was never renamed: untied copies collided by name, and finalize could
+    # not find their fitted values under either spelling.
+    #
+    # With a single state nothing can collide, so no name takes a prefix and
+    # the problem reads like a flat single-sample one.
     # ------------------------------------------------------------------
-    tied_lookup = set(tied_set)
-    layers = definition.get("layers", []) or []
-    sub_name = (definition.get("substrate") or {}).get("name", "substrate")
-
-    for state_idx, state in enumerate(states):
-        eff = effective_defs[state_idx]
-        sample = samples[state_idx]
-        st_name = state.get("name", f"state{state_idx}")
+    structural: list[list[tuple[str, str, Any]]] = []
+    serves: dict[int, set[int]] = {}
+    for state_idx, eff in enumerate(effective_defs):
         back = eff.get("back_reflection", False)
-
-        # Layer & substrate & ambient attributes.
         targets: list[tuple[str, str]] = []
-        for layer in layers:
+        for layer in eff.get("layers") or []:
             for attr in _DEFAULT_TIED_LAYER_ATTRS:
                 targets.append((layer["name"], attr))
+        state_sub = (eff.get("substrate") or {}).get("name", "substrate")
         for attr in _DEFAULT_TIED_SUBSTRATE_ATTRS:
-            targets.append((sub_name, attr))
-        # Ambient SLD and its interface: always untied by default, so both need
-        # a state prefix. The interface is easy to forget because it is a fitted
-        # parameter only in BACK REFLECTION — there the ambient is sample[0] and
-        # carries the outer interface — but when it is one, leaving it unnamed
-        # gives every state a parameter called "<ambient> interface". Same name,
-        # different objects: they collide in the fitted-parameter dict and in
-        # every other place keyed by name.
+            targets.append((state_sub, attr))
+        # Ambient SLD and its interface. The interface is easy to forget
+        # because it is a fitted parameter only in BACK REFLECTION — there the
+        # ambient is sample[0] and carries the outer interface.
         amb_name = (eff.get("ambient") or {}).get("name")
         if amb_name:
             targets.append((amb_name, "material.rho"))
             targets.append((amb_name, "interface"))
 
+        found = []
         for layer_name, attr_path in targets:
-            if single_state or (layer_name, attr_path) in tied_lookup:
-                continue  # one state, or shared with state 0 — keep default name
             idx = _layer_index(eff, layer_name, back_reflection=back)
             if idx is None:
                 continue
             try:
-                param = _get_layer_param(sample[idx], attr_path)
+                param = _get_layer_param(samples[state_idx][idx], attr_path)
             except AttributeError:
                 continue
-            param.name = parameter_key(st_name, layer_name, attr_path, tied=False)
+            found.append((layer_name, attr_path, param))
+            serves.setdefault(id(param), set()).add(state_idx)
+        structural.append(found)
+
+    for state_idx, state in enumerate(states):
+        eff = effective_defs[state_idx]
+        st_name = state.get("name", f"state{state_idx}")
+
+        for layer_name, attr_path, param in structural[state_idx]:
+            if single_state or len(serves[id(param)]) > 1:
+                continue  # one state, or one object shared — keep default name
+            if hasattr(param, "range"):
+                param.name = parameter_key(st_name, layer_name, attr_path, tied=False)
+            else:
+                # A `roughness_tie` interface is an expression, which has no
+                # name to set (trying used to end the build). Its free
+                # parameter is the fraction; that is what gets the prefix.
+                for part in param.parameters():
+                    if str(part.name) == f"{layer_name} rough_frac":
+                        part.name = f"{st_name} {layer_name} rough_frac"
 
         # Per-probe intensity & per-state nuisance parameters.
         state_files = sorted_files_by_state[st_name]
@@ -1636,6 +1679,22 @@ def build_states_problem(definition: dict):
                 )
 
     problem = FitProblem(all_experiments)
+
+    # Two fitted parameters under one name is never intended, and everything
+    # keyed by name — the fitted-parameter dict, apply_parameters, the
+    # write-back into the model — then sees one of them and cannot tell which.
+    # Refuse here, so the next way of producing a collision is an error and
+    # not a wrong number.
+    from collections import Counter
+
+    counts = Counter(str(par.name) for par in problem._parameters)
+    duplicated = sorted(name for name, n in counts.items() if n > 1)
+    if duplicated:
+        raise ValueError(
+            f"{len(duplicated)} fitted parameter name(s) each belong to more "
+            f"than one parameter: {duplicated}. Two layers of one stack with "
+            f"the same name is the usual cause — give each a distinct name."
+        )
     return problem, experiments_by_state, sorted_files_by_state
 
 

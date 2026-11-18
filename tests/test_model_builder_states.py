@@ -390,6 +390,145 @@ def test_per_state_structure_oxide_absent_in_one_state(two_files):
     assert s1[-1].material.rho is not s0[-1].material.rho
 
 
+# ----------------------------------------------------------------------
+# Per-state structure: ties and names follow the states' own stacks
+# ----------------------------------------------------------------------
+
+_OXIDE_ATTRS = ("thickness", "rho", "interface")
+
+
+def _three_state_definition(files: list[str]) -> dict:
+    """D2O, H2O and S2 on the template [Cu, Ti]."""
+    defn = _two_state_definition(files[:2])
+    defn["states"].append(
+        {
+            "name": "S2",
+            "data_files": [{"file": files[1], "label": "S2-comb"}],
+            "ambient": {"name": "S2amb", "sld": 3.0, "sld_min": 2.0, "sld_max": 4.0},
+        }
+    )
+    return defn
+
+
+def _with_oxide(defn: dict, *state_indices: int) -> dict:
+    """Give those states their own stack: the template plus an oxide the
+    template does not have."""
+    import copy
+
+    for i in state_indices:
+        defn["states"][i]["layers"] = [
+            copy.deepcopy(_OXIDE),
+            *copy.deepcopy(defn["layers"]),
+        ]
+    return defn
+
+
+def _oxide(by_state, name):
+    return next(
+        (s for s in by_state[name][0].sample if s.material.name == "Cu oxide"), None
+    )
+
+
+def _names(problem) -> list[str]:
+    return [str(par.name) for par in problem._parameters]
+
+
+def test_a_layer_absent_from_the_first_state_is_still_tied(two_files):
+    """Ties were anchored on state 0, so an oxide the first state lacks was
+    fitted independently in each state that had it — and both copies kept the
+    same unprefixed name."""
+    from aure.nodes.model_builder import build_states_problem
+
+    defn = _with_oxide(_three_state_definition(two_files), 1, 2)
+    problem, by_state, _ = build_states_problem(defn)
+
+    assert _oxide(by_state, "D2O") is None
+    h2o, s2 = _oxide(by_state, "H2O"), _oxide(by_state, "S2")
+    assert h2o.thickness is s2.thickness
+    assert h2o.material.rho is s2.material.rho
+    assert h2o.interface is s2.interface
+    names = _names(problem)
+    assert len(names) == len(set(names))
+    # One object, two states: the shared spelling, once.
+    assert sorted(n for n in names if "oxide" in n) == sorted(
+        f"Cu oxide {attr}" for attr in _OXIDE_ATTRS
+    )
+
+
+def test_an_untied_state_only_layer_is_named_per_state(two_files):
+    """The renaming pass took its targets from the template, so a layer that
+    lives only in states' own stacks was never renamed: two parameters, one
+    name, and whatever is keyed by name saw only one of them."""
+    from aure.nodes.model_builder import build_states_problem
+
+    defn = _with_oxide(_three_state_definition(two_files), 0, 1)
+    defn["unshared_parameters"] = [
+        "Cu oxide.thickness",
+        "Cu oxide.material.rho",
+        "Cu oxide.interface",
+    ]
+    problem, by_state, _ = build_states_problem(defn)
+
+    assert _oxide(by_state, "D2O").thickness is not _oxide(by_state, "H2O").thickness
+    names = _names(problem)
+    assert len(names) == len(set(names))
+    assert sorted(n for n in names if "oxide" in n) == sorted(
+        f"{state} Cu oxide {attr}" for state in ("D2O", "H2O") for attr in _OXIDE_ATTRS
+    )
+
+
+def test_an_unprefixed_name_means_one_parameter_for_several_states(two_files):
+    """A layer only one state has is that state's own, so it is prefixed too:
+    an unprefixed name then always says "shared"."""
+    from aure.nodes.model_builder import build_states_problem
+
+    defn = _two_state_definition(two_files)
+    defn["layers"] = [_OXIDE, *defn["layers"]]  # template has the oxide
+    defn["states"][1]["layers"] = list(defn["layers"][1:])  # H2O omits it
+    problem, _, _ = build_states_problem(defn)
+
+    names = _names(problem)
+    assert sorted(n for n in names if "oxide" in n) == sorted(
+        f"D2O Cu oxide {attr}" for attr in _OXIDE_ATTRS
+    )
+    # Cu and Ti are in both states, tied, and keep the shared spelling.
+    assert {"Cu thickness", "Ti thickness"} <= set(names)
+
+
+@pytest.mark.parametrize("tied", [True, False])
+def test_a_roughness_tie_layer_builds_tied_or_untied(two_files, tied):
+    """Its interface is an expression, which has no name to set. Untied, the
+    renaming pass tried anyway and the build ended with an AttributeError; the
+    free parameter is the fraction, and that is what takes the state prefix."""
+    from aure.nodes.model_builder import build_states_problem
+
+    defn = _two_state_definition(two_files)
+    defn["layers"][0]["roughness_tie"] = {"fraction_max": 0.5}
+    if not tied:
+        defn["unshared_parameters"] = ["Cu.interface"]
+    problem, _, _ = build_states_problem(defn)
+
+    fractions = sorted(n for n in _names(problem) if "rough_frac" in n)
+    expected = ["Cu rough_frac"] if tied else ["D2O Cu rough_frac", "H2O Cu rough_frac"]
+    assert fractions == expected
+    assert len(_names(problem)) == len(set(_names(problem)))
+
+
+def test_two_parameters_under_one_name_are_refused(two_files):
+    """Whatever produces it next, a name collision is an error at build, not a
+    wrong number downstream. Two layers of one stack sharing a name is the
+    case nothing else catches."""
+    import copy
+
+    from aure.nodes.model_builder import build_states_problem
+
+    defn = _two_state_definition(two_files)
+    defn["layers"].insert(1, copy.deepcopy(defn["layers"][0]))  # Cu, Cu, Ti
+    with pytest.raises(ValueError, match="belong to more than one parameter") as err:
+        build_states_problem(defn)
+    assert "Cu thickness" in str(err.value)
+
+
 @pytest.mark.parametrize(
     "spec, value, fixed",
     [

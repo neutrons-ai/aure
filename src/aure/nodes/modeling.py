@@ -988,6 +988,21 @@ def _build_initial_model(state: ReflectivityState) -> Dict[str, Any]:
     substrate = _get_substrate(parsed, features)
     ambient = _get_ambient(parsed)
     layers = _build_layers(parsed, features)
+    renamed = _dedupe_layer_names(layers)
+    if renamed:
+        logger.info("[MODELING] Repeated layer names made unique: %s", renamed)
+        updates["messages"].append(
+            Message(
+                role="system",
+                content=(
+                    "The description names a layer more than once. Parameters "
+                    "are named after their layer, so each needs its own name: "
+                    + ", ".join(renamed)
+                    + "."
+                ),
+                timestamp=None,
+            )
+        )
 
     # A single state's declared structure is the model's structure, verbatim:
     # it replaces what was parsed from the description rather than passing
@@ -1795,7 +1810,43 @@ def _validate_model_json(obj: dict) -> bool:
             not isinstance(st["substrate"], dict) or "sld" not in st["substrate"]
         ):
             return False
+    # Two layers of one stack under one name give two parameters one name, and
+    # the builder refuses that. Reject it here, where the refinement can fall
+    # back to the previous model, rather than there, where the fit fails.
+    stacks = [obj["layers"]] + [
+        st["layers"] for st in obj.get("states") or [] if "layers" in st
+    ]
+    for stack in stacks:
+        names = [layer.get("name") for layer in stack if isinstance(layer, dict)]
+        if len(names) != len(set(names)):
+            return False
     return True
+
+
+def _dedupe_layer_names(layers: List[dict]) -> List[str]:
+    """Give repeated layer names a numeric suffix, in place.
+
+    A parsed description can legitimately name one material twice — a Ti
+    adhesion layer and a Ti cap. Parameters are named after their layer, so
+    the builder refuses a stack with a repeated name; the second ``Ti``
+    becomes ``Ti (2)``. Returns a description of each rename, for the
+    transcript.
+    """
+    seen: Dict[str, int] = {}
+    taken = {layer.get("name") for layer in layers}
+    renamed: List[str] = []
+    for layer in layers:
+        name = layer.get("name")
+        seen[name] = seen.get(name, 0) + 1
+        if seen[name] == 1:
+            continue
+        n = seen[name]
+        while f"{name} ({n})" in taken:
+            n += 1
+        layer["name"] = f"{name} ({n})"
+        taken.add(layer["name"])
+        renamed.append(f"{name} → {layer['name']}")
+    return renamed
 
 
 def _widen_all_bounds_json(model: dict) -> dict:

@@ -139,62 +139,30 @@ decide that first.
 
 ---
 
-## Tie a shared layer to the first state that *has* it, not always to state 0
+## The web "refit with my values" drops per-state parameter values
 
-**Where:** [`src/aure/nodes/model_builder.py`](src/aure/nodes/model_builder.py) —
-the cross-state aliasing loop in `build_states_problem`, which reads
-`ref_def = effective_defs[0]` / `ref_sample = samples[0]` unconditionally and
-`continue`s when `ref_idx is None`.
+**Where:** [`src/aure/web/routes.py`](src/aure/web/routes.py) —
+`_apply_overrides_to_model_definition`, which splits each name at its last
+space into `(material, attribute)` and looks the pair up in the model-level
+`layers` and `substrate` only.
 
-**What is wrong.** Aliasing is always to state 0. When a layer is absent from
-state 0 but present in two or more later states, `ref_idx` is `None`, the tie
-is skipped, and it is skipped for *every* state — so layers that should be
-tied to each other are fit independently. The docstring a few lines above
-(`_resolve_tied_set`, "A layer present in >=2 states is tied across them")
-asserts the opposite of what the code does.
+**What is wrong.** A value the Results-tab editor sends for a parameter a
+state owns — `"D2O oxide thickness"` — becomes the pair `("D2O oxide",
+"thickness")`, which matches no template layer, and no state's own `layers` is
+visited at all. Verified: with overrides `{"Cu thickness": 612, "D2O oxide
+thickness": 41}` on a model whose D2O state declares `[oxide, Cu]`, the
+template Cu becomes 612 while D2O's own oxide stays 30 and its own Cu copy
+stays 500. Bounds overrides go the same way.
 
-A second defect rides along. The renaming pass keys off the tie *set*, not off
-what was actually aliased, so both untied copies keep the tied spelling
-(`"<layer> <attr>"`, no state prefix) and collide by name. This is the same
-hazard `untied_by_derivation` was introduced to prevent for reparametrized
-slots; the layer-absent branch never records into it.
+**What it costs.** On a multi-state run, a restart from the Results tab with
+edited values silently starts every per-state parameter — and every layer in
+a state's own stack — from its old value.
 
-Reproduced with three states, an oxide absent from state 0 (which inherits the
-template) and present in S1 and S2:
-
-```
-oxide rho tied S1/S2: False
-n param objects: 13   n unique names: 10
-duplicates: [('Cu oxide interface', 2), ('Cu oxide rho', 2), ('Cu oxide thickness', 2)]
-```
-
-Three parameters are silently double-named. Anything keyed by parameter name —
-the fitted-parameter dict, `apply_parameters`, the Results-page editor, the
-per-state lookups in `evaluation` — sees one of the two objects and cannot
-tell which. Reachable whenever the refiner scopes a new layer to a subset of
-states that excludes the first one, which prompt rule 12 explicitly invites.
-
-**The change.** Two parts, both inside the aliasing loop:
-
-- Resolve the reference per `(layer_name, attr_path)` pair rather than once per
-  problem: the first state whose `_layer_index` is not `None` *and* whose slot
-  is not derived. States after it alias to that state; states before it (which
-  do not have the layer) are untouched, as now.
-- Record every pair that was not aliased for a state — layer-absent as well as
-  derived — into the set the renaming pass consults, so an untied copy gets its
-  `"<state> "` prefix. `untied_by_derivation` becomes `untied_in_fact` (or
-  similar) and the layer-absent `continue` writes into it.
-
-Note the cheaper-looking fix (keep state 0 as reference, just prefix the
-untied copies) fixes the collision and leaves the missing tie in place. The
-missing tie is the substantive half: it silently costs free parameters and BIC.
-
-**Verifying a fix.** The reproduction above: `oxide rho tied S1/S2` should be
-`True`, and the free-parameter count should equal the unique-name count for
-every multi-state build. Worth a test in
-[`tests/test_model_builder_states.py`](tests/test_model_builder_states.py)
-alongside `test_per_state_structure_oxide_absent_in_one_state`, which covers
-only the absent-from-a-*later*-state direction.
+**The change.** Resolve names the way `finalize._apply_fitted_values` does
+(the same rule the builder names them by): `"<state> <layer> <attr>"` goes to
+that state's stack, and an unprefixed name goes to the template and to every
+state's own copy of that layer. Better still, call that function rather than
+keep a second name parser here.
 
 ---
 

@@ -570,6 +570,108 @@ def test_single_state_accepts_names_stored_with_the_state_prefix():
     assert defn["states"][0]["intensity"]["value"] == pytest.approx(0.97)
 
 
+def _two_state_model(*, d2o_layers=None, h2o_layers=None):
+    """Template [Cu]; either state may declare its own stack."""
+    defn = _model()
+    defn["states"] = [
+        {"name": "D2O", **({"layers": d2o_layers} if d2o_layers else {})},
+        {"name": "H2O", **({"layers": h2o_layers} if h2o_layers else {})},
+    ]
+    return defn
+
+
+def _stack(*names):
+    return [{"name": n, "thickness": 30.0, "sld": 4.0, "roughness": 5.0} for n in names]
+
+
+def test_a_tied_state_only_layer_is_written_to_every_state_that_has_it():
+    """A layer in states' own stacks but not in the template, tied: one
+    parameter, unprefixed. finalize wrote a state's stack only from
+    "<state> ..." names and the template only from unprefixed ones, so this
+    matched neither and each state kept its starting value."""
+    defn = _two_state_model(
+        d2o_layers=_stack("oxide", "Cu"), h2o_layers=_stack("oxide", "Cu")
+    )
+
+    n_applied, unapplied = _apply_fitted_values(
+        defn, {"oxide thickness": 41.0, "oxide rho": 4.4, "oxide interface": 6.0}
+    )
+
+    assert (n_applied, unapplied) == (3, [])
+    for st in defn["states"]:
+        oxide = st["layers"][0]
+        assert (oxide["thickness"], oxide["sld"], oxide["roughness"]) == (
+            41.0,
+            4.4,
+            6.0,
+        )
+
+
+def test_an_untied_state_only_layer_is_written_per_state():
+    defn = _two_state_model(
+        d2o_layers=_stack("oxide", "Cu"), h2o_layers=_stack("oxide", "Cu")
+    )
+
+    n_applied, unapplied = _apply_fitted_values(
+        defn, {"D2O oxide thickness": 41.0, "H2O oxide thickness": 42.0}
+    )
+
+    assert (n_applied, unapplied) == (2, [])
+    assert defn["states"][0]["layers"][0]["thickness"] == 41.0
+    assert defn["states"][1]["layers"][0]["thickness"] == 42.0
+
+
+def test_a_tied_template_layer_is_written_to_a_states_own_copy_too():
+    """The shared value is that state's value. Written to the template alone,
+    a state with its own stack kept the starting value for every tied layer."""
+    defn = _two_state_model(h2o_layers=_stack("oxide", "Cu"))
+
+    _apply_fitted_values(defn, {"Cu thickness": 612.0, "H2O oxide thickness": 41.0})
+
+    assert defn["layers"][0]["thickness"] == 612.0
+    own = {layer["name"]: layer for layer in defn["states"][1]["layers"]}
+    assert own["Cu"]["thickness"] == 612.0
+    assert own["oxide"]["thickness"] == 41.0
+    # A prefixed name is never read as another state's.
+    assert "layers" not in defn["states"][0]
+
+
+def test_the_template_keeps_the_value_of_a_layer_only_one_state_has():
+    """Such a layer is fitted under its one state's name. The template still
+    lists it and is what a reader sees first, so it takes that value too —
+    there is only one."""
+    defn = _model(extra_layers=("oxide",))
+    defn["states"] = [{"name": "D2O"}, {"name": "H2O", "layers": _stack("Cu")}]
+
+    _apply_fitted_values(defn, {"D2O oxide thickness": 41.0})
+
+    template = {layer["name"]: layer for layer in defn["layers"]}
+    assert template["oxide"]["thickness"] == 41.0
+    d2o = {layer["name"]: layer for layer in defn["states"][0]["layers"]}
+    assert d2o["oxide"]["thickness"] == 41.0
+
+
+def test_the_template_is_left_alone_when_states_fit_a_layer_separately():
+    defn = _two_state_model()
+
+    _apply_fitted_values(defn, {"D2O Cu thickness": 110.0, "H2O Cu thickness": 130.0})
+
+    assert defn["layers"][0]["thickness"] == 100.0  # no single value to take
+    assert defn["states"][0]["layers"][0]["thickness"] == 110.0
+    assert defn["states"][1]["layers"][0]["thickness"] == 130.0
+
+
+def test_a_per_state_roughness_fraction_is_written_back():
+    defn = _two_state_model()
+
+    _apply_fitted_values(
+        defn, {"D2O Cu rough_frac": 0.2, "H2O Cu rough_frac": 0.4, "Cu thickness": 50.0}
+    )
+
+    assert defn["states"][0]["layers"][0]["roughness"] == pytest.approx(10.0)
+    assert defn["states"][1]["layers"][0]["roughness"] == pytest.approx(20.0)
+
+
 def test_apply_fitted_values_reports_unplaceable_names():
     defn = _model()
     n_applied, unapplied = _apply_fitted_values(

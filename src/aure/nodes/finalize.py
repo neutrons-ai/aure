@@ -161,28 +161,83 @@ def _get_tier_chi2_factor() -> float:
 # ======================================================================
 
 
+def _fitted_name(fitted: dict, prefix: str, tail: str, shared_too: bool) -> str:
+    """The fitted name for ``<prefix><tail>``, else the shared ``<tail>``.
+
+    A state's own block is fitted under ``"<state> <tail>"`` when the
+    parameter is that state's alone and under plain ``"<tail>"`` when one
+    parameter serves several states — which is still this state's value.
+    Returns ``""`` when neither was fitted.
+    """
+    if f"{prefix}{tail}" in fitted:
+        return f"{prefix}{tail}"
+    if shared_too and prefix and tail in fitted:
+        return tail
+    return ""
+
+
 def _apply_layers(
-    layers: Optional[List[dict]], fitted: dict, prefix: str, consumed: Set[str]
+    layers: Optional[List[dict]],
+    fitted: dict,
+    prefix: str,
+    consumed: Set[str],
+    *,
+    shared_too: bool = False,
 ) -> None:
+    """Write fitted layer values into *layers*, read under *prefix*.
+
+    ``shared_too`` is for a state's own stack: a value fitted under the
+    unprefixed name belongs to every state that has the layer, so it is
+    written to this state's copy as well. Without it a state's own stack kept
+    its starting values for every tied layer — and for a layer that exists
+    only in states' own stacks, there was nowhere else for the value to go.
+    """
     for layer in layers or []:
         name = layer.get("name")
         if not name:
             continue
         for suffix, key in _LAYER_SUFFIX_TO_KEY.items():
-            pname = f"{prefix}{name} {suffix}"
-            if pname in fitted:
+            pname = _fitted_name(fitted, prefix, f"{name} {suffix}", shared_too)
+            if pname:
                 layer[key] = fitted[pname]
                 consumed.add(pname)
         # Tied roughness: the free parameter is the fraction, so convert it
         # back to a numeric σ exactly as model_builder.extract_definition does.
         # Only when `interface` itself wasn't fitted (they are mutually
         # exclusive — build_sample installs one or the other).
-        frac_name = f"{prefix}{name} rough_frac"
-        if frac_name in fitted and f"{prefix}{name} interface" not in fitted:
+        frac_name = _fitted_name(fitted, prefix, f"{name} rough_frac", shared_too)
+        fitted_interface = _fitted_name(fitted, prefix, f"{name} interface", shared_too)
+        if frac_name and not fitted_interface:
             thickness = layer.get("thickness")
             if isinstance(thickness, (int, float)):
                 layer["roughness"] = fitted[frac_name] * thickness
                 consumed.add(frac_name)
+
+
+def _apply_sole_owner_layers(definition: dict, fitted: dict) -> None:
+    """Keep the template's value for a layer that only one state has.
+
+    Such a layer's parameters belong to that state alone, so they are fitted
+    under its name and written to its stack. The model-level template still
+    lists the layer, though, and it is what a reader of the model sees first;
+    with a single owner there is one value, so the template takes it too.
+    A layer several states fit separately has no single value to give it.
+    """
+    template = definition.get("layers") or []
+    states = [st for st in definition.get("states") or [] if isinstance(st, dict)]
+    for layer in template:
+        name = layer.get("name")
+        owners = [
+            st
+            for st in states
+            if any(
+                isinstance(own, dict) and own.get("name") == name
+                for own in (st["layers"] if st.get("layers") is not None else template)
+            )
+        ]
+        if not name or len(owners) != 1 or not owners[0].get("name"):
+            continue
+        _apply_layers([layer], fitted, f"{owners[0]['name']} ", set())
 
 
 def _apply_medium(
@@ -192,8 +247,12 @@ def _apply_medium(
     consumed: Set[str],
     *,
     accepts_interface: bool,
+    shared_too: bool = False,
 ) -> None:
     """Write a bounding medium's fitted SLD (and roughness, where it has a home).
+
+    ``shared_too``: as in :func:`_apply_layers` — a state's own block also
+    takes a value fitted under the shared, unprefixed name.
 
     ``accepts_interface`` encodes an asymmetry in ``_build_sample``: the field
     that seeds the outermost interface depends on the stack orientation. In
@@ -209,13 +268,13 @@ def _apply_medium(
     name = (medium or {}).get("name")
     if not name:
         return
-    rho_name = f"{prefix}{name} rho"
-    if rho_name in fitted:
+    rho_name = _fitted_name(fitted, prefix, f"{name} rho", shared_too)
+    if rho_name:
         medium["sld"] = fitted[rho_name]
         consumed.add(rho_name)
     if accepts_interface:
-        iface_name = f"{prefix}{name} interface"
-        if iface_name in fitted:
+        iface_name = _fitted_name(fitted, prefix, f"{name} interface", shared_too)
+        if iface_name:
             medium["roughness"] = fitted[iface_name]
             consumed.add(iface_name)
 
@@ -385,9 +444,10 @@ def _apply_fitted_values(definition: dict, fitted: dict) -> Tuple[int, List[str]
             continue
         prefix = f"{st_name} "
         # A state that inherits a model-level block has nowhere to put an
-        # untied fitted value, so materialize the block first. The builders key
-        # parameter names off the *model-level* structure, and the copy keeps
-        # the same names, so a subsequent re-fit builds an identical problem.
+        # untied fitted value, so materialize the block first. Ties are made
+        # by layer name across the states' effective stacks, and the copy
+        # keeps the same names, so a subsequent re-fit builds an identical
+        # problem.
         if not st.get("layers") and _has_state_prefixed_layer_params(
             definition.get("layers"), fitted, prefix
         ):
@@ -398,18 +458,22 @@ def _apply_fitted_values(definition: dict, fitted: dict) -> Tuple[int, List[str]
             st["substrate"] = copy.deepcopy(definition.get("substrate") or {})
         if not st.get("intensity") and _intensity_matches(fitted, prefix):
             st["intensity"] = copy.deepcopy(definition.get("intensity") or {})
-        _apply_layers(st.get("layers"), fitted, prefix, consumed)
+        _apply_layers(st.get("layers"), fitted, prefix, consumed, shared_too=True)
         _apply_medium(
             st.get("substrate"),
             fitted,
             prefix,
             consumed,
             accepts_interface=not st_back,
+            shared_too=True,
         )
         _apply_medium(
             st.get("ambient"), fitted, prefix, consumed, accepts_interface=False
         )
         _apply_intensity(st.get("intensity"), fitted, prefix, consumed)
+
+    if not single_state:
+        _apply_sole_owner_layers(definition, fitted)
 
     unconsumed = sorted(n for n in fitted if n not in consumed)
     return len(consumed), unconsumed
