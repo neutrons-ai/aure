@@ -837,6 +837,30 @@ combination.
 `back_reflection`, and what to report when the layer does not sit below it:
 CuO in a deuterated fluid makes no dip, so there is nothing to integrate.
 
+**A ready test case** (copper-oxide experiment, nr-workbench project at
+`/Volumes/Analysis Data/experiments/copper-oxide`, 2026-11-20). Two samples, each
+OCV and under potential, Cu₂O-like oxide on Cu in D₂O, beam through Si, with
+per-draw posteriors already on disk: the nested-sampling equal-weight samples
+`samples/sample1/reports/nested_evidence_final_H1_oxide_both_s{1,2}_samples.npz`
+(fit `20261119-172651Z-0e2369e5`) and
+`samples/sample3/reports/nested_evidence_sample3_rlim_coref_H1_s{1,2}_samples.npz`
+(fit `20261120-142217Z-d7895669`). Each npz holds `samples`, `labels` in the
+fit's own parameter order; the model is the fit's `results/<fit_id>/model.py`.
+Both satisfy the contrast precondition (oxide SLD 5.6–6.0 < D₂O 5.95 / 6.26 <
+Cu 6.53).
+
+It is also a clean demonstration of why the slab form misleads. From the fitted
+medians, the slab product against **copper** stays flat for sample1 (38.0 →
+37.1) and rises for sample3 (46.6 → 56.5), while against **D₂O** both fall by
+about 30 % (24.8 → 17.1; 16.5 → 11.7) — opposite readings of the same fits from
+the choice of neighbour. The analysis had reported the copper-referenced form as
+"the amount of oxide is unchanged" before the scientist withdrew it. Sample1's
+OCV oxide also fails the overlap criterion (σ 22 + 5 Å against t/2 = 25 Å), so
+its `Γ_slab` and `Γ_profile` should differ there; sample3's final fit caps the
+oxide roughness so the profile cannot overshoot the fluid, which gives a
+capped/uncapped pair (`1dbac4d3` vs `d7895669`) to check that `Γ_profile` is the
+stable one.
+
 ---
 
 ## Assess shortening `thin-layer-degeneracy` and `ridge-invariant-observables`
