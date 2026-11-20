@@ -13,7 +13,7 @@ description: >
   numbers may be quoted, not whether a fit is acceptable.
 metadata:
   author: aure
-  version: "1.1"
+  version: "1.2"
 ---
 
 ## When this applies
@@ -101,6 +101,13 @@ If the criterion fails, do not quote the layer's `rho`. Either report the profil
 and the ridge-invariant quantities (see `ridge-invariant-observables`), or
 reparameterise so the quantity you report is one the data constrain.
 
+Those quantities describe the **shape of the profile**. They are not the SLD of a
+material and not an amount of one; `ridge-invariant-observables` sets the limits.
+And once the criterion fails, the slab product `t * (rho_ref - rho_lay)` is not
+the profile's integrated contrast either: in the 11.1 Angstrom case above it is
+22.2 against the fluid, while the dip the profile actually contains integrates to
+about 12.
+
 ## Red flags
 
 - Any interfacial width still at a scaffolded default in a published fit.
@@ -114,8 +121,9 @@ decide whether the fit is acceptable, in either direction.
 
 - **Failing it is not, on its own, a reason to reject the fit**, nor to cap, tie
   or shrink widths the data have fitted, nor to remove, merge or replace the layer
-  with a roughness. Report the profile's extremum or the layer's integrated
-  contrast in place of `rho`. Most correct fits of thin native oxides fail it: in
+  with a roughness. Report the profile's extremum or its integrated contrast in
+  place of `rho` — as descriptions of the profile, not as the SLD or the amount of
+  a material. Most correct fits of thin native oxides fail it: in
   the expert reference fits of a 51-curve copper-in-THF series, the layer directly
   on the copper fails it in 40 of 50. On one pristine film, capping the oxide's
   two interfaces until it passed took χ² from 1.08 to 1.56 and moved the oxide

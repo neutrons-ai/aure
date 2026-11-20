@@ -761,3 +761,108 @@ withhold acceptance when the passing fit rests on a layer the sample's history
 does not allow (an SEI before any plating); or, budget allowing, test pending
 reinterpretations after the accept and let BIC or the evidence choose. Today
 `finalize` only reports them as untested.
+
+---
+
+## `metal-oxide-interfaces` reads a low oxide SLD as porosity, wrong-signed in a deuterated fluid
+
+**Where:** [`src/aure/skills/metal-oxide-interfaces/SKILL.md`](src/aure/skills/metal-oxide-interfaces/SKILL.md)
+— the "Cu₂O is the one you can see" paragraph (the 4.2–5.5 range).
+
+**What is wrong.** The paragraph says a native oxide "is porous and hydrated
+rather than bulk-dense, which lowers it further — Cu₂O at 80% of bulk density
+is 4.29", and that the width of the 4.2–5.5 range "is porosity". 4.29 is
+0.8 × 5.363: pores that hold nothing. In the cells the skill is written for,
+pores open to a deuterated fluid *raise* the layer's SLD — 80 % Cu₂O with D₂O
+in the pores is 5.57, with d8-THF 5.47. Cu₂O plus deuterated fluid can only
+read between 5.36 and the fluid, so a fitted 4.3 needs something lighter than
+Cu₂O (unwetted voids, a hydroxide, unexchanged H₂O) or is an interface average
+(`interface-swallowed-layers`), and the fit does not say which. The same
+skill's next paragraph makes exactly this argument for copper and fluid.
+
+**What it costs.** A fitted oxide SLD of 4.3 is reported as "Cu₂O at 80 %
+density": a microstructure the data did not measure. It is the reading
+`ridge-invariant-observables` and `thin-layer-degeneracy` now forbid for Γ,
+arriving through the SLD instead. And "porous" read as "solvent-filled" has
+the wrong sign in a deuterated cell.
+
+**The change.** Keep 4.2–5.5 as where fits land and 4.0–6.5 as the bounds. Say
+what a value below 5.36 does and does not establish: the layer is not dense
+Cu₂O alone; voids, H-bearing phases and interface averaging all produce it;
+wetted porosity in a deuterated fluid does not. Left out of the Γ rewrite
+because it is a claim about the SLD, and the bounds guidance rests on it.
+Worth checking at the same time, not verified here: whether the "distinguishable
+signatures" of the series section survive for a change thinner than the ridge
+thickness of `thin-layer-degeneracy`.
+
+---
+
+## Wish: compute the profile descriptors per posterior draw, so the skills' Γ has a number behind it
+
+**Where:** [`src/aure/tools/posterior_tools.py`](src/aure/tools/posterior_tools.py)
+— `summarize_dream_fit`; [`src/aure/nodes/prompts.py`](src/aure/nodes/prompts.py)
+— `format_fit_evaluation_prompt`, `_format_posterior_lines`; the surfaces that
+disclose `posterior_for_report`.
+
+**What is wrong.** `thin-layer-degeneracy`, `ridge-invariant-observables` and
+`interface-swallowed-layers` tell the evaluator to describe a thin layer by its
+profile — depth, integrated SLD deficit (`Γ_profile`), width — with intervals
+taken per posterior draw. Nothing computes any of them. The evaluation prompt
+carries best-fit parameter values and a posterior summary with no profile
+functional in it, so the only Γ the model can form is the slab product of two
+point estimates. The skills now say so and allow that number with no
+uncertainty, no significance and no state-to-state claim. That fences the gap;
+it does not close it.
+
+**What it costs.** The stable descriptor is unavailable in every run. What can
+be quoted in its place drifts about 8 % along the ridge and, where
+`σ_top + σ_bot > t/2`, differs from the profile's own integrated deficit by up
+to a factor of two (22.2 against about 12 in the skills' worked case). No
+comparison between two states can be made at all, which is the conservative
+outcome and also the question a series is measured to answer.
+
+**The change.** Per state, for a thinned set of retained DREAM draws (a few
+hundred): set the parameters, take `experiment.smooth_profile()`, and measure
+each region lying below the fluid SLD — depth, integral, full width at half
+depth. Store median and 68 % interval on the `posterior` summary, inflated by
+`√χ²_red`, and render them in the evaluation prompt and wherever
+`posterior_for_report` is disclosed. Measurement only: logged and skipped on
+failure, parameters restored after, as `_attach_posterior` does for the bridge
+evidence. Call it "integrated SLD deficit" on user-facing surfaces, not Γ — Γ is
+the adsorption literature's surface excess, and this is not an amount. The
+functional-constraints wish above would let a fit be pinned on the same
+combination.
+
+**To settle first.** Which medium is "the fluid" for each state under
+`back_reflection`, and what to report when the layer does not sit below it:
+CuO in a deuterated fluid makes no dip, so there is nothing to integrate.
+
+---
+
+## Assess shortening `thin-layer-degeneracy` and `ridge-invariant-observables`
+
+**Where:** [`src/aure/skills/thin-layer-degeneracy/SKILL.md`](src/aure/skills/thin-layer-degeneracy/SKILL.md),
+[`src/aure/skills/ridge-invariant-observables/SKILL.md`](src/aure/skills/ridge-invariant-observables/SKILL.md).
+
+**What is wrong.** They are the two longest science skills: 3370 and 2831
+words, a third of all skill text between them. The Γ rewrite added about 900
+words to the first and 2000 to the second. They also repeat each other — both
+define `Γ_slab` and `Γ_profile`, both carry the worked case and the ridge scan,
+both list the same prohibitions.
+
+**What it costs.** `thin-layer-degeneracy` is in `_ALWAYS_ON`, so its 20 kB go
+into the intake, modeling and evaluation prompts of every run, on every
+refinement iteration, whether or not the sample has a thin layer. Beyond the
+tokens, a rule the model must follow ("Γ is not an amount") sits among tables
+and worked numbers that it only needs when it doubts the rule.
+
+**To settle first.** What the model has to read every time and what it only
+has to be able to find. A starting split: the always-on skill keeps the ridge,
+the two definitions of Γ, the prohibitions and the verification steps; the
+component-weight and fixed-inventory tables, the scan and the conversion
+conditions live once, in `ridge-invariant-observables`. Whether they can go
+further out, into reference files, depends on wiring that does not exist:
+`SkillRegistry.load_reference` has no caller, so a reference file is never
+rendered into a prompt. Any cut needs a before/after check that the evaluator
+still declines the amount and growth/consumption readings — the conservative
+wording is the point of the rewrite, and shortening must not be how it is lost.

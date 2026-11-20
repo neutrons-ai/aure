@@ -11,7 +11,7 @@ description: >
   considered in the model.
 metadata:
   author: aure
-  version: "2.0"
+  version: "2.1"
 ---
 
 ## Native Metal Oxide Formation
@@ -104,7 +104,9 @@ Recompute for any material not in this table rather than trusting a reference.
   fits the same data equally well (on one pristine film, 22 Å at 2.7 and 33 Å at
   4.0 give the same χ²), and native oxides in electrolyte are often hydrated
   enough to read below 4. Report the oxide's thickness × SLD contrast rather than
-  either number, and do not widen the floor or add a layer for that reason alone.
+  either number — naming the neighbour the contrast is taken against, and as a
+  description of the fit, not as an amount of oxide (`thin-layer-degeneracy`
+  says why) — and do not widen the floor or add a layer for that reason alone.
   An oxide on its SLD floor **and** its thickness ceiling, with χ² well above the
   threshold, is different: the data want a thicker, lower-SLD layer than any
   oxide, which on a cycled electrode is the lithium-rich plated layer.
